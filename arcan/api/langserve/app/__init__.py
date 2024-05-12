@@ -25,11 +25,9 @@ class Input(BaseModel):
         extra={"widget": {"type": "chat", "input": "input", "output": "output"}},
     )
 
+
 class Output(BaseModel):
     output: Any
-
-
-
 
 
 def get_runnable() -> Runnable:
@@ -38,9 +36,9 @@ def get_runnable() -> Runnable:
 
 add_routes(
     app=app,
-    runnable=get_runnable().with_types(input_type=Input, output_type=Output).with_config(
-        {"run_name": "agent"}
-    ),
+    runnable=get_runnable()
+    .with_types(input_type=Input, output_type=Output)
+    .with_config({"run_name": "agent"}),
     path="/chat",
     enable_feedback_endpoint=True,
     # enable_public_trace_link_endpoint=True,

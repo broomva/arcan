@@ -4,15 +4,13 @@ import os
 from tempfile import TemporaryDirectory
 
 from fastapi.responses import StreamingResponse
-from langchain.agents import (AgentExecutor, create_tool_calling_agent,
-                              load_tools)
-from langchain.agents.format_scratchpad.openai_tools import \
-    format_to_openai_tool_messages
-from langchain.agents.output_parsers.openai_tools import \
-    OpenAIToolsAgentOutputParser
+from langchain.agents import AgentExecutor, create_tool_calling_agent, load_tools
+from langchain.agents.format_scratchpad.openai_tools import (
+    format_to_openai_tool_messages,
+)
+from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
 from langchain.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import (FileManagementToolkit,
-                                                SQLDatabaseToolkit)
+from langchain_community.agent_toolkits import FileManagementToolkit, SQLDatabaseToolkit
 from langchain_core.messages import AIMessage, HumanMessage
 
 from arcan.ai.agents.helpers import AsyncIteratorCallbackHandler
@@ -124,9 +122,6 @@ class ArcanAgent:
         return response["output"]
 
 
-
-
-
 # %%
 #
 
@@ -198,9 +193,7 @@ async def agent_chat(text: str, agent):  # query: Query = Body(...),):
     return StreamingResponse(gen, media_type="text/event-stream")
 
 
-
-
-#%%
+# %%
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 
 
@@ -246,7 +239,7 @@ class ArcanSpellsAgent(ArcanAgent):
         self.database = database
         self.toolkit = SQLDatabaseToolkit(db=self.database, llm=self.llm)
         self.context = self.toolkit.get_context()
-        self.prompt = prompt # arcan_prompt.partial(**self.context)
+        self.prompt = prompt  # arcan_prompt.partial(**self.context)
         self.sql_tools = self.toolkit.get_tools()
         self.working_directory = TemporaryDirectory()
         self.file_system_tools = FileManagementToolkit(
@@ -270,7 +263,7 @@ class ArcanSpellsAgent(ArcanAgent):
         self.agent_executor = AgentExecutor(
             agent=self.agent, tools=self.agent_tools, verbose=self.verbose
         )
-    
+
     def get_response(self, user_content: str):
         """
         Gets the response from the agent given user input.
@@ -293,5 +286,6 @@ class ArcanSpellsAgent(ArcanAgent):
             ]
         )
         return response["output"]
+
 
 # %%
