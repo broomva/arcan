@@ -35,29 +35,6 @@ class LLM(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-    def chat_completion(self, user_content: str) -> Optional[str]:
-        """Generates a chat completion using the configured LLM provider.
-
-        Args:
-            user_content: The user's message to which the LLM should respond.
-
-        Returns:
-            The LLM's response as a string, or None if the provider is not configured for chat completions.
-        """
-        if self.provider in (
-            "OpenAI",
-            "TogetherAI",
-        ):  # Assuming TogetherAI is a typo or not implemented
-            self.messages.append({"role": "user", "content": user_content})
-            response = self.llm.chat.completions.create(
-                model=os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo-0125"),
-                messages=self.messages,
-                # temperature=self.temperature,
-                # max_tokens=self.max_tokens,
-            )
-            return response.choices[0].message.content
-        return None
-
 
 class LLMFactory:
     """A factory for creating LLM instances based on the provider."""
@@ -86,7 +63,7 @@ class LLMFactory:
             ),
         ),
         "ChatGroq": lambda **kwargs: ChatGroq(
-            temperature=kwargs.get("temperature", 0.3),
+            temperature=kwargs.get("temperature", 0.7),
             model_name=kwargs.get(
                 "model",
                 os.getenv("TOGETHER_MODEL_NAME", "llama3-8b-8192"),

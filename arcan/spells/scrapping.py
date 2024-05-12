@@ -12,6 +12,7 @@ from langchain.agents import Tool
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.utilities import WikipediaAPIWrapper
+from pydantic import AnyHttpUrl, FilePath
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
@@ -182,43 +183,41 @@ def firecrawl_scrape(url):
     )
 
 
-from pydantic import AnyHttpUrl
+# from pydantic import AnyHttpUrl, FilePath
+
+# def scrapegraph_scrape(url: AnyHttpUrl, prompt: str):
+#     from scrapegraphai.graphs import SmartScraperGraph
 
 
-def scrapegraph_scrape(url: AnyHttpUrl, prompt: str):
-    from scrapegraphai.graphs import SmartScraperGraph
+#     graph_config = {
+#         "llm": {
+#             "model": "ollama/mistral",
+#             "temperature": 0,
+#             "format": "json",  # Ollama needs the format to be specified explicitly
+#             "base_url": "http://localhost:11434",  # set Ollama URL
+#         },
+#         "embeddings": {
+#             "model": "ollama/nomic-embed-text",
+#             "base_url": "http://localhost:11434",  # set Ollama URL
+#         },
+#         "verbose": True,
+#     }
+
+#     smart_scraper_graph = SmartScraperGraph(
+#         prompt=prompt,
+#         # also accepts a string with the already downloaded HTML code
+#         source=url.__str__(),
+#         config=graph_config,
+#         prompt=prompt,
+#         # also accepts a string with the already downloaded HTML code
+#         source=url.__str__(),
+#         config=graph_config,
+#     )
+
+#     result = smart_scraper_graph.run()
+#     print(result)
 
 
-    graph_config = {
-        "llm": {
-            "model": "ollama/mistral",
-            "temperature": 0,
-            "format": "json",  # Ollama needs the format to be specified explicitly
-            "base_url": "http://localhost:11434",  # set Ollama URL
-        },
-        "embeddings": {
-            "model": "ollama/nomic-embed-text",
-            "base_url": "http://localhost:11434",  # set Ollama URL
-        },
-        "verbose": True,
-    }
-
-    smart_scraper_graph = SmartScraperGraph(
-        prompt=prompt,
-        # also accepts a string with the already downloaded HTML code
-        source=url.__str__(),
-        config=graph_config,
-        prompt=prompt,
-        # also accepts a string with the already downloaded HTML code
-        source=url.__str__(),
-        config=graph_config,
-    )
-
-    result = smart_scraper_graph.run()
-    print(result)
-
-
-from pydantic import FilePath
 
 
 async def llama_parse_scrape(pdf_path: FilePath):
