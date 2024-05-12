@@ -3,6 +3,7 @@
 import os
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI, OpenAI
 from pydantic import BaseModel
 
@@ -82,6 +83,13 @@ class LLMFactory:
             openai_api_base=kwargs.get(
                 "openai_api_base",
                 os.getenv("OPENAI_API_BASE_URL", "https://api.together.xyz/v1"),
+            ),
+        ),
+        "ChatGroq": lambda **kwargs: ChatGroq(
+            temperature=kwargs.get("temperature", 0.3),
+            model_name=kwargs.get(
+                "model",
+                os.getenv("TOGETHER_MODEL_NAME", "llama3-8b-8192"),
             ),
         ),
     }

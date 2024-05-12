@@ -7,7 +7,8 @@ from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_core.utils.function_calling import convert_to_openai_function
 from langchain_experimental.utilities import PythonREPL
 
-from arcan.spells.scrapping import scrape_website, scrape_website_selenium
+from arcan.spells.scrapping import (firecrawl_scrape, scrape_website,
+                                    scrape_website_selenium)
 from arcan.spells.search import serper_api_search
 
 load_dotenv()
@@ -49,6 +50,12 @@ scrape_with_selenuim_tool = Tool(
     name="scrape_website_with_selenium",
     func=scrape_website_selenium,
     description="Useful when you need to get data from a website url and the regular Scrape Website method is not working correctly; DO NOT make up any url, the url should only be from the search results. Prefer Tavily seach tool over this one unless explicitly asked to perform a scrapping task",
+)
+
+firecrawl_tool = Tool(
+    name="firecrawl",
+    func=firecrawl_scrape,
+    description="Useful when you need to get data from a website url; DO NOT make up any url, use the one provided by the user.",
 )
 
 python_repl = PythonREPL()

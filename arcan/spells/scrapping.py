@@ -6,6 +6,12 @@ import time
 import html2text
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from firecrawl import FirecrawlApp
+from langchain.agents import Tool
+from langchain_community.tools import WikipediaQueryRun
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.utilities import WikipediaAPIWrapper
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
@@ -128,3 +134,92 @@ def url_text_scrapper(url: str):
         file_path.write_text(scrapped_text)
 
     return scrapped_text, clean_domain
+
+
+def firecrawl_loader(url: str, mode: str = "scrape"):
+    from langchain_community.document_loaders import FireCrawlLoader
+    loader = FireCrawlLoader(
+        api_key=os.environ.get("FIRECRAWL_API_KEY"), 
+        url=url, 
+        mode=mode # scrape: Scrape single url and return the markdown.
+                    # crawl: Crawl the url and all accessible sub pages and return the markdown for each one.
+    )
+    return loader
+
+
+
+
+def firecrawl_scrape(url):
+    """
+    The function `firecrawl_scrape` takes a URL as input and uses the FirecrawlApp class to scrape the
+    content of the webpage at that URL.
+
+    :param url: The `url` parameter in the `firecrawl_scrape` function is a string that represents the
+    URL of the webpage that you want to scrape using the FirecrawlApp
+    :return: The `firecrawl_scrape` function is returning the result of calling the `scrape_url` method
+    of a `FirecrawlApp` instance with the provided `url` as an argument. It is a markdown string of the
+    scraped content of the webpage at the provided URL.
+    """
+    return FirecrawlApp().scrape_url(url, {
+    'extractorOptions': {
+        'mode': 'llm-extraction',
+        'extractionPrompt': 'Extract the key elements, segment by NER, and summarize the content. Make sure the returned content is at most 16385 tokens'
+    },
+    'pageOptions':{
+        'onlyMainContent': True
+    }
+    })
+
+
+
+from pydantic import AnyHttpUrl
+
+
+def scrapegraph_scrape(url: AnyHttpUrl, prompt: str):
+    from scrapegraphai.graphs import SmartScraperGraph
+    graph_config = {
+        "llm": {
+            "model": "ollama/mistral",
+            "temperature": 0,
+            "format": "json",  # Ollama needs the format to be specified explicitly
+            "base_url": "http://localhost:11434",  # set Ollama URL
+        },
+        "embeddings": {
+            "model": "ollama/nomic-embed-text",
+            "base_url": "http://localhost:11434",  # set Ollama URL
+        },
+        "verbose": True,
+    }
+
+    smart_scraper_graph = SmartScraperGraph(
+            prompt=prompt,
+            # also accepts a string with the already downloaded HTML code
+            source=url.__str__(),
+            config=graph_config
+    )
+
+    result = smart_scraper_graph.run()
+    print(result)
+
+
+from pydantic import FilePath
+
+
+async def llama_parse_scrape(pdf_path: FilePath):
+    import nest_asyncio
+
+    nest_asyncio.apply()
+
+    from llama_parse import LlamaParse
+
+    parser = LlamaParse(
+        api_key=os.environ.get("LLAMA_CLOUD_API_KEY"),
+        result_type="markdown",  # "markdown" and "text" are available
+        num_workers=4,  # if multiple files passed, split in `num_workers` API calls
+        verbose=True,
+        language="en",  # Optionally you can define a language, default=en
+    )
+    
+    # async
+    documents = await parser.aload_data(pdf_path)
+    return documents

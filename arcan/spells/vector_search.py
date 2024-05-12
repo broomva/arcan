@@ -1,8 +1,17 @@
+import os
+
 import pandas as pd
-from langchain.document_loaders import DataFrameLoader, UnstructuredMarkdownLoader
+from langchain.document_loaders import (DataFrameLoader,
+                                        UnstructuredMarkdownLoader)
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS, Chroma
+from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders.base import BaseLoader
+from langchain_community.vectorstores import SupabaseVectorStore
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import CharacterTextSplitter
+from supabase.client import Client, create_client
 
 embeddings = OpenAIEmbeddings()
 
@@ -89,3 +98,89 @@ def pandas_df_vectorstore_loader(
     vectorstore_ts.persist()
 
     return docs
+
+
+# -- Enable the pgvector extension to work with embedding vectors
+# create extension if not exists vector;
+
+# -- Create a table to store your documents
+# create table
+#   documents (
+#     id uuid primary key,
+#     content text, -- corresponds to Document.pageContent
+#     metadata jsonb, -- corresponds to Document.metadata
+#     embedding vector (1536) -- 1536 works for OpenAI embeddings, change if needed
+#   );
+
+# -- Create a function to search for documents
+# create function match_documents (
+#   query_embedding vector (1536),
+#   filter jsonb default '{}'
+# ) returns table (
+#   id uuid,
+#   content text,
+#   metadata jsonb,
+#   similarity float
+# ) language plpgsql as $$
+# #variable_conflict use_column
+# begin
+#   return query
+#   select
+#     id,
+#     content,
+#     metadata,
+#     1 - (documents.embedding <=> query_embedding) as similarity
+#   from documents
+#   where metadata @> filter
+#   order by documents.embedding <=> query_embedding;
+# end;
+# $$;
+
+#%%
+
+
+
+class pgVectorStore:
+    def __init__(self, table_name: str = "documents", query_name: str = "match_documents"):
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+        self.supabase: Client = create_client(supabase_url, supabase_key)
+        self.embeddings = OpenAIEmbeddings()
+        self.table_name = table_name
+        self.query_name = query_name
+        self.vector_store = self.get_vector_store()
+        
+
+    def get_vector_store(self):
+        return SupabaseVectorStore(
+            embedding=self.embeddings,
+            client=self.supabase,
+            table_name=self.table_name,
+            query_name=self.query_name,
+        )
+
+    def read(self, query):
+        matched_docs = self.vector_store.similarity_search(query)
+        return matched_docs[0].page_content
+
+    def write(self, loader: BaseLoader, chunk_size: int = 1000, chunk_overlap: int = 80,):
+        documents = loader.load()
+        text_splitter = CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        docs = text_splitter.split_documents(documents)
+        self.vector_store.from_documents(
+            docs,
+            self.embeddings,
+            client=self.supabase,
+            table_name=self.table_name,
+            query_name=self.query_name,
+            chunk_size=chunk_size,
+        )
+
+
+
+
+# %%
+
+# vec = VectorStore()
+# loader = firecrawl_loader('https://python.langchain.com/v0.1/docs/integrations/vectorstores/supabase/')
+# vec.write(loader)

@@ -41,6 +41,8 @@ langchain-community = "^0.0.32"
 modal = "^0.61.54"
 typer = "^0.9.0"
 langserve = {extras = ["all"], version = ">=0.0.30"} #"^0.1.1"
+langchain-groq = "^0.1.3"
+firecrawl-py = "^0.0.8"
 
 [build-system]
 requires = ["poetry-core"]
