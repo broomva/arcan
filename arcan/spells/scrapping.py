@@ -140,11 +140,10 @@ def url_text_scrapper(url: str):
 def firecrawl_loader(url: str, mode: str = "scrape"):
     from langchain_community.document_loaders import FireCrawlLoader
 
-
     loader = FireCrawlLoader(
         api_key=os.environ.get("FIRECRAWL_API_KEY"),
         url=url,
-        mode=mode  # scrape: Scrape single url and return the markdown.
+        mode=mode,  # scrape: Scrape single url and return the markdown.
         # crawl: Crawl the url and all accessible sub pages and return the markdown for each one.
     )
     return loader
@@ -218,8 +217,6 @@ def firecrawl_scrape(url):
 #     print(result)
 
 
-
-
 async def llama_parse_scrape(pdf_path: FilePath):
     import nest_asyncio
 
@@ -235,8 +232,6 @@ async def llama_parse_scrape(pdf_path: FilePath):
         language="en",  # Optionally you can define a language, default=en
     )
 
-
     # async
     documents = await parser.aload_data(pdf_path)
     return documents
-

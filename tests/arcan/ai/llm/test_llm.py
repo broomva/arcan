@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from arcan.ai.llm import LLM, ChatGroq, ChatOpenAI, LLMFactory, OpenAI
 
-load_dotenv()   
+load_dotenv()
 
 
 def test_create_llm_chatopenai():
@@ -14,6 +14,7 @@ def test_create_llm_chatopenai():
     assert llm.temperature == 0.7
     assert llm.model_name == os.getenv("OPENAI_MODEL", "gpt-3.5-turbo-0125")
 
+
 def test_create_llm_chattogetherai():
     llm = LLMFactory.create_llm("ChatTogetherAI", temperature=0.7)
     assert isinstance(llm, ChatOpenAI)
@@ -21,11 +22,13 @@ def test_create_llm_chattogetherai():
     assert llm.model_name == "mistralai/Mixtral-8x7B-Instruct-v0.1"
     assert llm.openai_api_base == "https://api.together.xyz/v1"
 
+
 def test_create_llm_chatgroq():
     llm = LLMFactory.create_llm("ChatGroq", temperature=0.7)
     assert isinstance(llm, ChatGroq)
     assert llm.temperature == 0.7
     assert llm.model_name == "llama3-8b-8192"
+
 
 def test_create_llm_not_implemented():
     with pytest.raises(NotImplementedError):

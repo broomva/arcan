@@ -18,7 +18,6 @@ async def test_redirect_root_to_docs():
         assert response.headers["location"] == "/docs"
 
 
-
 @pytest.mark.asyncio
 async def test_index():
     async with AsyncClient(app=app, base_url="http://test") as ac:
@@ -31,7 +30,7 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.mark.asyncio
-@patch('arcan.api.datamodels.get_db')  # Correct the import path as necessary
+@patch("arcan.api.datamodels.get_db")  # Correct the import path as necessary
 async def test_chat(mock_get_db):
     # Create a mock session
     mock_session = MagicMock()
@@ -45,10 +44,11 @@ async def test_chat(mock_get_db):
     #     mock_run_agent.return_value = "Test Response"
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/api/chat", params={"user_id": "test_user", "query": "testinggggg$#@"})
+        response = await ac.get(
+            "/api/chat", params={"user_id": "test_user", "query": "testinggggg$#@"}
+        )
         assert response.status_code == 200
         assert response.json() == {"response": "test"}
-
 
 
 # def test_llm_endpoints():
@@ -60,16 +60,6 @@ async def test_chat(mock_get_db):
 
 #     response = client.get("/together")
 #     assert response.status_code == 200
-
-
-
-
-
-
-
-
-
-
 
 
 # # Initialize the test client
@@ -91,4 +81,3 @@ async def test_chat(mock_get_db):
 #     response = client.get(f"/api/chat?user_id={user_id}&query={query}")
 #     assert response.status_code == 200
 #     assert "response" in response.json()
-
