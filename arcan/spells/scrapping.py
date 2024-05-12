@@ -138,15 +138,14 @@ def url_text_scrapper(url: str):
 
 def firecrawl_loader(url: str, mode: str = "scrape"):
     from langchain_community.document_loaders import FireCrawlLoader
+
     loader = FireCrawlLoader(
-        api_key=os.environ.get("FIRECRAWL_API_KEY"), 
-        url=url, 
-        mode=mode # scrape: Scrape single url and return the markdown.
-                    # crawl: Crawl the url and all accessible sub pages and return the markdown for each one.
+        api_key=os.environ.get("FIRECRAWL_API_KEY"),
+        url=url,
+        mode=mode,  # scrape: Scrape single url and return the markdown.
+        # crawl: Crawl the url and all accessible sub pages and return the markdown for each one.
     )
     return loader
-
-
 
 
 def firecrawl_scrape(url):
@@ -160,16 +159,16 @@ def firecrawl_scrape(url):
     of a `FirecrawlApp` instance with the provided `url` as an argument. It is a markdown string of the
     scraped content of the webpage at the provided URL.
     """
-    return FirecrawlApp().scrape_url(url, {
-    'extractorOptions': {
-        'mode': 'llm-extraction',
-        'extractionPrompt': 'Extract the key elements, segment by NER, and summarize the content. Make sure the returned content is at most 16385 tokens'
-    },
-    'pageOptions':{
-        'onlyMainContent': True
-    }
-    })
-
+    return FirecrawlApp().scrape_url(
+        url,
+        {
+            "extractorOptions": {
+                "mode": "llm-extraction",
+                "extractionPrompt": "Extract the key elements, segment by NER, and summarize the content. Make sure the returned content is at most 16385 tokens",
+            },
+            "pageOptions": {"onlyMainContent": True},
+        },
+    )
 
 
 from pydantic import AnyHttpUrl
@@ -177,6 +176,7 @@ from pydantic import AnyHttpUrl
 
 def scrapegraph_scrape(url: AnyHttpUrl, prompt: str):
     from scrapegraphai.graphs import SmartScraperGraph
+
     graph_config = {
         "llm": {
             "model": "ollama/mistral",
@@ -192,10 +192,10 @@ def scrapegraph_scrape(url: AnyHttpUrl, prompt: str):
     }
 
     smart_scraper_graph = SmartScraperGraph(
-            prompt=prompt,
-            # also accepts a string with the already downloaded HTML code
-            source=url.__str__(),
-            config=graph_config
+        prompt=prompt,
+        # also accepts a string with the already downloaded HTML code
+        source=url.__str__(),
+        config=graph_config,
     )
 
     result = smart_scraper_graph.run()
@@ -219,7 +219,7 @@ async def llama_parse_scrape(pdf_path: FilePath):
         verbose=True,
         language="en",  # Optionally you can define a language, default=en
     )
-    
+
     # async
     documents = await parser.aload_data(pdf_path)
     return documents

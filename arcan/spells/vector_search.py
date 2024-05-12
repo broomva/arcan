@@ -1,8 +1,7 @@
 import os
 
 import pandas as pd
-from langchain.document_loaders import (DataFrameLoader,
-                                        UnstructuredMarkdownLoader)
+from langchain.document_loaders import DataFrameLoader, UnstructuredMarkdownLoader
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS, Chroma
@@ -136,12 +135,13 @@ def pandas_df_vectorstore_loader(
 # end;
 # $$;
 
-#%%
-
+# %%
 
 
 class pgVectorStore:
-    def __init__(self, table_name: str = "documents", query_name: str = "match_documents"):
+    def __init__(
+        self, table_name: str = "documents", query_name: str = "match_documents"
+    ):
         supabase_url = os.environ.get("SUPABASE_URL")
         supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
         self.supabase: Client = create_client(supabase_url, supabase_key)
@@ -149,7 +149,6 @@ class pgVectorStore:
         self.table_name = table_name
         self.query_name = query_name
         self.vector_store = self.get_vector_store()
-        
 
     def get_vector_store(self):
         return SupabaseVectorStore(
@@ -163,9 +162,16 @@ class pgVectorStore:
         matched_docs = self.vector_store.similarity_search(query)
         return matched_docs[0].page_content
 
-    def write(self, loader: BaseLoader, chunk_size: int = 1000, chunk_overlap: int = 80,):
+    def write(
+        self,
+        loader: BaseLoader,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 80,
+    ):
         documents = loader.load()
-        text_splitter = CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        text_splitter = CharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
         docs = text_splitter.split_documents(documents)
         self.vector_store.from_documents(
             docs,
@@ -175,8 +181,6 @@ class pgVectorStore:
             query_name=self.query_name,
             chunk_size=chunk_size,
         )
-
-
 
 
 # %%

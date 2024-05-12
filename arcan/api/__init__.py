@@ -1,4 +1,4 @@
-#%%
+# %%
 from typing import Any, List, Union
 
 from dotenv import load_dotenv
@@ -25,7 +25,6 @@ from arcan.api.session import ArcanSession, run_agent
 load_dotenv()
 
 app = FastAPI()
-
 
 
 # Set all CORS enabled origins
@@ -56,7 +55,9 @@ async def chat(user_id: str, query: str, db: Session = Depends(get_db)):
     response = run_agent(session=arcan_session, user_id=user_id, query=query)
     return {"response": response}
 
-#%%
+
+# %%
+
 
 class Input(BaseModel):
     input: str
@@ -65,31 +66,34 @@ class Input(BaseModel):
         extra={"widget": {"type": "chat", "input": "input", "output": "output"}},
     )
 
+
 class Output(BaseModel):
     output: Any
 
 
 add_routes(
     app=app,
-    runnable=ArcanSpellsAgent().agent_executor.with_types(input_type=Input, output_type=Output).with_config({"run_name": "agent"}),
+    runnable=ArcanSpellsAgent()
+    .agent_executor.with_types(input_type=Input, output_type=Output)
+    .with_config({"run_name": "agent"}),
     path="/spells_agent",
     enable_feedback_endpoint=True,
 )
 
 add_routes(
     app,
-    LLM(provider='ChatOpenAI').llm,
+    LLM(provider="ChatOpenAI").llm,
     path="/openai",
 )
 
 add_routes(
     app,
-    LLM(provider='ChatGroq').llm,
+    LLM(provider="ChatGroq").llm,
     path="/groq",
 )
 
 add_routes(
     app,
-    LLM(provider='ChatTogetherAI').llm,
+    LLM(provider="ChatTogetherAI").llm,
     path="/together",
 )

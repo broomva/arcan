@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from arcan.ai.agents.helpers import AsyncIteratorCallbackHandler
 from arcan.ai.llm import LLM
 from arcan.ai.prompts import arcan_prompt, spells_agent_prompt
+
 # from arcan.ai.router import semantic_layer
 from arcan.ai.tools import tools as spells
 

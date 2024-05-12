@@ -1,4 +1,4 @@
-#%%
+# %%
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langserve import RemoteRunnable
@@ -12,11 +12,12 @@ class RunnableFactory:
     def get_runnable(self, runnable_name: str, cache: bool = True) -> Runnable:
         if cache and runnable_name in self.runnable_cache:
             return self.runnable_cache[runnable_name]
-        
+
         runnable = RemoteRunnable(self.base_url + runnable_name + "/")
         if cache:
             self.runnable_cache[runnable_name] = runnable
         return runnable
+
 
 class ArcanRunnables:
     def __init__(self, base_url: str = "http://localhost:8000/"):
@@ -31,8 +32,8 @@ class ArcanRunnables:
     def get_groq_runnable(self):
         return self.factory.get_runnable(runnable_name="groq")
 
-# %%
 
+# %%
 
 
 # from langchain.schema import HumanMessage, SystemMessage
