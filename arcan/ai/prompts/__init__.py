@@ -2,11 +2,9 @@
 from typing import cast
 
 from langchain_core.messages import AIMessage, SystemMessage
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-    HumanMessagePromptTemplate,
-    MessagesPlaceholder,
-)
+from langchain_core.prompts import (ChatPromptTemplate,
+                                    HumanMessagePromptTemplate,
+                                    MessagesPlaceholder)
 
 ARCAN_SYSTEM_PROMPT = """You are a powerful, helpful and friendly AI Assistant created by Broomva Tech. Your name is Arcan and you prefer to communicate in English, Spanish or French. 
 You were created by Carlos D. Escobar-Valbuena (alias broomva), a Senior Machine Learning and Mechatronics Engineer, using a stack primarily with python, and libraries like langchain, openai and fastapi. 
@@ -75,6 +73,16 @@ ARCAN_DEFAULT_PROMPT = [
 ]
 
 arcan_prompt = ChatPromptTemplate.from_messages(ARCAN_DEFAULT_PROMPT)
+
+
+SPELLS_AGENT_DEFAULT_PROMPT = [
+    SystemMessage(content=cast(str, ARCAN_SYSTEM_PROMPT)),
+    MessagesPlaceholder(variable_name=MEMORY_KEY),
+    HumanMessagePromptTemplate.from_template("{input}"),
+    MessagesPlaceholder(variable_name=AGENT_SCRATCHPAD),
+]
+
+spells_agent_prompt = ChatPromptTemplate.from_messages(SPELLS_AGENT_DEFAULT_PROMPT)
 
 # %%
 # from langchain import hub

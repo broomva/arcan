@@ -1,11 +1,13 @@
+#%%
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Form, Request
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from arcan.ai.agents import ArcanSession
-from arcan.api.datamodels import get_db
+from arcan.api.datamodels import get_db, get_db_context
+from arcan.api.session import ArcanSession, run_agent
 
+#%%
 # from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # from arcan.api.session.auth import requires_auth
@@ -29,23 +31,20 @@ async def index():
     return {"message": "Arcan is Running!"}
 
 
+
+
+
+@app.get("/api/chat/{user_id}")
+async def api_user_chat(user_id: str, query: str, db: Session = Depends(get_db)):
+    arcan_session = ArcanSession(db)
+    response = run_agent(session=arcan_session, user_id=user_id, query=query)
+    return {"response": response}
+
 # @requires_auth
 @app.get("/api/chat")
 async def chat(user_id: str, query: str, db: Session = Depends(get_db)):
     arcan_session = ArcanSession(db)
-    print(f"Sending the LangChain response to user: {user_id}")
-    agent = arcan_session.get_or_create_agent(user_id)
-    # Get the generated text from the LangChain agent
-    langchain_response = agent.get_response(user_content=query)
-    # Store the conversation in the database
-    try:
-        arcan_session.store_message(
-            user_id=user_id, body=query, response=langchain_response
-        )
-        arcan_session.store_chat_history(
-            user_id=user_id, agent_history=agent.chat_history
-        )
-    except SQLAlchemyError as e:
-        db.rollback()
-        print(f"Error storing conversation in database: {e}")
-    return {"response": langchain_response}
+    response = run_agent(session=arcan_session, user_id=user_id, query=query)
+    return {"response": response}
+
+#%%
