@@ -10,7 +10,7 @@ load_dotenv()
 
 # %%
 
-engine = create_engine(os.environ.get("SQLALCHEMY_URL"))
+engine = create_engine("postgresql://postgres.vkugdscspjbjgquljqle:ARCAN.broomva2024@aws-0-us-east-1.pooler.supabase.com:5432/postgres?client_encoding=utf8") #os.environ.get("SQLALCHEMY_URL"))
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 

@@ -16,7 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from arcan.ai.agents.helpers import AsyncIteratorCallbackHandler
 from arcan.ai.llm import LLM
 from arcan.ai.prompts import arcan_prompt, spells_agent_prompt
-from arcan.ai.router import semantic_layer
+# from arcan.ai.router import semantic_layer
 from arcan.ai.tools import tools as spells
 
 
@@ -51,6 +51,7 @@ class ArcanAgent:
         context: list = [],  # represents the chat history, can be pulled from a db
         user_id: str = None,
         verbose: bool = False,
+        database: SQLDatabase = SQLDatabase.from_uri(os.environ.get("SQLALCHEMY_URL")),
     ):
         self.llm: LLM = llm
         self.tools: list = tools
@@ -60,7 +61,7 @@ class ArcanAgent:
         self.user_id: str = user_id
         self.verbose: bool = verbose
 
-        self.db = SQLDatabase.from_uri(os.environ.get("SQLALCHEMY_URL"))
+        self.db = database
         self.toolkit = SQLDatabaseToolkit(db=self.db, llm=self.llm)
         self.context = self.toolkit.get_context()
         self.prompt = arcan_prompt.partial(**self.context)
@@ -109,9 +110,9 @@ class ArcanAgent:
             str: The response from the agent.
 
         """
-        routed_content = semantic_layer(query=user_content, user_id=self.user_id)
+        # routed_content = semantic_layer(query=user_content, user_id=self.user_id)
         response = self.agent_executor.invoke(
-            {"input": routed_content, "chat_history": self.chat_history}
+            {"input": user_content, "chat_history": self.chat_history}
         )
         self.chat_history.extend(
             [
@@ -237,7 +238,7 @@ class ArcanSpellsAgent(ArcanAgent):
         self.user_id: str = user_id
         self.verbose: bool = verbose
         self.database = database
-        self.toolkit = SQLDatabaseToolkit(db=self.database, llm=self.llm)
+        self.toolkit = SQLDatabaseToolkit(db=database, llm=self.llm)
         self.context = self.toolkit.get_context()
         self.prompt = prompt  # arcan_prompt.partial(**self.context)
         self.sql_tools = self.toolkit.get_tools()
@@ -275,9 +276,9 @@ class ArcanSpellsAgent(ArcanAgent):
             str: The response from the agent.
 
         """
-        routed_content = semantic_layer(query=user_content, user_id=self.user_id)
+        # routed_content = semantic_layer(query=user_content, user_id=self.user_id)
         response = self.agent_executor.invoke(
-            {"input": routed_content, "chat_history": self.chat_history}
+            {"input": user_content, "chat_history": self.chat_history}
         )
         self.chat_history.extend(
             [

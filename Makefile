@@ -31,3 +31,6 @@ package_build:
 
 package_list:
 	unzip -l dist/*.whl  
+
+langserve_server:
+	poetry run uvicorn arcan.api.langserve.app.server:app --host 0.0.0.0 --port 8080
