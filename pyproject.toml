@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "arcan"
-version = "0.0.1"
+version = "0.1.0"
 description = "An AI web3 tooling platform for the decentralized customization and enhancement of AI agents"
 authors = ["Carlos D. Escobar-Valbuena <carlosdavidescobar@gmail.com>"]
 license = "Apache 2.0"

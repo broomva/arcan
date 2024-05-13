@@ -2,7 +2,7 @@ from typer import Typer, echo
 
 cli = Typer()
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 
 def get_arcan_version():
