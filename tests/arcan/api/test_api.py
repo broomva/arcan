@@ -48,7 +48,9 @@ async def test_chat(mock_get_db):
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
         response = await ac.get(
-            "/api/chat", params={"user_id": "test_user", "query": "testinggggg$#@"}, headers={"Authorization ": f"Bearer {mock_token.credentials}"}
+            "/api/chat",
+            params={"user_id": "test_user", "query": "testinggggg$#@"},
+            headers={"Authorization ": f"Bearer {mock_token.credentials}"},
         )
         assert response.status_code == 200
         assert response.json() == {"response": "test"}
