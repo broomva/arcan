@@ -6,14 +6,9 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-
 # %%
-from fastapi.security import (
-    HTTPAuthorizationCredentials,
-    HTTPBearer,
-    OAuth2PasswordBearer,
-    OAuth2PasswordRequestForm,
-)
+from fastapi.security import (HTTPAuthorizationCredentials, HTTPBearer,
+                              OAuth2PasswordBearer, OAuth2PasswordRequestForm)
 from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
 from langserve import add_routes
 from langserve.pydantic_v1 import BaseModel, Field
@@ -27,25 +22,14 @@ from arcan.ai.llm import LLM
 from arcan.api.datamodel import get_db, get_db_context
 from arcan.api.datamodel.chat_history import ChatHistory
 from arcan.api.datamodel.conversation import Conversation
-from arcan.api.datamodel.user import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    TokenModel,
-    User,
-    UserInDB,
-    UserModel,
-    UserRepository,
-    UserService,
-    oauth2_scheme,
-    pwd_context,
-)
+from arcan.api.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
+                                      User, UserInDB, UserModel,
+                                      UserRepository, UserService,
+                                      oauth2_scheme, pwd_context)
 from arcan.api.session import ArcanSession, run_agent
-
-# from arcan.api.session.auth import requires_auth
-from arcan.spells.vector_search import (
-    get_per_user_retriever,
-    per_req_config_modifier,
-    pgVectorStore,
-)
+from arcan.api.session.auth import requires_auth
+from arcan.spells.vector_search import (get_per_user_retriever,
+                                        per_req_config_modifier, pgVectorStore)
 
 auth_scheme = HTTPBearer()
 
@@ -157,6 +141,7 @@ async def get_current_active_user_from_request(
     user_repo = UserRepository(session)
     user_interface = UserService(user_repository=user_repo, pwd_context=pwd_context)
     token = await oauth2_scheme(request)
+    print(token)
     user = user_interface.get_current_user(token=token)
     if not user:
         raise HTTPException(
@@ -186,16 +171,17 @@ add_routes(
 # %%
 
 
-# @requires_auth
+@requires_auth
 @app.get("/api/chat")
 async def chat(
     user_id: str,
     query: str,
-    current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
+    # current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
     db: Session = Depends(get_db),
 ):
     arcan_session = ArcanSession(db)
-    response = run_agent(session=arcan_session, user_id=current_user, query=query)
+    # user = await get_current_active_user_from_request(request=Request)
+    response = run_agent(session=arcan_session, user_id=user_id, query=query)
     return {"response": response}
 
 
