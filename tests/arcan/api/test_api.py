@@ -43,9 +43,12 @@ async def test_chat(mock_get_db):
     # with patch('your_module_path.run_agent') as mock_run_agent:
     #     mock_run_agent.return_value = "Test Response"
 
+    mock_token = MagicMock()
+    mock_token.credentials = os.getenv("ARCAN_API_KEY")
+
     async with AsyncClient(app=app, base_url="http://test") as ac:
         response = await ac.get(
-            "/api/chat", params={"user_id": "test_user", "query": "testinggggg$#@"}
+            "/api/chat", params={"user_id": "test_user", "query": "testinggggg$#@"}, headers={"Authorization ": f"Bearer {mock_token.credentials}"}
         )
         assert response.status_code == 200
         assert response.json() == {"response": "test"}

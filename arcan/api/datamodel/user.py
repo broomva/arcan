@@ -8,7 +8,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
+                        Text)
 from sqlalchemy.orm import Session, relationship
 
 from arcan.api.datamodel import Base, engine
@@ -23,7 +24,7 @@ Base.metadata.create_all(engine)
 
 # to get a string like this run:
 # openssl rand -hex 32
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+SECRET_KEY = os.environ.get("ARCAN_API_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
