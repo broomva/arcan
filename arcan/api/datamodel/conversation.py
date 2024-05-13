@@ -2,12 +2,12 @@ from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Integer, String
 
-from arcan.api.datamodels import Base, engine
+from arcan.api.datamodel import Base, engine
 
 Base.metadata.create_all(engine)
 
 
-class Conversations(Base):
+class Conversation(Base):
     """
     Represents a conversation entity.
 
@@ -19,7 +19,7 @@ class Conversations(Base):
         created_at (datetime): The timestamp of when the conversation was created.
     """
 
-    __tablename__ = "conversations"
+    __tablename__ = "conversation"
     id = Column(Integer, primary_key=True, index=True)
     sender = Column(String)
     message = Column(String)

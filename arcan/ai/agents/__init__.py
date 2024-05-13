@@ -4,19 +4,20 @@ import os
 from tempfile import TemporaryDirectory
 
 from fastapi.responses import StreamingResponse
-from langchain.agents import AgentExecutor, create_tool_calling_agent, load_tools
-from langchain.agents.format_scratchpad.openai_tools import (
-    format_to_openai_tool_messages,
-)
-from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
+from langchain.agents import (AgentExecutor, create_tool_calling_agent,
+                              load_tools)
+from langchain.agents.format_scratchpad.openai_tools import \
+    format_to_openai_tool_messages
+from langchain.agents.output_parsers.openai_tools import \
+    OpenAIToolsAgentOutputParser
 from langchain.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import FileManagementToolkit, SQLDatabaseToolkit
+from langchain_community.agent_toolkits import (FileManagementToolkit,
+                                                SQLDatabaseToolkit)
 from langchain_core.messages import AIMessage, HumanMessage
 
 from arcan.ai.agents.helpers import AsyncIteratorCallbackHandler
 from arcan.ai.llm import LLM
 from arcan.ai.prompts import arcan_prompt, spells_agent_prompt
-
 # from arcan.ai.router import semantic_layer
 from arcan.ai.tools import tools as spells
 
@@ -45,6 +46,7 @@ class ArcanAgent:
 
     def __init__(
         self,
+        database: SQLDatabase,
         llm: LLM = LLM().llm,
         tools: list = spells,
         hub_prompt: str = "broomva/arcan",
@@ -52,7 +54,6 @@ class ArcanAgent:
         context: list = [],  # represents the chat history, can be pulled from a db
         user_id: str = None,
         verbose: bool = False,
-        database: SQLDatabase = SQLDatabase.from_uri(os.environ.get("SQLALCHEMY_URL")),
     ):
         self.llm: LLM = llm
         self.tools: list = tools
@@ -223,6 +224,7 @@ class ArcanSpellsAgent(ArcanAgent):
 
     def __init__(
         self,
+        # database: SQLDatabase,
         llm: LLM = LLM().llm,
         tools: list = spells,
         prompt: str = spells_agent_prompt,
@@ -230,7 +232,6 @@ class ArcanSpellsAgent(ArcanAgent):
         context: list = [],  # represents the chat history, can be pulled from a db
         user_id: str = None,
         verbose: bool = False,
-        database: SQLDatabase = SQLDatabase.from_uri(os.environ.get("SQLALCHEMY_URL")),
     ):
         self.llm: LLM = llm
         self.tools: list = tools
@@ -238,11 +239,11 @@ class ArcanSpellsAgent(ArcanAgent):
         self.chat_history: list = context
         self.user_id: str = user_id
         self.verbose: bool = verbose
-        self.database = database
-        self.toolkit = SQLDatabaseToolkit(db=database, llm=self.llm)
-        self.context = self.toolkit.get_context()
+        # self.database = database
+        # self.toolkit = SQLDatabaseToolkit(db=database, llm=self.llm)
+        # self.context = self.toolkit.get_context()
+        # self.sql_tools = self.toolkit.get_tools()
         self.prompt = prompt  # arcan_prompt.partial(**self.context)
-        self.sql_tools = self.toolkit.get_tools()
         self.working_directory = TemporaryDirectory()
         self.file_system_tools = FileManagementToolkit(
             root_dir=str(self.working_directory.name)

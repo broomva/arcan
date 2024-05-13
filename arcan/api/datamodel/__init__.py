@@ -4,15 +4,19 @@ from contextlib import contextmanager
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
 
 # %%
 
-engine = create_engine(
-    "postgresql://postgres.vkugdscspjbjgquljqle:ARCAN.broomva2024@aws-0-us-east-1.pooler.supabase.com:5432/postgres?client_encoding=utf8"
-)  # os.environ.get("SQLALCHEMY_URL"))
+
+DATABASE_URL = str(os.environ.get("SQLALCHEMY_URL"))
+print(DATABASE_URL)
+assert DATABASE_URL is not None, "SQLALCHEMY_URL environment variable not found"
+
+engine = create_engine(DATABASE_URL) # Oddly requires the hard coded string or else fails to connect
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 

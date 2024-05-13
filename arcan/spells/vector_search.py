@@ -1,16 +1,29 @@
+#%%
 import os
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
-from langchain.document_loaders import DataFrameLoader, UnstructuredMarkdownLoader
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from langchain.document_loaders import (DataFrameLoader,
+                                        UnstructuredMarkdownLoader)
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS, Chroma
+from langchain.vectorstores import FAISS, Chroma, VectorStore
 from langchain_community.document_loaders import TextLoader
 from langchain_community.document_loaders.base import BaseLoader
 from langchain_community.vectorstores import SupabaseVectorStore
+from langchain_community.vectorstores.chroma import Chroma
+from langchain_core.documents import Document
+from langchain_core.runnables import (ConfigurableField, RunnableConfig,
+                                      RunnableSerializable)
+from langchain_core.vectorstores import VectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import CharacterTextSplitter
+from langserve import add_routes
+from langserve.pydantic_v1 import BaseModel
 from supabase.client import Client, create_client
+from typing_extensions import Annotated
 
 embeddings = OpenAIEmbeddings()
 
@@ -150,7 +163,7 @@ class pgVectorStore:
         self.query_name = query_name
         self.vector_store = self.get_vector_store()
 
-    def get_vector_store(self):
+    def get_vector_store(self) -> VectorStore:
         return SupabaseVectorStore(
             embedding=self.embeddings,
             client=self.supabase,
@@ -188,3 +201,68 @@ class pgVectorStore:
 # vec = VectorStore()
 # loader = firecrawl_loader('https://python.langchain.com/v0.1/docs/integrations/vectorstores/supabase/')
 # vec.write(loader)
+
+
+
+class PerUserVectorstore(RunnableSerializable):
+    """A custom runnable that returns a list of documents for the given user.
+
+    The runnable is configurable by the user, and the search results are
+    filtered by the user ID.
+    """
+
+    user_id: Optional[str]
+    vectorstore: VectorStore
+
+    class Config:
+        # Allow arbitrary types since VectorStore is an abstract interface
+        # and not a pydantic model
+        arbitrary_types_allowed = True
+
+    def _invoke(
+        self, input: str, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> List[Document]:
+        """Invoke the retriever."""
+        # WARNING: Verify documentation of underlying vectorstore to make
+        # sure that it actually uses filters.
+        # Highly recommended to use unit-tests to verify this behavior, as
+        # implementations can be different depending on the underlying vectorstore.
+        # retriever = self.vectorstore.as_retriever(
+        #     search_kwargs={"filter": {"owner_id": self.user_id}}
+        # )
+        # return retriever.invoke(input, config=config)
+        matched_docs = self.vector_store.similarity_search(input)
+        return matched_docs[0].page_content
+
+    def invoke(
+        self, input: str, config: Optional[RunnableConfig] = None, **kwargs
+    ) -> List[Document]:
+        """Add one to an integer."""
+        return self._call_with_config(self._invoke, input, config, **kwargs)
+
+
+async def per_req_config_modifier(config: Dict, request: Request) -> Dict:
+    from arcan.api import get_current_active_user_from_request
+    """Modify the config for each request."""
+    user = await get_current_active_user_from_request(request)
+    config["configurable"] = {}
+    # Attention: Make sure that the user ID is over-ridden for each request.
+    # We should not be accepting a user ID from the user in this case!
+    config["configurable"]["user_id"] = user.username
+    return config
+
+def get_per_user_retriever(vectorstore: VectorStore, user_id: str = None):
+    per_user_retriever = PerUserVectorstore(
+        user_id=user_id,
+        vectorstore=vectorstore,
+    ).configurable_fields(
+        # Attention: Make sure to override the user ID for each request in the
+        # per_req_config_modifier. This should not be client configurable.
+        user_id=ConfigurableField(
+            id="user_id",
+            name="User ID",
+            description="The user ID to use for the retriever.",
+        )
+    )
+    return per_user_retriever
+# %%

@@ -32,5 +32,5 @@ package_build:
 package_list:
 	unzip -l dist/*.whl  
 
-server:
-	poetry run uvicorn arcan.api:app --port 8000 --host 0.0.0.0
+serve:
+	poetry run uvicorn arcan.api:app --port 8000 --host 0.0.0.0 --reload
