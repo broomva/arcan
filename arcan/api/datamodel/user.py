@@ -1,4 +1,4 @@
-#%%
+# %%
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -8,8 +8,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
-                        Text)
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Session, relationship
 
 from arcan.api.datamodel import Base, engine
@@ -18,9 +17,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-#%%
+# %%
 Base.metadata.create_all(engine)
-#%%
+# %%
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -31,7 +30,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 class User(Base):
     __tablename__ = "user"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
     username = Column(String, primary_key=True, index=True)
     email = Column(String, nullable=True)
     full_name = Column(String)
@@ -43,8 +42,12 @@ class User(Base):
 
 class Token(Base):
     __tablename__ = "token"
-    __table_args__ = {'extend_existing': True}
-    id = Column(Integer, primary_key=True, index=True,)
+    __table_args__ = {"extend_existing": True}
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
     access_token = Column(String)
     token_type = Column(String)
     user_id = Column(String, ForeignKey("user.username"))
@@ -52,7 +55,8 @@ class Token(Base):
 
 
 User.tokens = relationship("Token", order_by=Token.id, back_populates="user")
-#%%
+# %%
+
 
 class UserModel(BaseModel):
     username: str
@@ -62,6 +66,7 @@ class UserModel(BaseModel):
     disabled: bool | None = None
     created_at: datetime | None = None
     hashed_password: str
+
 
 class TokenModel(BaseModel):
     id: int
@@ -181,5 +186,6 @@ class UserService:
         if current_user.disabled:
             raise HTTPException(status_code=400, detail="Inactive user")
         return current_user
+
 
 # %%

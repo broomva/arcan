@@ -16,7 +16,9 @@ DATABASE_URL = str(os.environ.get("SQLALCHEMY_URL"))
 print(DATABASE_URL)
 assert DATABASE_URL is not None, "SQLALCHEMY_URL environment variable not found"
 
-engine = create_engine(DATABASE_URL) # Oddly requires the hard coded string or else fails to connect
+engine = create_engine(
+    DATABASE_URL
+)  # Oddly requires the hard coded string or else fails to connect
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 

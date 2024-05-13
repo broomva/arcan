@@ -4,20 +4,19 @@ import os
 from tempfile import TemporaryDirectory
 
 from fastapi.responses import StreamingResponse
-from langchain.agents import (AgentExecutor, create_tool_calling_agent,
-                              load_tools)
-from langchain.agents.format_scratchpad.openai_tools import \
-    format_to_openai_tool_messages
-from langchain.agents.output_parsers.openai_tools import \
-    OpenAIToolsAgentOutputParser
+from langchain.agents import AgentExecutor, create_tool_calling_agent, load_tools
+from langchain.agents.format_scratchpad.openai_tools import (
+    format_to_openai_tool_messages,
+)
+from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
 from langchain.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import (FileManagementToolkit,
-                                                SQLDatabaseToolkit)
+from langchain_community.agent_toolkits import FileManagementToolkit, SQLDatabaseToolkit
 from langchain_core.messages import AIMessage, HumanMessage
 
 from arcan.ai.agents.helpers import AsyncIteratorCallbackHandler
 from arcan.ai.llm import LLM
 from arcan.ai.prompts import arcan_prompt, spells_agent_prompt
+
 # from arcan.ai.router import semantic_layer
 from arcan.ai.tools import tools as spells
 

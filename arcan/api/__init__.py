@@ -20,13 +20,23 @@ from arcan.ai.llm import LLM
 from arcan.api.datamodel import get_db, get_db_context
 from arcan.api.datamodel.chat_history import ChatHistory
 from arcan.api.datamodel.conversation import Conversation
-from arcan.api.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
-                                      User, UserInDB, UserModel,
-                                      UserRepository, UserService,
-                                      oauth2_scheme, pwd_context)
+from arcan.api.datamodel.user import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    TokenModel,
+    User,
+    UserInDB,
+    UserModel,
+    UserRepository,
+    UserService,
+    oauth2_scheme,
+    pwd_context,
+)
 from arcan.api.session import ArcanSession, run_agent
-from arcan.spells.vector_search import (get_per_user_retriever,
-                                        per_req_config_modifier, pgVectorStore)
+from arcan.spells.vector_search import (
+    get_per_user_retriever,
+    per_req_config_modifier,
+    pgVectorStore,
+)
 
 # %%
 # from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -117,7 +127,8 @@ add_routes(
 
 @app.post("/token")
 async def login_for_access_token(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()], session: Session = Depends(get_db)
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    session: Session = Depends(get_db),
 ) -> TokenModel:
     user_repo = UserRepository(session)
     user_interface = UserService(user_repository=user_repo, pwd_context=pwd_context)
@@ -133,14 +144,17 @@ async def login_for_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
     return TokenModel(
-        id = 1,
-        access_token = access_token,
-        token_type = "bearer",
-        user_id = user.username,
-        user = user)
+        id=1,
+        access_token=access_token,
+        token_type="bearer",
+        user_id=user.username,
+        user=user,
+    )
 
 
-async def get_current_active_user_from_request(request: Request, session: Session = Depends(get_db)) -> UserModel:
+async def get_current_active_user_from_request(
+    request: Request, session: Session = Depends(get_db)
+) -> UserModel:
     """Get the current active user from the request."""
     user_repo = UserRepository(session)
     user_interface = UserService(user_repository=user_repo, pwd_context=pwd_context)
@@ -156,11 +170,13 @@ async def get_current_active_user_from_request(request: Request, session: Sessio
         raise HTTPException(status_code=400, detail="Inactive user")
     return user
 
+
 @app.get("/users/me/", response_model=UserModel)
 async def read_users_me(
     current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
 ):
     return current_user
+
 
 add_routes(
     app,
@@ -169,7 +185,7 @@ add_routes(
     enabled_endpoints=["invoke"],
 )
 
-#%%
+# %%
 
 if __name__ == "__main__":
     import uvicorn
