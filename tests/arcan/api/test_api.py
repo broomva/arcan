@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy.orm import Session
 
 from arcan.api import app  # Adjust this import based on your project structure
-from arcan.api.datamodel import get_db
+from arcan.api.datamodel.engine import session_scope
 from arcan.api.session import ArcanSession
 
 
@@ -30,11 +30,11 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.mark.asyncio
-@patch("arcan.api.datamodel.get_db")  # Correct the import path as necessary
-async def test_chat(mock_get_db):
+@patch("arcan.api.datamodel.engine")  # Correct the import path as necessary
+async def test_chat(mock_session_scope):
     # Create a mock session
     mock_session = MagicMock()
-    mock_get_db.return_value = mock_session
+    mock_session_scope.return_value = mock_session
 
     # Mock specific behaviors, e.g., query handling
     # mock_session.query.return_value.filter.return_value.one.return_value = YourUserModel(id="1", name="Test User")

@@ -1,6 +1,9 @@
 # %%
+from langchain.agents import AgentExecutor
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
+from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langserve import RemoteRunnable
 
 
@@ -22,14 +25,17 @@ class RunnableFactory:
 class ArcanRunnables:
     def __init__(self, base_url: str = "http://localhost:8000/"):
         self.factory = RunnableFactory(base_url=base_url)
+        
+    def get_spells_runnable(self) -> AgentExecutor:
+        return self.factory.get_runnable(runnable_name="spells")
 
-    def get_chat_spells_agent_runnable(self):
+    def get_chat_spells_agent_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="spells_agent")
 
-    def get_openai_runnable(self):
+    def get_openai_runnable(self) -> ChatOpenAI:
         return self.factory.get_runnable(runnable_name="openai")
 
-    def get_groq_runnable(self):
+    def get_groq_runnable(self) -> ChatGroq:
         return self.factory.get_runnable(runnable_name="groq")
 
 
@@ -44,9 +50,9 @@ class ArcanRunnables:
 # openai_runnable = arcan_runnables.get_openai_runnable()
 # groq_runnable = arcan_runnables.get_groq_runnable()
 
-
+# #%%
 # prompt = ChatPromptTemplate.from_messages(
-#     [("system", "Tell me a long story about {topic}")]
+#     [("system", "Tell soemthing quick and interesting about {topic}")]
 # )
 
 # # Can define custom chains
@@ -54,9 +60,14 @@ class ArcanRunnables:
 #     "openai": openai_runnable,
 #     "groq": groq_runnable,
 # })
-# # %%
-
 # chain.batch([{"topic": "parrots"}, {"topic": "cats"}])
 
 
-# %%
+# # %%
+
+# # %%
+
+# chat_spells_agent.invoke({'input': 'hi', 'chat_history': []})
+
+
+# # %%

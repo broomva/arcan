@@ -3,6 +3,7 @@
 import os
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from langchain_community.chat_models import ChatOllama
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI, OpenAI
 from pydantic import BaseModel
@@ -69,6 +70,9 @@ class LLMFactory:
                 os.getenv("TOGETHER_MODEL_NAME", "llama3-8b-8192"),
             ),
         ),
+        'ChatOllama' : lambda **kwargs: ChatOllama(
+            model = kwargs.get("model", os.getenv("OLLAMA_MODEL", "phi3")),
+        )
     }
 
     @staticmethod

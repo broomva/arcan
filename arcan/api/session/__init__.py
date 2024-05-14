@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from arcan.ai.agents import ArcanAgent, ArcanSpellsAgent
+from arcan.ai.agents import ArcanAgent
 from arcan.api.datamodel.chat_history import ChatHistory
 from arcan.api.datamodel.conversation import Conversation
 
@@ -50,14 +50,14 @@ class ArcanSession:
                 print(f"Using existing agent {agent}")
             elif agent is None and chat_history:
                 print(f"Using reloaded agent with history {chat_history}")
-                agent = ArcanSpellsAgent(
+                agent = ArcanAgent(
                     context=chat_history,
                     user_id=user_id,
-                    # database=SQLDatabase.from_uri(self.database_uri)
+                    # database=SQLDatabase.from_uri(self.database_uri) # database tool model
                 )  # Initialize with chat history
             elif agent is None and not chat_history:
                 print("Using a new agent")
-                agent = ArcanSpellsAgent(
+                agent = ArcanAgent(
                     user_id=user_id,
                 )
                 #   database=SQLDatabase.from_uri(self.database_uri))  # Initialize without chat history
