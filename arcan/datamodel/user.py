@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Session, relationship
 
-from arcan.api.datamodel import Base, engine
+from arcan.datamodel.engine import Base, engine
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -23,7 +23,7 @@ Base.metadata.create_all(engine)
 
 # to get a string like this run:
 # openssl rand -hex 32
-SECRET_KEY = os.environ.get("ARCAN_API_KEY")
+SECRET_KEY = os.environ.get("ARCANAI_API_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
