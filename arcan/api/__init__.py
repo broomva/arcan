@@ -31,20 +31,16 @@ from typing_extensions import Annotated, TypedDict
 
 from arcan.ai.agents import ArcanAgent
 from arcan.ai.llm import LLM
+from arcan.api.auth import fetch_session_from_header
 from arcan.datamodel.engine import session_scope  # , session_scope_context
 from arcan.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
                                   UserModel, UserRepository, UserService,
                                   oauth2_scheme, pwd_context)
 
+# from arcan.spells.vector_search import (get_per_user_retriever,
+#                                         per_req_config_modifier, pgVectorStore)
+
 #%%
-
-
-
-
-
-# Define the minimum required version as (0, 1, 0)
-# Earlier versions did not allow specifying custom config fields in
-# RunnableWithMessageHistory.
 MIN_VERSION_LANGCHAIN_CORE = (0, 1, 0)
 
 # Split the version string by "." and convert to integers
@@ -57,18 +53,13 @@ if LANGCHAIN_CORE_VERSION < MIN_VERSION_LANGCHAIN_CORE:
     )
 
 
-# from arcan.api.session.auth import requires_auth
-# from arcan.spells.vector_search import (get_per_user_retriever,
-#                                         per_req_config_modifier, pgVectorStore)
-
 #%%
 auth_scheme = HTTPBearer()
 
 load_dotenv()
 
 ENVIRONMENT = os.environ.get("ENVIRONMENT")
-ARCAN_API_TOKEN = os.environ.get("ARCAN_API_TOKEN")
-
+ARCANAI_API_TOKEN = os.environ.get("ARCANAI_API_TOKEN")
 
 app = FastAPI()
 
@@ -115,107 +106,6 @@ async def chat(
     return {"response": response}
 
 
-# # %%
-# class Input(BaseModel):
-#     input: str
-#     chat_history: List[Union[HumanMessage, AIMessage, FunctionMessage]] = Field(
-#         ...,
-#         extra={"widget": {"type": "chat", "input": "input", "output": "output"}},
-#     )
-
-
-# class Output(BaseModel):
-#     output: Any
-
-
-# add_routes(
-#     app=app,
-#     runnable=ArcanSpellsAgent(
-#         # database=SQLDatabase.from_uri(os.environ.get("SQLALCHEMY_URL"))
-#     )
-#     .agent_executor.with_types(input_type=Input, output_type=Output)
-#     .with_config({"run_name": "agent"}),
-#     path="/spells_agent",
-#     enable_feedback_endpoint=True,
-# )
-
-
-
-
-
-
-
-
-
-
-def _is_valid_identifier(value: str) -> bool:
-    """Check if the value is a valid identifier."""
-    # Use a regular expression to match the allowed characters
-    valid_characters = re.compile(r"^[a-zA-Z0-9-_]+$")
-    return bool(valid_characters.match(value))
-
-
-def fetch_session_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
-    # if "arcanai_api_key" in req.headers:
-        # config["configurable"]["arcanai_api_key"] = req.headers["arcanai_api_key"]
-    # beare token validation
-    # print(config)
-    # config = config.copy()
-    # configurable = config.get("configurable", {})
-    if "arcanai_api_key" in req.headers:
-        # config["configurable"]["user_id"] = req.headers["user_id"]
-        #config['configurable']['user_id'] = req.headers["user_id"]
-        if "user_id" in req.headers:
-            config["configurable"]["user_id"] = req.headers["user_id"]
-            # config['configurable'] = {"user_id":req.headers["user_id"]}
-            # config = req.headers["user_id"]
-            # configurable["user_id"] = req.headers["user_id"]
-            # config["configurable"] = configurable
-            # config['configurable']['user_id'] = req.headers["user_id"]
-        # print(config)
-    else:
-        raise HTTPException(401, "No Arcan AI API key provided")
-    
-    # validate the hash of the user_id against the arcana_api_key
-    # async def verify_token(x_token: Annotated[str, Header()]) -> None:
-#     """Verify the token is valid."""
-#     # Replace this with your actual authentication logic
-#     if x_token != ARCAN_API_TOKEN:
-#         raise HTTPException(status_code=400, detail="X-Token header invalid")
-
-    return config
-
-def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
-    if "x-api-key" in req.headers:
-        config["configurable"]["openai_api_key"] = req.headers["x-api-key"]
-        if "user_id" in req.headers:
-            config["configurable"]["user_id"] = req.headers["user_id"]
-        else:
-            raise HTTPException(401, "No User ID provided")
-    else:
-        raise HTTPException(401, "No API key provided")
-
-    return config
-
-dynamic_auth_model = ChatOpenAI(model='gpt-4o').configurable_fields(
-    openai_api_key=ConfigurableField(
-        id="openai_api_key",
-        name="OpenAI API Key",
-        description=("API Key for OpenAI interactions"),
-    ),
-)
-
-
-dynamic_auth_chain = dynamic_auth_model | StrOutputParser()
-
-add_routes(
-    app,
-    dynamic_auth_chain,
-    path="/gpt4o",
-    per_req_config_modifier=fetch_api_key_from_header,
-)
-
-
 class Input(BaseModel):
     input: str
 
@@ -231,8 +121,6 @@ dynamic_spells_model = ArcanAgent().configurable_fields(
         description=("user_id Key for Arcan AI interactions"),
     )).with_types(input_type=Input, output_type=Output)
 
-
-
 add_routes(
     app=app,
     runnable=dynamic_spells_model,
@@ -244,25 +132,28 @@ add_routes(
     app,
     LLM(provider="ChatOpenAI").llm,
     path="/openai",
-    # per_req_config_modifier=fetch_api_key_from_header,
+    per_req_config_modifier=fetch_session_from_header,
 )
+
 
 add_routes(
     app,
     LLM(provider="ChatGroq").llm,
-    # per_req_config_modifier=per_req_config_modifier,
+    per_req_config_modifier=fetch_session_from_header,
     path="/groq",
 )
 
 add_routes(
     app,
     LLM(provider="ChatTogetherAI").llm,
+    per_req_config_modifier=fetch_session_from_header,
     path="/together",
 )
 
 add_routes(
     app,
     runnable=LLM(provider="ChatOllama").llm,
+    per_req_config_modifier=fetch_session_from_header,
     path="/ollama",
 )
 
@@ -313,11 +204,11 @@ async def get_current_active_user_from_request(
     return user
 
 
-@app.get("/users/me/", response_model=UserModel)
-async def read_users_me(
-    current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
-):
-    return current_user
+# @app.get("/users/me/", response_model=UserModel)
+# async def read_users_me(
+#     current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
+# ):
+#     return current_user
 
 
 # add_routes(
