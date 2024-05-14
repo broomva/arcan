@@ -8,43 +8,60 @@ import os
 import pickle
 import weakref
 from datetime import datetime
+
 # Ensure necessary imports for ArcanAgent
 from tempfile import TemporaryDirectory
 from typing import Any, AsyncIterator, Dict, List, Optional, cast
 
 from fastapi import Depends
 from fastapi.responses import StreamingResponse
-from langchain.agents import (AgentExecutor, AgentType,
-                              create_tool_calling_agent, initialize_agent,
-                              load_tools)
+from langchain.agents import (
+    AgentExecutor,
+    AgentType,
+    create_tool_calling_agent,
+    initialize_agent,
+    load_tools,
+)
 from langchain.agents.agent_types import AgentType
-from langchain.agents.format_scratchpad.openai_tools import \
-    format_to_openai_tool_messages
+from langchain.agents.format_scratchpad.openai_tools import (
+    format_to_openai_tool_messages,
+)
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.memory import ConversationBufferMemory
 from langchain.pydantic_v1 import BaseModel
 from langchain.sql_database import SQLDatabase
-from langchain_community.agent_toolkits import (FileManagementToolkit,
-                                                SQLDatabaseToolkit)
+from langchain_community.agent_toolkits import FileManagementToolkit, SQLDatabaseToolkit
 from langchain_core.callbacks import CallbackManagerForChainRun
-from langchain_core.load.serializable import (Serializable,
-                                              SerializedConstructor,
-                                              SerializedNotImplemented)
+from langchain_core.load.serializable import (
+    Serializable,
+    SerializedConstructor,
+    SerializedNotImplemented,
+)
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
+
 # from langchain_core.pydantic_v1 import BaseModel
-from langchain_core.runnables import (ConfigurableField, ConfigurableFieldSpec,
-                                      Runnable, RunnableConfig,
-                                      RunnablePassthrough,
-                                      RunnableSerializable)
+from langchain_core.runnables import (
+    ConfigurableField,
+    ConfigurableFieldSpec,
+    Runnable,
+    RunnableConfig,
+    RunnablePassthrough,
+    RunnableSerializable,
+)
 from langchain_core.runnables.base import Runnable, RunnableBindingBase
-from langchain_core.runnables.utils import (AddableDict, AnyConfigurableField,
-                                            ConfigurableField,
-                                            ConfigurableFieldSpec, Input,
-                                            Output, create_model,
-                                            get_unique_config_specs)
+from langchain_core.runnables.utils import (
+    AddableDict,
+    AnyConfigurableField,
+    ConfigurableField,
+    ConfigurableFieldSpec,
+    Input,
+    Output,
+    create_model,
+    get_unique_config_specs,
+)
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
 from sqlalchemy.dialects.postgresql import insert
@@ -56,8 +73,10 @@ from arcan.ai.agents.session import ArcanSession
 from arcan.ai.llm import LLM
 from arcan.ai.parser import ArcanOutputParser
 from arcan.ai.prompts import arcan_prompt, spells_agent_prompt
+
 # from arcan.ai.router import semantic_layer
 from arcan.ai.tools import tools as spells
+
 # from arcan.api.session import ArcanSession
 # from arcan.ai.agents import ArcanAgent
 from arcan.datamodel.chat_history import ChatHistory
@@ -73,7 +92,7 @@ class ArcanAgent(RunnableSerializable):
     chat_history: List = Field(default_factory=list)
     user_id: Optional[str] = None
     verbose: bool = False
-    prompt: ChatPromptTemplate = spells_agent_prompt,
+    prompt: ChatPromptTemplate = (spells_agent_prompt,)
     configs: List[ConfigurableFieldSpec] = Field(default_factory=list)
     llm_with_tools: LLM = Field(default_factory=lambda: LLM().llm)
     agent: Runnable = Field(default_factory=RunnablePassthrough)
@@ -82,22 +101,38 @@ class ArcanAgent(RunnableSerializable):
 
     class Config:
         arbitrary_types_allowed = True
-        extra = 'allow'  # This allows additional fields not explicitly defined
+        extra = "allow"  # This allows additional fields not explicitly defined
 
-    def __init__(self, llm=None, tools: list = spells, prompt: ChatPromptTemplate = spells_agent_prompt,
-                 agent_type="arcan_spells_agent", chat_history: list = [],
-                 user_id: str = None, verbose: bool = False, configs: list = [],
-                 **kwargs):
-        super().__init__(tools=tools, agent_type=agent_type, chat_history=chat_history,
-                         user_id=user_id, verbose=verbose, prompt=prompt, configs=configs, **kwargs)
-        object.__setattr__(self, '_llm', llm or LLM().llm)
+    def __init__(
+        self,
+        llm=None,
+        tools: list = spells,
+        prompt: ChatPromptTemplate = spells_agent_prompt,
+        agent_type="arcan_spells_agent",
+        chat_history: list = [],
+        user_id: str = None,
+        verbose: bool = False,
+        configs: list = [],
+        **kwargs,
+    ):
+        super().__init__(
+            tools=tools,
+            agent_type=agent_type,
+            chat_history=chat_history,
+            user_id=user_id,
+            verbose=verbose,
+            prompt=prompt,
+            configs=configs,
+            **kwargs,
+        )
+        object.__setattr__(self, "_llm", llm or LLM().llm)
         # Initialize other fields after the main Pydantic initialization
         self.session: ArcanSession = ArcanSession()
         self.bare_tools = load_tools(["llm-math"], llm=self.llm)
         self.agent_tools = self.tools + self.bare_tools
         self.llm_with_tools = self.llm.bind_tools(self.agent_tools)
         self.agent, self.runnable = self.get_or_create_agent(self.user_id)
-        
+
     @property
     def llm(self):
         return self._llm
@@ -238,8 +273,12 @@ class ArcanAgent(RunnableSerializable):
             ]
         )
         try:
-            self.session.store_message(user_id=self.user_id, body=user_content, response=response['output'])
-            self.session.store_chat_history(user_id=self.user_id, agent_history=self.chat_history)
+            self.session.store_message(
+                user_id=self.user_id, body=user_content, response=response["output"]
+            )
+            self.session.store_chat_history(
+                user_id=self.user_id, agent_history=self.chat_history
+            )
         except SQLAlchemyError as e:
             self.session.database.rollback()
             print(f"Error storing conversation in database: {e}")

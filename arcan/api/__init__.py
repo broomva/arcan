@@ -6,13 +6,17 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
-from fastapi import (Depends, FastAPI, Form, Header, HTTPException, Request,
-                     status)
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+
 # %%
-from fastapi.security import (HTTPAuthorizationCredentials, HTTPBearer,
-                              OAuth2PasswordBearer, OAuth2PasswordRequestForm)
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+)
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core import __version__
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -33,14 +37,20 @@ from arcan.ai.agents import ArcanAgent
 from arcan.ai.llm import LLM
 from arcan.api.auth import fetch_session_from_header
 from arcan.datamodel.engine import session_scope  # , session_scope_context
-from arcan.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
-                                  UserModel, UserRepository, UserService,
-                                  oauth2_scheme, pwd_context)
+from arcan.datamodel.user import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    TokenModel,
+    UserModel,
+    UserRepository,
+    UserService,
+    oauth2_scheme,
+    pwd_context,
+)
 
 # from arcan.spells.vector_search import (get_per_user_retriever,
 #                                         per_req_config_modifier, pgVectorStore)
 
-#%%
+# %%
 MIN_VERSION_LANGCHAIN_CORE = (0, 1, 0)
 
 # Split the version string by "." and convert to integers
@@ -53,7 +63,7 @@ if LANGCHAIN_CORE_VERSION < MIN_VERSION_LANGCHAIN_CORE:
     )
 
 
-#%%
+# %%
 auth_scheme = HTTPBearer()
 
 load_dotenv()
@@ -97,12 +107,12 @@ async def chat(
         # from arcan.api.session import ArcanSession, run_agent
         agent = ArcanAgent(user_id=user_id)
         # user = await get_current_active_user_from_request(request=Request)
-        response = agent.invoke({'input':query})
+        response = agent.invoke({"input": query})
     elif ENVIRONMENT == "local":
         agent = ArcanAgent(
-                    user_id=user_id,
-                )
-        response = agent.invoke({'input': query, 'chat_history': []})
+            user_id=user_id,
+        )
+        response = agent.invoke({"input": query, "chat_history": []})
     return {"response": response}
 
 
@@ -114,12 +124,17 @@ class Output(BaseModel):
     output: Any
 
 
-dynamic_spells_model = ArcanAgent().configurable_fields(
-    user_id=ConfigurableField(
-        id="user_id",
-        name="Arcan AI User ID",
-        description=("user_id Key for Arcan AI interactions"),
-    )).with_types(input_type=Input, output_type=Output)
+dynamic_spells_model = (
+    ArcanAgent()
+    .configurable_fields(
+        user_id=ConfigurableField(
+            id="user_id",
+            name="Arcan AI User ID",
+            description=("user_id Key for Arcan AI interactions"),
+        )
+    )
+    .with_types(input_type=Input, output_type=Output)
+)
 
 add_routes(
     app=app,
@@ -200,7 +215,7 @@ async def get_current_active_user_from_request(
             headers={"WWW-Authenticate": "Bearer"},
         )
     # if user.disabled:
-        # raise HTTPException(status_code=400, detail="Inactive user")
+    # raise HTTPException(status_code=400, detail="Inactive user")
     return user
 
 
@@ -262,7 +277,6 @@ async def get_current_active_user_from_request(
 #         return FileChatMessageHistory(str(file_path))
 
 #     return get_chat_history
-
 
 
 # def _per_request_config_modifier(
@@ -330,8 +344,6 @@ async def get_current_active_user_from_request(
 # ).with_types(input_type=InputChat)
 
 
-
-
 # add_routes(
 #     app,
 #     chain_with_history,
@@ -348,7 +360,6 @@ async def get_current_active_user_from_request(
 # )
 
 
-
 # def _per_request_session_modifier(
 #     config: Dict[str, Any], request: Request
 # ) -> Dict[str, Any]:
@@ -363,7 +374,7 @@ async def get_current_active_user_from_request(
 #             status_code=400,
 #             detail="No user id found. Please set a cookie named 'user_id'.",
 #         )
-    
+
 #     agent = ArcanAgent(user_id=user_id)
 
 #     configurable["user_id"] = user_id
@@ -385,7 +396,7 @@ async def get_current_active_user_from_request(
 #     disabled_endpoints=["playground", "batch"],
 # )
 
-#%%
+# %%
 
 if __name__ == "__main__":
     import uvicorn

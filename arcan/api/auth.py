@@ -19,7 +19,7 @@ from fastapi import HTTPException, Request
 def fetch_session_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
     config = config.copy()
     configurable = config.get("configurable", {})
-    
+
     if "arcanai_api_key" in req.headers:
         if "user_id" in req.headers:
             configurable["user_id"] = req.headers["user_id"]
@@ -29,8 +29,6 @@ def fetch_session_from_header(config: Dict[str, Any], req: Request) -> Dict[str,
     else:
         raise HTTPException(401, "No Arcan AI API key provided")
     return config
-
-
 
 
 def _is_valid_identifier(value: str) -> bool:

@@ -24,7 +24,7 @@ class RunnableFactory:
 class ArcanRunnables:
     def __init__(self, base_url: str = "http://localhost:8000/"):
         self.factory = RunnableFactory(base_url=base_url)
-        
+
     def get_spells_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="spells")
 
@@ -39,9 +39,9 @@ class ArcanRunnables:
 
     def get_auth_spells_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="auth_spells")
-    
+
     def get_chain_with_history_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="chain_with_history")
 
 
-#%%
+# %%

@@ -68,7 +68,7 @@ class RouteManager:
             return route_text, query
         else:
             print(f"No route found for query: {query}")
-        return 'No Router Matched', query
+        return "No Router Matched", query
 
 
 # Initialize RouteManager with an encoder

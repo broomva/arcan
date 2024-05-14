@@ -70,9 +70,9 @@ class LLMFactory:
                 os.getenv("TOGETHER_MODEL_NAME", "llama3-8b-8192"),
             ),
         ),
-        'ChatOllama' : lambda **kwargs: ChatOllama(
-            model = kwargs.get("model", os.getenv("OLLAMA_MODEL", "phi3")),
-        )
+        "ChatOllama": lambda **kwargs: ChatOllama(
+            model=kwargs.get("model", os.getenv("OLLAMA_MODEL", "phi3")),
+        ),
     }
 
     @staticmethod
