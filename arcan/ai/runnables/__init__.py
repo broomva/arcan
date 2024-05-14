@@ -1,6 +1,5 @@
 # %%
 from langchain.agents import AgentExecutor
-from langchain.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
@@ -12,7 +11,7 @@ class RunnableFactory:
         self.base_url = base_url
         self.runnable_cache = {}
 
-    def get_runnable(self, runnable_name: str, cache: bool = True) -> Runnable:
+    def get_runnable(self, runnable_name: str, cache: bool = True) -> RemoteRunnable:
         if cache and runnable_name in self.runnable_cache:
             return self.runnable_cache[runnable_name]
 
@@ -38,46 +37,11 @@ class ArcanRunnables:
     def get_ollama_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="ollama")
 
+    def get_auth_spells_runnable(self) -> AgentExecutor:
+        return self.factory.get_runnable(runnable_name="auth_spells")
+    
+    def get_chain_with_history_runnable(self) -> AgentExecutor:
+        return self.factory.get_runnable(runnable_name="chain_with_history")
+
 
 #%%
-
-
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.schema.runnable import RunnableMap
-
-arcan_runnables = ArcanRunnables(base_url="http://localhost:8000/")
-spells_runnable = arcan_runnables.get_spells_runnable()
-spells_runnable.invoke({'input': 'hi'})
-
-# openai_runnable = arcan_runnables.get_openai_runnable()
-# groq_runnable = arcan_runnables.get_groq_runnable()
-
-# ollama_runnable = arcan_runnables.get_ollama_runnable()
-
-#%%
-# prompt = ChatPromptTemplate.from_messages(
-#     [("system", "Tell soemthing quick and interesting about {topic}")]
-# )
-
-# # Can define custom chains
-# chain = prompt | RunnableMap({
-#     "openai": openai_runnable,
-#     "groq": groq_runnable,
-# })
-# chain.batch([{"topic": "parrots"}, {"topic": "cats"}])
-
-
-# %%
-
-# %%
-
-
-
-
-# %%
-
-# %%
-
-# ollama_runnable.invoke('hi')
-
-# %%
