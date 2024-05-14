@@ -3,6 +3,7 @@ from contextlib import contextmanager
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
@@ -36,8 +37,10 @@ class EngineFactory:
         return create_engine(Config.DATABASE_URL)
 
 factory = EngineFactory()
+engine = factory.get_engine()
 
-SessionLocal = sessionmaker(bind=factory.get_engine())
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
 
 @contextmanager
 def session_scope():
@@ -51,3 +54,30 @@ def session_scope():
         raise
     finally:
         session.close()
+
+
+# def get_db():
+#     """
+#     Returns a database session.
+
+#     Yields:
+#         SessionLocal: The database session.
+
+#     """
+#     try:
+#         db = SessionLocal()
+#         yield db
+#     finally:
+#         db.close()
+        
+
+# @contextmanager
+# def get_db_context():
+#     """
+#     Context manager wrapper for the get_db generator.
+#     """
+#     try:
+#         db = next(get_db())  # Get the session from the generator
+#         yield db
+#     finally:
+#         db.close()

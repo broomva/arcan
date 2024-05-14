@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import Column, DateTime, Integer, String
 
-from arcan.api.datamodel import Base, engine
+from arcan.datamodel.engine import Base, engine
 
 Base.metadata.create_all(engine)
 

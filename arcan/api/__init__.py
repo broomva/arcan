@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, FunctionMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import ConfigurableField
+from langchain_openai import ChatOpenAI
 from langserve import add_routes
 from langserve.pydantic_v1 import BaseModel, Field
 from pydantic import BaseModel
@@ -22,14 +23,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from typing_extensions import Annotated
 
-#%%
 from arcan.ai.agents import ArcanAgent
 from arcan.ai.llm import LLM
-from arcan.api.datamodel.engine import session_scope  # , session_scope_context
+from arcan.datamodel.engine import session_scope  # , session_scope_context
 
-# from arcan.api.datamodel.chat_history import ChatHistory
-# from arcan.api.datamodel.conversation import Conversation
-# from arcan.api.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
+#%%
+# from arcan.api.session import ArcanSession
+
+# from arcan.datamodel.chat_history import ChatHistory
+# from arcan.datamodel.conversation import Conversation
+# from arcan.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
 #                                       User, UserInDB, UserModel,
 #                                       UserRepository, UserService,
 #                                       oauth2_scheme, pwd_context)
@@ -87,15 +90,15 @@ async def chat(
     db: Session = Depends(session_scope),
 ):
     if ENVIRONMENT == "cloud":
-        from arcan.api.session import ArcanSession, run_agent
-        arcan_session = ArcanSession(db)
+        # from arcan.api.session import ArcanSession, run_agent
+        agent = ArcanAgent(user_id=user_id)
         # user = await get_current_active_user_from_request(request=Request)
-        response = run_agent(session=arcan_session, user_id=user_id, query=query)
+        response = agent.invoke({'input':query})
     elif ENVIRONMENT == "local":
-        agent = ArcanSpellsAgent(
+        agent = ArcanAgent(
                     user_id=user_id,
                 )
-        response = agent.get_response(user_content=query)
+        response = agent.invoke({'input': query, 'chat_history': []})
     return {"response": response}
 
 
@@ -150,6 +153,32 @@ class Output(BaseModel):
 #         description=("user_id Key for Arcan AI interactions"),
 #     ),
 # )
+
+def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
+    if "x-api-key" in req.headers:
+        config["configurable"]["openai_api_key"] = req.headers["x-api-key"]
+    else:
+        raise HTTPException(401, "No API key provided")
+
+    return config
+
+
+dynamic_auth_model = ChatOpenAI(openai_api_key="placeholder").configurable_fields(
+    openai_api_key=ConfigurableField(
+        id="openai_api_key",
+        name="OpenAI API Key",
+        description=("API Key for OpenAI interactions"),
+    ),
+)
+
+dynamic_auth_chain = dynamic_auth_model | StrOutputParser()
+
+add_routes(
+    app,
+    dynamic_auth_chain,
+    path="/auth_from_header",
+    per_req_config_modifier=fetch_api_key_from_header,
+)
 
 add_routes(
     app=app,

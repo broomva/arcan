@@ -29,28 +29,32 @@ class ArcanRunnables:
     def get_spells_runnable(self) -> AgentExecutor:
         return self.factory.get_runnable(runnable_name="spells")
 
-    def get_chat_spells_agent_runnable(self) -> AgentExecutor:
-        return self.factory.get_runnable(runnable_name="spells_agent")
-
     def get_openai_runnable(self) -> ChatOpenAI:
         return self.factory.get_runnable(runnable_name="openai")
 
     def get_groq_runnable(self) -> ChatGroq:
         return self.factory.get_runnable(runnable_name="groq")
 
+    def get_ollama_runnable(self) -> AgentExecutor:
+        return self.factory.get_runnable(runnable_name="ollama")
 
-# %%
+
+#%%
 
 
-# from langchain.schema import HumanMessage, SystemMessage
-# from langchain.schema.runnable import RunnableMap
+from langchain.schema import HumanMessage, SystemMessage
+from langchain.schema.runnable import RunnableMap
 
-# arcan_runnables = ArcanRunnables(base_url="http://localhost:8000/")
-# chat_spells_agent = arcan_runnables.get_chat_spells_agent_runnable()
+arcan_runnables = ArcanRunnables(base_url="http://localhost:8000/")
+spells_runnable = arcan_runnables.get_spells_runnable()
+spells_runnable.invoke({'input': 'hi'})
+
 # openai_runnable = arcan_runnables.get_openai_runnable()
 # groq_runnable = arcan_runnables.get_groq_runnable()
 
-# #%%
+# ollama_runnable = arcan_runnables.get_ollama_runnable()
+
+#%%
 # prompt = ChatPromptTemplate.from_messages(
 #     [("system", "Tell soemthing quick and interesting about {topic}")]
 # )
@@ -63,11 +67,17 @@ class ArcanRunnables:
 # chain.batch([{"topic": "parrots"}, {"topic": "cats"}])
 
 
-# # %%
+# %%
 
-# # %%
-
-# chat_spells_agent.invoke({'input': 'hi', 'chat_history': []})
+# %%
 
 
-# # %%
+
+
+# %%
+
+# %%
+
+# ollama_runnable.invoke('hi')
+
+# %%
