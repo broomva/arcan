@@ -1,5 +1,5 @@
 # %%
-#%%
+# %%
 from __future__ import annotations
 
 import ast
@@ -29,19 +29,24 @@ from langchain.sql_database import SQLDatabase
 from langchain_community.agent_toolkits import (FileManagementToolkit,
                                                 SQLDatabaseToolkit)
 from langchain_core.callbacks import CallbackManagerForChainRun
+from langchain_core.load.serializable import (Serializable,
+                                              SerializedConstructor,
+                                              SerializedNotImplemented)
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 # from langchain_core.pydantic_v1 import BaseModel
 from langchain_core.runnables import (ConfigurableField, ConfigurableFieldSpec,
                                       Runnable, RunnableConfig,
                                       RunnablePassthrough,
                                       RunnableSerializable)
 from langchain_core.runnables.base import Runnable, RunnableBindingBase
-from langchain_core.runnables.utils import (AnyConfigurableField,
+from langchain_core.runnables.utils import (AddableDict, AnyConfigurableField,
+                                            ConfigurableField,
                                             ConfigurableFieldSpec, Input,
                                             Output, create_model,
                                             get_unique_config_specs)
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -60,96 +65,64 @@ from arcan.datamodel.conversation import Conversation
 from arcan.datamodel.engine import session_scope
 
 
-class ArcanAgent(Runnable):
-    """
-    Represents an Arcan Agent that interacts with the user and provides responses using OpenAI tools.
+class ArcanAgent(RunnableSerializable):
+    tools: List = Field(default_factory=list)
+    bare_tools: List = Field(default_factory=list)
+    agent_tools: List = Field(default_factory=list)
+    agent_type: str = "arcan_spells_agent"
+    chat_history: List = Field(default_factory=list)
+    user_id: Optional[str] = None
+    verbose: bool = False
+    prompt: ChatPromptTemplate = spells_agent_prompt,
+    configs: List[ConfigurableFieldSpec] = Field(default_factory=list)
+    llm_with_tools: LLM = Field(default_factory=lambda: LLM().llm)
+    agent: Runnable = Field(default_factory=RunnablePassthrough)
+    runnable: Runnable = Field(default_factory=RunnablePassthrough)
+    session: ArcanSession = Field(default_factory=ArcanSession)
 
-    Attributes:
-        llm (LLM): The Language Model Manager used by the agent.
-        tools (list): The list of tools used by the agent.
-        hub_prompt (str): The prompt for the OpenAI tools agent.
-        agent_type (str): The type of the agent.
-        chat_history (list): The chat history of the agent.
-        llm_with_tools: The Language Model Manager with the tools bound.
-        prompt: The chat prompt template for the agent.
-        agent: The agent pipeline.
-        agent_executor: The executor for the agent.
-        user_id: The unique identifier for the user.
-        verbose: A boolean indicating whether to print verbose output.
-    """
+    class Config:
+        arbitrary_types_allowed = True
+        extra = 'allow'  # This allows additional fields not explicitly defined
 
-    def __init__(
-        self,
-        llm: LLM = LLM().llm,
-        tools: list = spells,
-        prompt: str = spells_agent_prompt,
-        agent_type="arcan_spells_agent",
-        chat_history: list = [],  # represents the chat history, can be pulled from a db
-        user_id: str = None,
-        verbose: bool = False,
-        session_factory: callable = session_scope,
-        configs: list = [],
-        **kwargs
-        ):
-        """Initialize the runnable."""
-        super().__init__(**kwargs)
-        if configs:
-            self.configs = configs
-        else:
-            # If not provided, then we'll use the default session_id field
-            self.configs = [
-                ConfigurableFieldSpec(
-                    id="user_id",
-                    annotation=str,
-                    name="User ID",
-                    description="Unique identifier for the user.",
-                    default="",
-                    is_shared=True,
-                ),
-                ConfigurableFieldSpec(
-                    id="conversation_id",
-                    annotation=str,
-                    name="Conversation ID",
-                    description="Unique identifier for the conversation.",
-                    default="",
-                    is_shared=True,
-                ),
-            ]
-        self.llm: LLM = llm
-        self.tools: list = tools
-        self.agent_type: str = agent_type
-        self.chat_history: list = chat_history
-        self.user_id: str = kwargs.get('user_id', user_id)
-        self.verbose: bool = verbose
-        self.session: ArcanSession = ArcanSession(database=session_factory)
-        self.prompt = prompt
-        self.working_directory = TemporaryDirectory()
-        self.file_system_tools = FileManagementToolkit(
-            root_dir=str(self.working_directory.name)
-        ).get_tools()
-        self.bare_tools = load_tools(
-            [
-                "llm-math",
-            ],
-            llm=self.llm,
-        )
+    def __init__(self, llm=None, tools: list = spells, prompt: ChatPromptTemplate = spells_agent_prompt,
+                 agent_type="arcan_spells_agent", chat_history: list = [],
+                 user_id: str = None, verbose: bool = False, configs: list = [],
+                 **kwargs):
+        super().__init__(tools=tools, agent_type=agent_type, chat_history=chat_history,
+                         user_id=user_id, verbose=verbose, prompt=prompt, configs=configs, **kwargs)
+        object.__setattr__(self, '_llm', llm or LLM().llm)
+        # Initialize other fields after the main Pydantic initialization
+        self.session: ArcanSession = ArcanSession()
+        self.bare_tools = load_tools(["llm-math"], llm=self.llm)
         self.agent_tools = self.tools + self.bare_tools
         self.llm_with_tools = self.llm.bind_tools(self.agent_tools)
-        missing_vars = {"agent_scratchpad"}.difference(
-            prompt.input_variables + list(prompt.partial_variables)
-        )
-        if missing_vars:
-            raise ValueError(f"Prompt missing required variables: {missing_vars}")
-
-        if not hasattr(llm, "bind_tools"):
-            raise ValueError(
-                "This function requires a .bind_tools method be implemented on the LLM.",
-            )
-        self.llm_with_tools = llm.bind_tools(tools)
-        
         self.agent, self.runnable = self.get_or_create_agent(self.user_id)
+        
+    @property
+    def llm(self):
+        return self._llm
 
-    
+    @property
+    def default_configs(self):
+        return [
+            ConfigurableFieldSpec(
+                id="user_id",
+                annotation=str,
+                name="User ID",
+                description="Unique identifier for the user.",
+                default="",
+                is_shared=True,
+            ),
+            ConfigurableFieldSpec(
+                id="conversation_id",
+                annotation=str,
+                name="Conversation ID",
+                description="Unique identifier for the conversation.",
+                default="",
+                is_shared=True,
+            ),
+        ]
+
     @property
     def config_specs(self) -> List[ConfigurableFieldSpec]:
         return self.agent.config_specs
@@ -177,11 +150,6 @@ class ArcanAgent(Runnable):
         async for output in self.runnable.astream(input, config=config, **kwargs):
             yield output
 
-    
-    
-    
-        
-        
     def get_or_create_agent(
         self, user_id: str, provided_agent: ArcanAgent = None
     ) -> ArcanAgent:
@@ -215,12 +183,11 @@ class ArcanAgent(Runnable):
             provided_agent.user_id = user_id
             self.session.agents[user_id] = provided_agent
             return provided_agent, provided_agent.runnable
-    
-    
+
     def get_agent(self):
         """
         Retrieves or creates a ArcanAgent for a given user_id.
-        
+
         :param user_id: The unique identifier for the user.
         :return: An instance of ArcanAgent.
         """
@@ -228,7 +195,9 @@ class ArcanAgent(Runnable):
             raise ValueError("Session is not initialized.")
         agent = (
             RunnablePassthrough.assign(
-                agent_scratchpad=lambda x: format_to_tool_messages(x["intermediate_steps"])
+                agent_scratchpad=lambda x: format_to_tool_messages(
+                    x["intermediate_steps"]
+                )
             )
             | self.prompt
             | self.llm_with_tools
@@ -238,8 +207,12 @@ class ArcanAgent(Runnable):
             agent=agent, tools=self.agent_tools, verbose=self.verbose
         )
         return agent, runnable
-        
-    def invoke(self, inputs: Dict[str, Any], run_manager: Optional[CallbackManagerForChainRun] = None) -> Dict[str, Any]:
+
+    def invoke(
+        self,
+        inputs: Dict[str, Any],
+        run_manager: Optional[CallbackManagerForChainRun] = None,
+    ) -> Dict[str, Any]:
         """
         Override the invoke method to include custom logic.
         """
@@ -264,66 +237,389 @@ class ArcanAgent(Runnable):
                 AIMessage(content=response["output"]),
             ]
         )
-        # try:
-        #     self.session.store_message(user_id=self.user_id, body=user_content, response=response)
-        #     self.session.store_chat_history(user_id=self.user_id, agent_history=self.chat_history)
-        # except SQLAlchemyError as e:
-        #     self.session.database.rollback()
-        #     print(f"Error storing conversation in database: {e}")
+        try:
+            self.session.store_message(user_id=self.user_id, body=user_content, response=response['output'])
+            self.session.store_chat_history(user_id=self.user_id, agent_history=self.chat_history)
+        except SQLAlchemyError as e:
+            self.session.database.rollback()
+            print(f"Error storing conversation in database: {e}")
         return response
 
-    def configurable_fields(
-        self, **kwargs: AnyConfigurableField
-    ):
-        """Configure particular runnable fields at runtime.
+    # def configurable_fields(
+    #     self, **kwargs: AnyConfigurableField
+    # ):
+    #     """Configure particular runnable fields at runtime.
 
-        .. code-block:: python
+    #     .. code-block:: python
 
-            from langchain_core.runnables import ConfigurableField
-            from langchain_openai import ChatOpenAI
+    #         from langchain_core.runnables import ConfigurableField
+    #         from langchain_openai import ChatOpenAI
 
-            model = ChatOpenAI(max_tokens=20).configurable_fields(
-                max_tokens=ConfigurableField(
-                    id="output_token_number",
-                    name="Max tokens in the output",
-                    description="The maximum number of tokens in the output",
-                )
-            )
+    #         model = ChatOpenAI(max_tokens=20).configurable_fields(
+    #             max_tokens=ConfigurableField(
+    #                 id="output_token_number",
+    #                 name="Max tokens in the output",
+    #                 description="The maximum number of tokens in the output",
+    #             )
+    #         )
 
-            # max_tokens = 20
-            print(
-                "max_tokens_20: ",
-                model.invoke("tell me something about chess").content
-            )
+    #         # max_tokens = 20
+    #         print(
+    #             "max_tokens_20: ",
+    #             model.invoke("tell me something about chess").content
+    #         )
 
-            # max_tokens = 200
-            print("max_tokens_200: ", model.with_config(
-                configurable={"output_token_number": 200}
-                ).invoke("tell me something about chess").content
-            )
-        """
-        from langchain_core.runnables.configurable import \
-            RunnableConfigurableFields
+    #         # max_tokens = 200
+    #         print("max_tokens_200: ", model.with_config(
+    #             configurable={"output_token_number": 200}
+    #             ).invoke("tell me something about chess").content
+    #         )
+    #     """
+    #     from langchain_core.runnables.configurable import \
+    #         RunnableConfigurableFields
 
-        for key in kwargs:
-            # print(f"Checking key {key} in {self}")
-            # print(f"Available keys are {vars(self).keys()}")
-            if key not in vars(self).keys():
-                raise ValueError(
-                    f"Configuration key {key} not found in {self}: "
-                    f"available keys are {vars(self).keys()}"
-                )
-            # updated the self class arguments with the new values
-            setattr(self, key, kwargs[key])
-        return self
+    #     for key in kwargs:
+    #         # print(f"Checking key {key} in {self}")
+    #         # print(f"Available keys are {vars(self).keys()}")
+    #         if key not in vars(self).keys():
+    #             raise ValueError(
+    #                 f"Configuration key {key} not found in {self}: "
+    #                 f"available keys are {vars(self).keys()}"
+    #             )
+    #         # updated the self class arguments with the new values
+    #         setattr(self, key, kwargs[key])
+    #     return self
 
-#%%
+    # %%
 
-#%%
+    # class ArcanAgent(RunnableSerializable):
+    #     """
+    #     Represents an Arcan Agent that interacts with the user and provides responses using OpenAI tools.
+
+    #     Attributes:
+    #         llm (LLM): The Language Model Manager used by the agent.
+    #         tools (list): The list of tools used by the agent.
+    #         hub_prompt (str): The prompt for the OpenAI tools agent.
+    #         agent_type (str): The type of the agent.
+    #         chat_history (list): The chat history of the agent.
+    #         llm_with_tools: The Language Model Manager with the tools bound.
+    #         prompt: The chat prompt template for the agent.
+    #         agent: The agent pipeline.
+    #         agent_executor: The executor for the agent.
+    #         user_id: The unique identifier for the user.
+    #         verbose: A boolean indicating whether to print verbose output.
+    #     """
+    #     llm: LLM = LLM().llm
+    #     tools: List = spells
+    #     agent_type: str = 'arcan_spells_agent'
+    #     chat_history: List = Field(default_factory=list)
+    #     user_id: Optional[str] = None
+    #     verbose: bool = False
+    #     # Assuming session and prompt types are defined somewhere
+    #     session: ArcanSession
+    #     prompt: str = spells_agent_prompt
+    #     configs: List[ConfigurableFieldSpec] = Field(default_factory=list)
+
+    #     class Config:
+    #         arbitrary_types_allowed = True
+
+    #     def __init__(self, llm: LLM = LLM().llm, tools: list = spells, prompt: str = spells_agent_prompt,
+    #                  agent_type="arcan_spells_agent", chat_history: list = [], user_id: str = None,
+    #                  verbose: bool = False, configs: list = None, **kwargs):
+    #         super().__init__(**kwargs)  # Initialize BaseModel with kwargs
+    #         self.llm = llm
+    #         self.tools = tools
+    #         self.agent_type = agent_type
+    #         self.chat_history = chat_history
+    #         self.user_id = user_id
+    #         self.verbose = verbose
+    #         self.session = ArcanSession()
+    #         self.prompt = prompt
+    #         self.working_directory = TemporaryDirectory()
+    #         self.file_system_tools = FileManagementToolkit(
+    #             root_dir=str(self.working_directory.name)
+    #         ).get_tools()
+    #         self.bare_tools = load_tools(
+    #             [
+    #                 "llm-math",
+    #             ],
+    #             llm=self.llm,
+    #         )
+    #         self.agent_tools = self.tools + self.bare_tools
+    #         self.llm_with_tools = self.llm.bind_tools(self.agent_tools)
+    #         missing_vars = {"agent_scratchpad"}.difference(
+    #             prompt.input_variables + list(prompt.partial_variables)
+    #         )
+    #         if missing_vars:
+    #             raise ValueError(f"Prompt missing required variables: {missing_vars}")
+
+    #         if not hasattr(llm, "bind_tools"):
+    #             raise ValueError(
+    #                 "This function requires a .bind_tools method be implemented on the LLM.",
+    #             )
+    #         self.llm_with_tools = llm.bind_tools(tools)
+
+    #         self.agent, self.runnable = self.get_or_create_agent(self.user_id)
+
+    #         self.configs = configs or [
+    #             ConfigurableFieldSpec(
+    #                 id="user_id",
+    #                 annotation=str,
+    #                 name="User ID",
+    #                 description="Unique identifier for the user.",
+    #                 default="",
+    #                 is_shared=True,
+    #             ),
+    #             ConfigurableFieldSpec(
+    #                 id="conversation_id",
+    #                 annotation=str,
+    #                 name="Conversation ID",
+    #                 description="Unique identifier for the conversation.",
+    #                 default="",
+    #                 is_shared=True,
+    #             )
+    #         ]
+
+    # def __init__(
+    #     self,
+    #     llm: LLM = LLM().llm,
+    #     tools: list = spells,
+    #     prompt: str = spells_agent_prompt,
+    #     agent_type="arcan_spells_agent",
+    #     chat_history: list = [],  # represents the chat history, can be pulled from a db
+    #     user_id: str = None,
+    #     verbose: bool = False,
+    #     session_factory: callable = session_scope,
+    #     configs: list = [],
+    #     **kwargs
+    #     ):
+    #     """Initialize the runnable."""
+    #     super().__init__(**kwargs)
+    #     self.llm: LLM = llm
+    #     self.tools: list = tools
+    #     self.agent_type: str = agent_type
+    #     self.chat_history: list = chat_history
+    #     self.user_id: str = kwargs.get('user_id', user_id)
+    #     self.verbose: bool = verbose
+    #     self.session: ArcanSession = ArcanSession()
+    #     self.prompt = prompt
+    #     self.working_directory = TemporaryDirectory()
+    #     self.file_system_tools = FileManagementToolkit(
+    #         root_dir=str(self.working_directory.name)
+    #     ).get_tools()
+    #     self.bare_tools = load_tools(
+    #         [
+    #             "llm-math",
+    #         ],
+    #         llm=self.llm,
+    #     )
+    #     self.agent_tools = self.tools + self.bare_tools
+    #     self.llm_with_tools = self.llm.bind_tools(self.agent_tools)
+    #     missing_vars = {"agent_scratchpad"}.difference(
+    #         prompt.input_variables + list(prompt.partial_variables)
+    #     )
+    #     if missing_vars:
+    #         raise ValueError(f"Prompt missing required variables: {missing_vars}")
+
+    #     if not hasattr(llm, "bind_tools"):
+    #         raise ValueError(
+    #             "This function requires a .bind_tools method be implemented on the LLM.",
+    #         )
+    #     self.llm_with_tools = llm.bind_tools(tools)
+
+    #     self.agent, self.runnable = self.get_or_create_agent(self.user_id)
+
+    #     self.configs = configs if configs is not None else [
+    #         ConfigurableFieldSpec(
+    #             id="user_id",
+    #             annotation=str,
+    #             name="User ID",
+    #             description="Unique identifier for the user.",
+    #             default="",
+    #             is_shared=True,
+    #         ),
+    #         ConfigurableFieldSpec(
+    #             id="conversation_id",
+    #             annotation=str,
+    #             name="Conversation ID",
+    #             description="Unique identifier for the conversation.",
+    #             default="",
+    #             is_shared=True,
+    #         )
+    #     ]
+
+    # @property
+    # def config_specs(self) -> List[ConfigurableFieldSpec]:
+    #     return self.agent.config_specs
+
+    # async def astream(
+    #     self,
+    #     input: Input,
+    #     config: Optional[RunnableConfig] = None,
+    #     **kwargs: Optional[Any],
+    # ) -> AsyncIterator[Output]:
+    #     """Stream the agent's output."""
+    #     configurable = cast(Dict[str, Any], config.pop("configurable", {}))
+
+    #     if configurable:
+    #         configured_agent = self.agent.with_config(
+    #             {
+    #                 "configurable": configurable,
+    #             }
+    #         )
+    #     else:
+    #         configured_agent = self.agent
+
+    #     self.runnable.with_config({"run_name": "executor"})
+
+    #     async for output in self.runnable.astream(input, config=config, **kwargs):
+    #         yield output
+
+    # def get_or_create_agent(
+    #     self, user_id: str, provided_agent: ArcanAgent = None
+    # ) -> ArcanAgent:
+    #     """
+    #     Retrieves or creates a ArcanAgent for a given user_id.
+
+    #     :param user_id: The unique identifier for the user.
+    #     :return: An instance of ArcanAgent.
+    #     """
+    #     if provided_agent is None:
+    #         agent = self.session.agents.get(user_id)
+    #         chat_history = []
+
+    #         # Obtain a new database session
+    #         try:
+    #             chat_history = self.session.get_chat_history(user_id)
+    #         except Exception as e:
+    #             print(f"Error getting chat history for {user_id}: {e}")
+
+    #         if agent is not None and chat_history:
+    #             print(f"Using existing agent {agent}")
+    #         elif agent is None and chat_history:
+    #             print(f"Using reloaded agent with history {chat_history}")
+    #             self.chat_history = chat_history
+    #         elif agent is None and not chat_history:
+    #             print("Using a new agent")
+    #         agent, runnable = self.get_agent()
+    #         self.session.agents[user_id] = agent
+    #         return agent, runnable
+    #     else:
+    #         provided_agent.user_id = user_id
+    #         self.session.agents[user_id] = provided_agent
+    #         return provided_agent, provided_agent.runnable
+
+    # def get_agent(self):
+    #     """
+    #     Retrieves or creates a ArcanAgent for a given user_id.
+
+    #     :param user_id: The unique identifier for the user.
+    #     :return: An instance of ArcanAgent.
+    #     """
+    #     if self.session is None:
+    #         raise ValueError("Session is not initialized.")
+    #     agent = (
+    #         RunnablePassthrough.assign(
+    #             agent_scratchpad=lambda x: format_to_tool_messages(
+    #                 x["intermediate_steps"]
+    #             )
+    #         )
+    #         | self.prompt
+    #         | self.llm_with_tools
+    #         | ToolsAgentOutputParser()
+    #     )
+    #     runnable = AgentExecutor(
+    #         agent=agent, tools=self.agent_tools, verbose=self.verbose
+    #     )
+    #     return agent, runnable
+
+    # def invoke(
+    #     self,
+    #     inputs: Dict[str, Any],
+    #     run_manager: Optional[CallbackManagerForChainRun] = None,
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Override the invoke method to include custom logic.
+    #     """
+    #     user_content = inputs.get("input")
+    #     if not user_content:
+    #         raise ValueError("Input must contain 'input' key with user content.")
+
+    #     # route_text, routed_content = semantic_layer(
+    #     #     query=user_content, user_id=self.user_id
+    #     # )
+    #     self.chat_history.extend(
+    #         [
+    #             # SystemMessage(content=route_text),
+    #             HumanMessage(content=user_content),
+    #         ]
+    #     )
+    #     response = self.runnable.invoke(
+    #         {"input": user_content, "chat_history": self.chat_history}
+    #     )
+    #     self.chat_history.extend(
+    #         [
+    #             AIMessage(content=response["output"]),
+    #         ]
+    #     )
+    #     # try:
+    #     #     self.session.store_message(user_id=self.user_id, body=user_content, response=response)
+    #     #     self.session.store_chat_history(user_id=self.user_id, agent_history=self.chat_history)
+    #     # except SQLAlchemyError as e:
+    #     #     self.session.database.rollback()
+    #     #     print(f"Error storing conversation in database: {e}")
+    #     return response
+
+    # def configurable_fields(self, **kwargs: AnyConfigurableField):
+    #     """Configure particular runnable fields at runtime.
+
+    #     .. code-block:: python
+
+    #         from langchain_core.runnables import ConfigurableField
+    #         from langchain_openai import ChatOpenAI
+
+    #         model = ChatOpenAI(max_tokens=20).configurable_fields(
+    #             max_tokens=ConfigurableField(
+    #                 id="output_token_number",
+    #                 name="Max tokens in the output",
+    #                 description="The maximum number of tokens in the output",
+    #             )
+    #         )
+
+    #         # max_tokens = 20
+    #         print(
+    #             "max_tokens_20: ",
+    #             model.invoke("tell me something about chess").content
+    #         )
+
+    #         # max_tokens = 200
+    #         print("max_tokens_200: ", model.with_config(
+    #             configurable={"output_token_number": 200}
+    #             ).invoke("tell me something about chess").content
+    #         )
+    #     """
+    #     from langchain_core.runnables.configurable import \
+    #         RunnableConfigurableFields
+
+    #     for key in kwargs:
+    #         # print(f"Checking key {key} in {self}")
+    #         # print(f"Available keys are {vars(self).keys()}")
+    #         if key not in vars(self).keys():
+    #             raise ValueError(
+    #                 f"Configuration key {key} not found in {self}: "
+    #                 f"available keys are {vars(self).keys()}"
+    #             )
+    #         # updated the self class arguments with the new values
+    #         setattr(self, key, kwargs[key])
+    #     return self
 
 
+# %%
 
-#%%
+# %%
+
+
+# %%
 
 
 # class ArcanAgent:
@@ -536,6 +832,7 @@ class ArcanAgent(Runnable):
 
 
 # %%
+
 
 class ArcanConversationAgent:
     def __init__(self, **kwargs):

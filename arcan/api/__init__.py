@@ -139,22 +139,9 @@ async def chat(
 #     enable_feedback_endpoint=True,
 # )
 
-# def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
-#     if "x-api-key" in req.headers:
-#         config["configurable"]["openai_api_key"] = req.headers["x-api-key"]
-#         config['configurable']['user_id'] = req.headers["user_id"]
-#     else:
-#         raise HTTPException(401, "No API key provided")
 
-#     return config
 
-# dynamic_auth_model = LLM(provider="ChatOpenAI", openai_api_key="placeholder").configurable_fields(
-#     openai_api_key=ConfigurableField(
-#         id="openai_api_key",
-#         name="OpenAI API Key",
-#         description=("API Key for OpenAI interactions"),
-#     ),
-# )
+
 
 
 
@@ -168,24 +155,24 @@ def _is_valid_identifier(value: str) -> bool:
     return bool(valid_characters.match(value))
 
 
-def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
+def fetch_session_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
     # if "arcanai_api_key" in req.headers:
         # config["configurable"]["arcanai_api_key"] = req.headers["arcanai_api_key"]
     # beare token validation
     # print(config)
-    config = config.copy()
-    print(type(config))
-    if "Authorization" in req.headers:
-        print(req.headers["Authorization"])
-        
-        
+    # config = config.copy()
+    # configurable = config.get("configurable", {})
+    if "arcanai_api_key" in req.headers:
         # config["configurable"]["user_id"] = req.headers["user_id"]
         #config['configurable']['user_id'] = req.headers["user_id"]
         if "user_id" in req.headers:
-            print(req.headers["user_id"])
-            config['configurable'] = {"user_id":req.headers["user_id"]}
+            config["configurable"]["user_id"] = req.headers["user_id"]
+            # config['configurable'] = {"user_id":req.headers["user_id"]}
             # config = req.headers["user_id"]
-            #config['configurable']['user_id'] = req.headers["user_id"]
+            # configurable["user_id"] = req.headers["user_id"]
+            # config["configurable"] = configurable
+            # config['configurable']['user_id'] = req.headers["user_id"]
+        # print(config)
     else:
         raise HTTPException(401, "No Arcan AI API key provided")
     
@@ -198,23 +185,35 @@ def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str,
 
     return config
 
+def fetch_api_key_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
+    if "x-api-key" in req.headers:
+        config["configurable"]["openai_api_key"] = req.headers["x-api-key"]
+        if "user_id" in req.headers:
+            config["configurable"]["user_id"] = req.headers["user_id"]
+        else:
+            raise HTTPException(401, "No User ID provided")
+    else:
+        raise HTTPException(401, "No API key provided")
 
-# dynamic_auth_model = ChatOpenAI(openai_api_key="placeholder").configurable_fields(
-#     openai_api_key=ConfigurableField(
-#         id="openai_api_key",
-#         name="OpenAI API Key",
-#         description=("API Key for OpenAI interactions"),
-#     ),
-# )
+    return config
 
-# dynamic_auth_chain = dynamic_auth_model | StrOutputParser()
+dynamic_auth_model = ChatOpenAI(model='gpt-4o').configurable_fields(
+    openai_api_key=ConfigurableField(
+        id="openai_api_key",
+        name="OpenAI API Key",
+        description=("API Key for OpenAI interactions"),
+    ),
+)
 
-# add_routes(
-#     app,
-#     dynamic_auth_chain,
-#     path="/auth_from_header",
-#     per_req_config_modifier=fetch_api_key_from_header,
-# )
+
+dynamic_auth_chain = dynamic_auth_model | StrOutputParser()
+
+add_routes(
+    app,
+    dynamic_auth_chain,
+    path="/gpt4o",
+    per_req_config_modifier=fetch_api_key_from_header,
+)
 
 
 class Input(BaseModel):
@@ -225,18 +224,19 @@ class Output(BaseModel):
     output: Any
 
 
-
-
-add_routes(
-    app=app,
-    runnable=ArcanAgent().configurable_fields(
+dynamic_spells_model = ArcanAgent().configurable_fields(
     user_id=ConfigurableField(
         id="user_id",
         name="Arcan AI User ID",
         description=("user_id Key for Arcan AI interactions"),
-    ),
-).with_types(input_type=Input, output_type=Output),
-    per_req_config_modifier=fetch_api_key_from_header,
+    )).with_types(input_type=Input, output_type=Output)
+
+
+
+add_routes(
+    app=app,
+    runnable=dynamic_spells_model,
+    per_req_config_modifier=fetch_session_from_header,
     path="/spells",
 )
 

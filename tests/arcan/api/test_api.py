@@ -43,7 +43,7 @@ async def test_chat(mock_session_scope):
     #     mock_run_agent.return_value = "Test Response"
 
     mock_token = MagicMock()
-    mock_token.credentials = os.getenv("ARCAN_API_KEY")
+    mock_token.credentials = os.getenv("ARCANAI_API_KEY")
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
         response = await ac.get(

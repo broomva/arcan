@@ -24,7 +24,7 @@ Base.metadata.create_all(engine)
 
 # to get a string like this run:
 # openssl rand -hex 32
-SECRET_KEY = os.environ.get("ARCAN_API_KEY")
+SECRET_KEY = os.environ.get("ARCANAI_API_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
