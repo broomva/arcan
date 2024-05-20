@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/broomva/arcan/compare/v0.1.0...v0.1.1) (2024-05-20)
+
+
+### Bug Fixes
+
+* added baseline auth module ([77a31e9](https://github.com/broomva/arcan/commit/77a31e9c3eaad0f1ca03b4ba26447606d7627bfd))
+* added local agent with ollama and local db session ([cebdb06](https://github.com/broomva/arcan/commit/cebdb06697c6a80048d3f490042cda18225a22be))
+* added protected routes with configurable fields ([123a82f](https://github.com/broomva/arcan/commit/123a82fe9ae2fe05d7cb6f30f29481f2d3c4c842))
+* update to the api using middleware ([cfd56ce](https://github.com/broomva/arcan/commit/cfd56ced3be052aa3f92ef81c2bc01fb26adff80))
+* updated api/chat ([69ab941](https://github.com/broomva/arcan/commit/69ab94122c6a0259b22747925f6bc04f6848858a))
+* updated datamodel and api structure to avoid circular dependencies ([f6a2a7a](https://github.com/broomva/arcan/commit/f6a2a7aea91890c3359874ecd153e5055d130dbc))
+
 ## 0.1.0 (2024-05-13)
 
 
