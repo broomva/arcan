@@ -6,17 +6,13 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
+from fastapi import (Depends, FastAPI, Form, Header, HTTPException, Request,
+                     status)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-
 # %%
-from fastapi.security import (
-    HTTPAuthorizationCredentials,
-    HTTPBearer,
-    OAuth2PasswordBearer,
-    OAuth2PasswordRequestForm,
-)
+from fastapi.security import (HTTPAuthorizationCredentials, HTTPBearer,
+                              OAuth2PasswordBearer, OAuth2PasswordRequestForm)
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core import __version__
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -37,15 +33,9 @@ from arcan.ai.agents import ArcanAgent
 from arcan.ai.llm import LLM
 from arcan.api.auth import fetch_session_from_header
 from arcan.datamodel.engine import session_scope  # , session_scope_context
-from arcan.datamodel.user import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    TokenModel,
-    UserModel,
-    UserRepository,
-    UserService,
-    oauth2_scheme,
-    pwd_context,
-)
+from arcan.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
+                                  UserModel, UserRepository, UserService,
+                                  oauth2_scheme, pwd_context)
 
 # from arcan.spells.vector_search import (get_per_user_retriever,
 #                                         per_req_config_modifier, pgVectorStore)
@@ -176,9 +166,9 @@ add_routes(
 @app.post("/token")
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-    session: Session = Depends(session_scope),
+    # session: Session = Depends(session_scope()),
 ) -> TokenModel:
-    user_repo = UserRepository(session)
+    user_repo = UserRepository()
     user_interface = UserService(user_repository=user_repo, pwd_context=pwd_context)
     user = user_interface.authenticate_user(form_data.username, form_data.password)
     if not user:
@@ -199,15 +189,19 @@ async def login_for_access_token(
     )
 
 
+
+
 async def get_current_active_user_from_request(
     request: Request, session: Session = Depends(session_scope)
 ) -> UserModel:
     """Get the current active user from the request."""
     user_repo = UserRepository(session)
+    # print(request.headers)
     user_interface = UserService(user_repository=user_repo, pwd_context=pwd_context)
     token = await oauth2_scheme(request)
     print(token)
     user = user_interface.get_current_user(token=token)
+    print(user)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -219,11 +213,11 @@ async def get_current_active_user_from_request(
     return user
 
 
-# @app.get("/users/me/", response_model=UserModel)
-# async def read_users_me(
-#     current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
-# ):
-#     return current_user
+@app.get("/users/me/", response_model=UserModel)
+async def read_users_me(
+    current_user: Annotated[UserModel, Depends(get_current_active_user_from_request)],
+):
+    return current_user
 
 
 # add_routes(

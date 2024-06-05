@@ -8,10 +8,11 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
+                        Text)
 from sqlalchemy.orm import Session, relationship
 
-from arcan.datamodel.engine import Base, engine
+from arcan.datamodel.engine import Base, engine, session_scope
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -85,7 +86,7 @@ class UserInDB(BaseModel):
 
 
 class UserRepository:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session = session_scope()):
         self.session = session
 
     def add_user(self, user: User):

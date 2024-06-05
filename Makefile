@@ -34,3 +34,6 @@ package_list:
 
 serve:
 	poetry run uvicorn arcan.api:app --port 8000 --host 0.0.0.0 --reload
+
+chainlit:
+	poetry run chainlit run arcan/ai/interface/app.py --port 8100 --watch

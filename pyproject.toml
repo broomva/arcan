@@ -13,7 +13,7 @@ fastapi = "^0.110.0"
 openai = "^1.14.0"
 langchain = "^0.1.16"
 langchain-openai = "^0.0.8"
-uvicorn = "^0.28.0"
+# uvicorn = "^0.28.0"
 pydantic = ">=1.10.13,<2"
 python-dotenv = "^1.0.1"
 typing-extensions = "^4.9.0"
@@ -45,6 +45,8 @@ firecrawl-py = "^0.0.8"
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
 python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 supabase = "^2.4.5"
+chainlit = "^1.1.101"
+llama-index = "^0.10.37"
 
 [build-system]
 requires = ["poetry-core"]
