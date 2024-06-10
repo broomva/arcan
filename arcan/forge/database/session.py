@@ -1,7 +1,7 @@
 #%%
 import contextlib
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import AsyncIterator
 
 from dotenv import load_dotenv
@@ -42,7 +42,7 @@ class EngineFactory:
         """Create a cloud engine from a URL in the config"""
         if not Config.DATABASE_URL:
             raise ValueError("No database URL provided for cloud environment.")
-        return create_async_engine(Config.DATABASE_URL)
+        return create_async_engine(Config.DATABASE_URL, echo=True)
 
 class DatabaseSessionManager:
     def __init__(self, host: str):
@@ -86,23 +86,25 @@ class DatabaseSessionManager:
             raise ServiceError
         finally:
             await session.close()
-
+            
+            
 sessionmanager = DatabaseSessionManager(settings.database_url)
 
 engine = EngineFactory().get_engine()
 Base = declarative_base()
 
-@contextmanager
-async def session_scope():
-    """Provide a transactional scope around a series of operations."""
+@contextlib.asynccontextmanager
+async def session_scope() -> AsyncSession:
     async with sessionmanager.session() as session:
         try:
             yield session
             await session.commit()
-        except:
+        except Exception:
             await session.rollback()
             raise
         finally:
             await session.close()
+
+
 
 # %%

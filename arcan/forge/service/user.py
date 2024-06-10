@@ -17,10 +17,10 @@ SECRET_KEY = os.environ.get("ARCANAI_API_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12,)  # Adjust rounds for security/performance tradeoff)
 
 class UserService:
-    def __init__(self, user_repository: UserRepository, pwd_context: CryptContext = CryptContext(schemes=["bcrypt"], deprecated="auto")):
+    def __init__(self, user_repository: UserRepository, pwd_context: CryptContext = pwd_context):
         self.user_repository = user_repository
         self.pwd_context = pwd_context
 
@@ -37,8 +37,9 @@ class UserService:
             username=user_create.username,
             email=user_create.email,
             full_name=user_create.full_name,
-            disabled=False,
+            disabled=True,
             hashed_password=self.hash_password(user_create.password),
+            created_at=datetime.now(timezone.utc),
         )
         self.user_repository.add_user(user)
 

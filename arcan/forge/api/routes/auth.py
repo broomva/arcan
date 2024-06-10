@@ -18,7 +18,7 @@ from arcan.forge.schemas.user import User, UserCreate
 
 router = APIRouter()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12,)  # Adjust rounds for security/performance tradeoff)
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
@@ -73,26 +73,72 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
 
 
 
-def fetch_session_from_header(config: Dict[str, Any], req: Request) -> Dict[str, Any]:
+
+
+# async def fetch_session_from_header(config: Dict[str, Any], req: Request, db: AsyncSession = Depends(session_scope)) -> Dict[str, Any]:
+#     config = config.copy()
+#     configurable = config.get("configurable", {})
+    
+#     if "arcanai_api_key" in req.headers:
+#         # validate the key exists in the database
+#         token_repo = TokenRepository(db)
+#         # print(req.headers["arcanai_api_key"])
+#         token = await token_repo.get_token(req.headers["arcanai_api_key"])
+#             # id
+#             # access_token
+#             # token_type
+#             # user_id
+#             # user
+#         print({"token": token})
+#         if not token:
+#             raise HTTPException(401, "Invalid Arcan AI API key")
+#         # if token.expired:
+#         #     raise HTTPException(401, "Expired Arcan AI API key")
+        
+#         if "user_id" in req.headers:
+#             configurable["user_id"] = req.headers["user_id"]
+#             configurable["access_token"] = req.headers["arcanai_api_key"]
+#             config["configurable"] = configurable
+#             print(config)
+#     else:
+#         raise HTTPException(401, "No Arcan AI API key provided")
+#     return config
+
+
+# def _is_valid_identifier(value: str) -> bool:
+#     """Check if the value is a valid identifier."""
+#     # Use a regular expression to match the allowed characters
+#     valid_characters = re.compile(r"^[a-zA-Z0-9-_]+$")
+#     return bool(valid_characters.match(value))
+
+# %%
+
+from typing import Any, Dict
+
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from arcan.forge.database.session import session_scope
+from arcan.forge.repository.token import TokenRepository
+
+
+async def fetch_session_from_header(config: Dict[str, Any], req: Request, db: AsyncSession = Depends(session_scope)) -> Dict[str, Any]:
     config = config.copy()
     configurable = config.get("configurable", {})
 
     if "arcanai_api_key" in req.headers:
-        if "user_id" in req.headers:
-            configurable["user_id"] = req.headers["user_id"]
-            configurable["access_token"] = req.headers["arcanai_api_key"]
-            config["configurable"] = configurable
-            # config["configurable"]["user_id"] = req.headers["user_id"]
-            # config["configurable"] = configurable
+        # validate the key exists in the database
+        async with session_scope() as db:
+            token_repo = TokenRepository(db)
+            token = await token_repo.get_token(req.headers["arcanai_api_key"])
+            if not token:
+                raise HTTPException(401, "Invalid Arcan AI API key")
+
+            if "user_id" in req.headers:
+                configurable["user_id"] = req.headers["user_id"]
+                configurable["access_token"] = req.headers["arcanai_api_key"]
+                config["configurable"] = configurable
     else:
         raise HTTPException(401, "No Arcan AI API key provided")
     return config
 
-
-def _is_valid_identifier(value: str) -> bool:
-    """Check if the value is a valid identifier."""
-    # Use a regular expression to match the allowed characters
-    valid_characters = re.compile(r"^[a-zA-Z0-9-_]+$")
-    return bool(valid_characters.match(value))
-
-# %%

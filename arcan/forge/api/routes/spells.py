@@ -1,14 +1,15 @@
 from typing import Any
 
+from fastapi import APIRouter
 from langchain_core.runnables import ConfigurableField
 from langserve import add_routes
 from pydantic import BaseModel
 
 # from langchain_core import ArcanAgent
 from arcan.casters.ai.agents import ArcanAgent
-from arcan.forge import app
 from arcan.forge.api.routes.auth import fetch_session_from_header
 
+router = APIRouter()
 
 class Input(BaseModel):
     input: str
@@ -35,7 +36,7 @@ dynamic_spells_model = (
 )
 
 add_routes(
-    app=app,
+    app=router,
     runnable=dynamic_spells_model,
     per_req_config_modifier=fetch_session_from_header,
     path="/spells",
