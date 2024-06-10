@@ -6,13 +6,17 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
-from fastapi import (Depends, FastAPI, Form, Header, HTTPException, Request,
-                     status)
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+
 # %%
-from fastapi.security import (HTTPAuthorizationCredentials, HTTPBearer,
-                              OAuth2PasswordBearer, OAuth2PasswordRequestForm)
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+)
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core import __version__
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -33,9 +37,15 @@ from arcan.ai.agents import ArcanAgent
 from arcan.ai.llm import LLM
 from arcan.api.auth import fetch_session_from_header
 from arcan.datamodel.engine import session_scope  # , session_scope_context
-from arcan.datamodel.user import (ACCESS_TOKEN_EXPIRE_MINUTES, TokenModel,
-                                  UserModel, UserRepository, UserService,
-                                  oauth2_scheme, pwd_context)
+from arcan.datamodel.user import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    TokenModel,
+    UserModel,
+    UserRepository,
+    UserService,
+    oauth2_scheme,
+    pwd_context,
+)
 
 # from arcan.spells.vector_search import (get_per_user_retriever,
 #                                         per_req_config_modifier, pgVectorStore)
@@ -187,8 +197,6 @@ async def login_for_access_token(
         user_id=user.username,
         user=user,
     )
-
-
 
 
 async def get_current_active_user_from_request(

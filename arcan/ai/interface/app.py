@@ -1,5 +1,3 @@
-
-
 from typing import Optional
 
 import chainlit as cl
@@ -42,7 +40,9 @@ def auth_callback(
 def get_runnable():
     from langserve import RemoteRunnable
 
-    spells_runnable = RemoteRunnable("https://api.arcanai.tech/spells/", headers={"arcanai_api_key": '1234'})
+    spells_runnable = RemoteRunnable(
+        "https://api.arcanai.tech/spells/", headers={"arcanai_api_key": "1234"}
+    )
     return spells_runnable
 
 
@@ -52,23 +52,23 @@ def get_runnable():
 # response
 
 
-
-
 @cl.on_message
 async def on_msg(msg: cl.Message):
     res = await get_runnable().ainvoke(
-        {"input": msg.content,},
-        config={"configurable": {"user_id": "broomva"},}
+        {
+            "input": msg.content,
+        },
+        config={
+            "configurable": {"user_id": "broomva"},
+        },
     )
-    await cl.Message(content=res['output']).send()
-
-    
+    await cl.Message(content=res["output"]).send()
 
 
 # @cl.on_message
 # async def on_msg(msg: cl.Message):
 #     msg = cl.Message(content="")
-        
+
 #     async for chunk in get_runnable().astream(
 #         {"input": msg.content, "chat_history": []},
 #         # config=RunnableConfig(callbacks=[cl.LangchainCallbackHandler()]),

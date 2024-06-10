@@ -31,7 +31,6 @@ llm_with_tools = gpt35.configurable_alternatives(
 )
 
 
-
 import operator
 from typing import Annotated, Sequence, TypedDict
 
@@ -81,7 +80,7 @@ workflow.add_edge("action", "agent")
 graph = workflow.compile()
 
 
-#%%
+# %%
 
 
 from typing import TypedDict, Annotated, List, Union
@@ -94,7 +93,9 @@ class AgentState(TypedDict):
     agent_out: Union[AgentAction, AgentFinish, None]
     intermediate_steps: Annotated[list[tuple[AgentAction, str]], operator.add]
 
+
 from langchain_core.tools import tool
+
 
 @tool("search")
 def search_tool(query: str):
@@ -104,15 +105,14 @@ def search_tool(query: str):
     # this is a "RAG" emulator
     return ehi_information
 
+
 @tool("final_answer")
-def final_answer_tool(
-    answer: str,
-    source: str
-):
+def final_answer_tool(answer: str, source: str):
     """Returns a natural language response to the user in `answer`, and a
     `source` which provides citations for where this information came from.
     """
     return ""
+
 
 import os
 from langchain.agents import create_openai_tools_agent
@@ -126,28 +126,27 @@ llm = ChatOpenAI(temperature=0)
 prompt = hub.pull("hwchase17/openai-functions-agent")
 
 query_agent_runnable = create_openai_tools_agent(
-    llm=llm,
-    tools=[final_answer_tool, search_tool],
-    prompt=prompt
+    llm=llm, tools=[final_answer_tool, search_tool], prompt=prompt
 )
 
 
 from langchain_core.agents import AgentFinish
 import json
 
+
 def run_query_agent(state: list):
     print("> run_query_agent")
     agent_out = query_agent_runnable.invoke(state)
     return {"agent_out": agent_out}
 
+
 def execute_search(state: list):
     print("> execute_search")
     action = state["agent_out"]
     tool_call = action[-1].message_log[-1].additional_kwargs["tool_calls"][-1]
-    out = search_tool.invoke(
-        json.loads(tool_call["function"]["arguments"])
-    )
+    out = search_tool.invoke(json.loads(tool_call["function"]["arguments"]))
     return {"intermediate_steps": [{"search": str(out)}]}
+
 
 def router(state: list):
     print("> router")
@@ -156,8 +155,10 @@ def router(state: list):
     else:
         return "error"
 
+
 # finally, we will have a single LLM call that MUST use the final_answer structure
 final_answer_llm = llm.bind_tools([final_answer_tool], tool_choice="final_answer")
+
 
 # this forced final_answer LLM call will be used to structure output from our
 # RAG endpoint
@@ -176,6 +177,7 @@ def rag_final_answer(state: list):
     out = final_answer_llm.invoke(prompt)
     function_call = out.additional_kwargs["tool_calls"][-1]["function"]["arguments"]
     return {"agent_out": function_call}
+
 
 # we use the same forced final_answer LLM call to handle incorrectly formatted
 # output from our query_agent
@@ -207,7 +209,4 @@ graph.set_entry_point("query_agent")
 
 runnable = graph.compile()
 
-out = runnable.invoke({
-    "input": "what is AI?",
-    "chat_history": []
-})
+out = runnable.invoke({"input": "what is AI?", "chat_history": []})
