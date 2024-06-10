@@ -71,6 +71,12 @@ See also the list of [contributors](https://github.com/broomva/arcan/contributor
 
 Interested in Arcan or looking to collaborate? Visit [broomva.tech](https://broomva.tech) for more information and to get in touch.
 
+
+## Attribution
+
+Based on and altered from: 
+Forge structure -> [ArjanCodes - Skypulse Template](https://github.com/ArjanCodes/examples/tree/main/2024/build_deploy_host_backend/skypulse)
+
 ## License
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE.md](LICENSE.md) file for details.

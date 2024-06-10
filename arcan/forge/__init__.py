@@ -22,6 +22,7 @@ from arcan.forge.api.routes.auth import fetch_session_from_header
 from arcan.forge.api.routes.router import base_router as router
 from arcan.forge.core.config import API_PREFIX, DEBUG, PROJECT_NAME, VERSION
 from arcan.forge.database.session import sessionmanager
+from arcan.forge.database.tables import create_tables
 from arcan.forge.exceptions import (ArcanApiError, AuthenticationFailed,
                                     EntityDoesNotExistError,
                                     InvalidOperationError, InvalidTokenError,
@@ -55,6 +56,7 @@ async def lifespan(_app: FastAPI):
     Function that handles startup and shutdown events.
     To understand more, read https://fastapi.tiangolo.com/advanced/events/
     """
+    await create_tables()
     yield
     if sessionmanager.engine is not None:
         await sessionmanager.close()
@@ -64,7 +66,6 @@ app = FastAPI(title=PROJECT_NAME, debug=DEBUG, version=VERSION, lifespan=lifespa
 app.include_router(router, prefix=API_PREFIX)
 
 auth_scheme = HTTPBearer()
-
 
 @app.get("/")
 async def redirect_root_to_docs():
