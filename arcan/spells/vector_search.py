@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from langchain.document_loaders import DataFrameLoader, UnstructuredMarkdownLoader
+from langchain.document_loaders import (DataFrameLoader,
+                                        UnstructuredMarkdownLoader)
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import FAISS, Chroma, VectorStore
@@ -14,11 +15,8 @@ from langchain_community.document_loaders.base import BaseLoader
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_community.vectorstores.chroma import Chroma
 from langchain_core.documents import Document
-from langchain_core.runnables import (
-    ConfigurableField,
-    RunnableConfig,
-    RunnableSerializable,
-)
+from langchain_core.runnables import (ConfigurableField, RunnableConfig,
+                                      RunnableSerializable)
 from langchain_core.vectorstores import VectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import CharacterTextSplitter
@@ -243,10 +241,10 @@ class PerUserVectorstore(RunnableSerializable):
 
 
 async def per_req_config_modifier(config: Dict, request: Request) -> Dict:
-    from arcan.api import get_current_active_user_from_request
+    from arcan.forge.service.user import UserService
 
     """Modify the config for each request."""
-    user = await get_current_active_user_from_request(request)
+    user = await UserService.get_current_active_user(request)
     config["configurable"] = {}
     # Attention: Make sure that the user ID is over-ridden for each request.
     # We should not be accepting a user ID from the user in this case!

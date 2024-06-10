@@ -37,12 +37,10 @@ def version():
 
 
 def url_text_scrapping_chain(query: str, url: str) -> tuple[str, list[str]]:
-    from arcan.ai.chains import ArcanConversationChain
+    from arcan.casters.ai.chains import ArcanConversationChain
     from arcan.spells.scrapping import url_text_scrapper
-    from arcan.spells.vector_search import (
-        faiss_text_index_loader,
-        load_faiss_vectorstore,
-    )
+    from arcan.spells.vector_search import (faiss_text_index_loader,
+                                            load_faiss_vectorstore)
 
     chain = ArcanConversationChain()
     docsearch = None
@@ -83,7 +81,7 @@ async def chat_agent(
     query: str,
     # token: HTTPAuthorizationCredentials = Depends(auth_scheme),
 ):
-    from arcan.ai.agents import ArcanConversationAgent, agent_chat
+    from arcan.casters.ai.agents import ArcanConversationAgent, agent_chat
 
     agent = ArcanConversationAgent().agent
     return await agent_chat(query, agent)
