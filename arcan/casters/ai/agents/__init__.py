@@ -41,7 +41,9 @@ from langchain_core.runnables.utils import (AddableDict, AnyConfigurableField,
                                             get_unique_config_specs)
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
+from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import relationship
 
 from arcan.casters.ai.agents.helpers import AsyncIteratorCallbackHandler
 from arcan.casters.ai.agents.session import ArcanSession
@@ -50,7 +52,7 @@ from arcan.casters.ai.parser import ArcanOutputParser
 from arcan.casters.ai.prompts import spells_agent_prompt
 # from arcan.casters.ai.router import semantic_layer
 from arcan.casters.ai.tools import tools as spells
-from arcan.forge.models.token import Token
+from arcan.forge.schemas import Token
 
 
 class ArcanAgent(RunnableSerializable):
@@ -266,6 +268,13 @@ class ArcanAgent(RunnableSerializable):
             self.session.database.rollback()
             print(f"Error storing conversation in database: {e}")
         return response
+
+
+
+
+
+
+
 
     # def configurable_fields(
     #     self, **kwargs: AnyConfigurableField

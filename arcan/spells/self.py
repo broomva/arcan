@@ -1,46 +1,6 @@
 # includes the tools/spells that are self-targeted. Defines who the caster is
 
 # Path: arcan/spells/self.py
-
-#%%
-# import os
-# import subprocess
-# from pathlib import Path
-
-
-# def get_code(root_dir, output_md_path):
-#     def write_and_append(file, lst, content):
-#         try:
-#             file.write(content)
-#         except AttributeError as e:
-#             print(e)
-            
-#         lst.append(content)
-#     code = []
-#     with open(output_md_path, 'w') as md_file:
-#         # Adding tree command output to the markdown file
-#         try:
-#             tree_output = subprocess.check_output(['tree', root_dir], universal_newlines=True)
-#             write_and_append('', code, f"\n## Directory Structure\n\n```\n{tree_output}\n```\n")
-#         except FileNotFoundError:
-#             write_and_append('',code,"\n## Directory Structure\n\n```\nTree command not available.\n```\n")
-#         except subprocess.CalledProcessError as e:
-#             write_and_append('',code,f"\n## Directory Structure\n\n```\nError executing tree command: {e}\n```\n")
-
-#         for root, dirs, files in os.walk(root_dir):
-#             for file in files:
-#                 if file.endswith('.py'):
-#                     file_path = Path(root) / file
-#                     content_header = f"\n## {file_path}\n\n```python\n"
-#                     write_and_append(md_file, code, content_header)
-#                     with open(file_path, 'r') as py_file:
-#                         file_content = py_file.read()
-#                         write_and_append(md_file, code, file_content)
-#                     content_footer = "\n```\n\n"
-#                     write_and_append(md_file, code, content_footer)
-#     return code
-
-
 #%%
 
 
@@ -156,7 +116,6 @@ def get_knowledge(caster):
 
 def knowledge(caster):
     return get_knowledge(caster)
-
 
 knowledge(1)
 # %%

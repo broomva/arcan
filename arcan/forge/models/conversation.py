@@ -7,7 +7,7 @@ from arcan.forge.database.session import Base
 
 
 class Conversation(Base):
-    __tablename__ = "conversations"
+    __tablename__ = "conversation"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -15,4 +15,4 @@ class Conversation(Base):
     response = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    user = relationship("User", back_populates="conversations")
+    user = relationship("User", back_populates="conversation")

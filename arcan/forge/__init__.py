@@ -1,3 +1,4 @@
+#%%
 import os
 from contextlib import asynccontextmanager
 from sqlite3 import DataError, IntegrityError
@@ -7,18 +8,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-# %%
 from fastapi.security import HTTPBearer
 from langchain_core import __version__
-from langchain_core.runnables import ConfigurableField
-from langserve import add_routes
-from langserve.pydantic_v1 import BaseModel
 from loguru import logger
-from pydantic import BaseModel
 
-from arcan.casters.ai.agents import ArcanAgent
-from arcan.casters.ai.llm import LLM
-from arcan.forge.api.routes.auth import fetch_session_from_header
 from arcan.forge.api.routes.router import base_router as router
 from arcan.forge.core.config import API_PREFIX, DEBUG, PROJECT_NAME, VERSION
 from arcan.forge.database.session import sessionmanager
@@ -54,9 +47,8 @@ ARCANAI_API_TOKEN = os.environ.get("ARCANAI_API_TOKEN")
 async def lifespan(_app: FastAPI):
     """
     Function that handles startup and shutdown events.
-    To understand more, read https://fastapi.tiangolo.com/advanced/events/
     """
-    await create_tables()
+    await create_tables()  # Ensure tables are created at startup
     yield
     if sessionmanager.engine is not None:
         await sessionmanager.close()
@@ -152,3 +144,5 @@ app.add_exception_handler(
         "A service seems to be down, try again later.",
     ),
 )
+
+# %%

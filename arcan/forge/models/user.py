@@ -20,4 +20,4 @@ class User(Base):
 
     token = relationship("Token", back_populates="user", cascade="all, delete-orphan")
     chat_histories = relationship("ChatHistory", back_populates="user", cascade="all, delete-orphan")
-    conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+    conversation = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")

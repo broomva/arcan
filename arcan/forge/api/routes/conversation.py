@@ -28,8 +28,8 @@ async def create_conversation(conversation: ConversationCreate, db: AsyncSession
 @router.get("/conversation/", response_model=List[Conversation])
 async def get_conversation(db: AsyncSession = Depends(session_scope), current_user: User = Depends(UserService.get_current_active_user)):
     conversation_repo = ConversationRepository(db)
-    conversations = await conversation_repo.get_conversation(current_user.id)
-    return conversations
+    conversation = await conversation_repo.get_conversation(current_user.id)
+    return conversation
 
 @router.put("/conversation/{conversation_id}", response_model=Conversation)
 async def update_conversation(conversation_id: int, conversation: ConversationUpdate, db: AsyncSession = Depends(session_scope), current_user: User = Depends(UserService.get_current_active_user)):
