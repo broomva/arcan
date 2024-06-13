@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+from arcan.forge.database.session import pwd_context
 from arcan.forge.models.user import User
 from arcan.forge.repository.user import UserRepository
 from arcan.forge.schemas.token import TokenData
@@ -17,51 +18,50 @@ SECRET_KEY = os.environ.get("ARCANAI_API_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12,)  # Adjust rounds for security/performance tradeoff)
-
 class UserService:
     def __init__(self, user_repository: UserRepository, pwd_context: CryptContext = pwd_context):
         self.user_repository = user_repository
         self.pwd_context = pwd_context
 
-    def authenticate_user(self, username, password):
-        user = self.user_repository.get_user(username)
+    async def authenticate_user(self, username, password):
+        user = await self.user_repository.get_user(username)
         if not user:
             return False
-        if not self.verify_password(password, user.hashed_password):
+        if not await self.verify_password(password, user.hashed_password):
             return False
         return user
 
-    def register_user(self, user_create: UserCreate):
+    async def register_user(self, user_create: UserCreate):
         user = User(
             username=user_create.username,
             email=user_create.email,
             full_name=user_create.full_name,
             disabled=True,
-            hashed_password=self.hash_password(user_create.password),
-            created_at=datetime.now(timezone.utc),
+            hashed_password= await self.hash_password(user_create.password),
+            created_at=datetime.now(),
         )
-        self.user_repository.add_user(user)
+        await self.user_repository.add_user(user)
+        return user
 
-    def hash_password(self, password):
+    async def hash_password(self, password):
         return self.pwd_context.hash(password)
 
-    def verify_password(self, plain_password, hashed_password):
+    async def verify_password(self, plain_password, hashed_password):
         return self.pwd_context.verify(plain_password, hashed_password)
 
-    def disable_user(self, username):
-        user = self.user_repository.get_user(username)
+    async def disable_user(self, username):
+        user = await self.user_repository.get_user(username)
         if user:
             user.disabled = True
-            self.user_repository.update_user(user)
+            await self.user_repository.update_user(user)
 
-    def enable_user(self, username):
-        user = self.user_repository.get_user(username)
+    async def enable_user(self, username):
+        user = await self.user_repository.get_user(username)
         if user:
             user.disabled = False
-            self.user_repository.update_user(user)
+            await self.user_repository.update_user(user)
 
-    def create_access_token(self, data: dict, expires_delta: timedelta | None = None):
+    async def create_access_token(self, data: dict, expires_delta: timedelta | None = None):
         to_encode = data.copy()
         if expires_delta:
             expire = datetime.now(timezone.utc) + expires_delta
@@ -85,7 +85,7 @@ class UserService:
             token_data = TokenData(username=username)
         except JWTError:
             raise credentials_exception
-        user = self.user_repository.get_user(username)
+        user = await self.user_repository.get_user(username)
         if user is None:
             raise credentials_exception
         return user

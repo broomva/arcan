@@ -39,6 +39,17 @@ chainlit:
 	poetry run chainlit run arcan/ai/interface/app.py --port 8100 --watch
 
 
+alembic_migration:
+	poetry run alembic revision --autogenerate -m "build"
+
+alembic_deploy:
+	poetry run alembic upgrade head
+
+alembic_downgrade:
+	poetry run alembic downgrade -1
+
+
+
 SHELL := /bin/bash
 
 # Variables definitions

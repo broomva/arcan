@@ -6,6 +6,7 @@ from typing import AsyncIterator
 
 from dotenv import load_dotenv
 from loguru import logger
+from passlib.context import CryptContext
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (AsyncConnection, AsyncEngine, AsyncSession,
                                     async_sessionmaker, create_async_engine)
@@ -14,9 +15,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from arcan.forge.config import settings
 from arcan.forge.exceptions import ServiceError
 
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")  # Adjust rounds for security/performance tradeoff)
+
 load_dotenv()
 
-print(settings)
+# print(settings)
 
 class DatabaseSessionManager:
     def __init__(self, host: str = None, engine: AsyncEngine = None) -> None:
@@ -74,11 +77,23 @@ sessionmanager = DatabaseSessionManager(host=settings.database_url, engine=engin
 Base = declarative_base()
 
 @asynccontextmanager
-async def session_scope():
+async def session_scope() -> AsyncIterator[AsyncSession]:
     async with sessionmanager.session() as session:
         yield session
-        
-        
+
+
+# @asynccontextmanager
+# async def session_scope():
+#     async with sessionmanager.session() as session:
+#         try:
+#             yield session
+#             await session.commit()
+#         except Exception:
+#             await session.rollback()
+#             raise
+#         finally:
+#             await session.close()
+
 # @asynccontextmanager
 # async def session_scope() -> AsyncSession:
 #     async with sessionmanager() as session:
