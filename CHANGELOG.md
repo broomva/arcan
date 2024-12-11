@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/broomva/arcan/compare/v0.1.1...v0.1.2) (2024-08-05)
+
+
+### Bug Fixes
+
+* added researcher caster ([d7c09dc](https://github.com/broomva/arcan/commit/d7c09dc99907c8e34996df01dcc9ae55761f7095))
+
 ## [0.1.1](https://github.com/broomva/arcan/compare/v0.1.0...v0.1.1) (2024-05-20)
 
 
