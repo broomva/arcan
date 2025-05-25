@@ -1,0 +1,21 @@
+{
+  "name": "@arcan/python",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "uv build",
+    "build:python": "uv build",
+    "lint": "./lint.sh",
+    "lint:python": "./lint.sh",
+    "test": "uv run pytest",
+    "test:python": "uv run pytest -v --cov=arcan --cov-report=term-missing --cov-fail-under=90",
+    "test:watch": "uv run pytest-watch",
+    "format": "uv run black . && uv run ruff check --fix .",
+    "typecheck": "uv run mypy .",
+    "clean": "rm -rf dist build *.egg-info .coverage htmlcov .pytest_cache .mypy_cache .ruff_cache"
+  },
+  "devDependencies": {},
+  "engines": {
+    "python": ">=3.10"
+  }
+} 

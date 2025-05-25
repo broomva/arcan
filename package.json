@@ -1,0 +1,29 @@
+{
+  "name": "arcan",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "build:python": "turbo run build:python --filter=@arcan/python",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "lint:python": "turbo run lint:python --filter=@arcan/python",
+    "test": "turbo run test",
+    "test:python": "turbo run test:python --filter=@arcan/python",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml,yaml}\" && turbo run format --filter=@arcan/python",
+    "check-types": "turbo run check-types",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3",
+    "turbo": "^2.5.3",
+    "typescript": "5.8.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "bun@1.2.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

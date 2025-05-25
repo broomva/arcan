@@ -1,0 +1,56 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": [
+    "**/.env"
+  ],
+  "globalEnv": [
+    "NODE_ENV",
+    "PYTHONPATH"
+  ],
+  "ui": "tui",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**", "build/**"]
+    },
+    "build:python": {
+      "dependsOn": ["^build:python", "test:python"],
+      "inputs": ["$TURBO_DEFAULT$", "pyproject.toml", "**/*.py"],
+      "outputs": ["dist/**", "*.egg-info/**"],
+      "cache": true
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "lint:python": {
+      "dependsOn": ["^lint:python"],
+      "inputs": ["$TURBO_DEFAULT$", "pyproject.toml", "**/*.py"],
+      "outputs": [".mypy_cache/**", ".ruff_cache/**"],
+      "cache": true
+    },
+    "test:python": {
+      "dependsOn": ["^test:python"],
+      "inputs": ["$TURBO_DEFAULT$", "pyproject.toml", "**/*.py", "tests/**"],
+      "outputs": [".coverage", "coverage.xml", "htmlcov/**", ".pytest_cache/**"],
+      "cache": true,
+      "env": ["PYTHONPATH"]
+    },
+    "check-types": {
+      "dependsOn": ["^check-types"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "dev:python": {
+      "cache": false,
+      "persistent": true
+    },
+    "api#dev": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["@arcan/python#build"]
+    }
+  }
+}

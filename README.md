@@ -1,123 +1,144 @@
-# Arcan
+# Arcan ✨ - The AI-Native Meta-Platform
 
-### AI web3 tooling platform for decentralized customization and enhancement of AI agents
+**Arcan is the open, AI-native meta-platform that lets anyone "build, deploy, and monetize" full-stack AI applications (agents) with seamless Web3 identity and payments. It's governed by a DAO yet delivered by a dedicated SaaS company—melding openness with enterprise reliability.**
 
-Arcan is a web3 tooling platform designed to customize and enhance AI agents by leveraging blockchain technology. With Arcan, developers can securely tie AI personalization to user-owned blockchain profiles, ensuring privacy and control while delivering tailored AI interactions.
+*From idea to agent in a message. Arcan is the Rosetta Stone for a new era of creation, a conduit for democratizing purpose and empowering everyone to build what they love.*
 
-Check out the live demo at [arcanai.tech](https://arcanai.tech/).
+## 📜 Overview
 
-## Features
+Arcan is more than a platform; it's a **paradigm shift**. We are building a comprehensive ecosystem designed to democratize AI creation and empower individuals and businesses to forge their own "agentic companies." By seamlessly fusing advanced AI orchestration, robust enterprise-grade data infrastructure, and natively integrated blockchain-based identity, payments, and governance, Arcan aims to unlock unprecedented levels of innovation and user agency.
 
-- **Blockchain-Backed AI Personalization**: Integrate AI agents with blockchain to create a personalized experience that respects user ownership.
-- **Web3 Tooling**: A suite of tools that enable seamless interaction between AI agents and blockchain assets.
-- **Privacy-Centric Design**: Ensuring user data is encrypted and owned by the user, accessible only through user permission.
-- **Developer-Friendly**: Straightforward APIs to enable developers to focus on building unique AI experiences.
+Our philosophy is rooted in the belief that technology should empower, not control. Inspired by a vision to move beyond techno-feudalism, Arcan offers tools for true ownership, decentralized collaboration, and the realization of individual purpose. This is where the deep magic of AI meets the liberating potential of Web3, allowing anyone—from an indie hacker to an enterprise, from your mother to a seasoned developer—to create, monetize, and thrive.
 
-<p align="center">
-  <a href="https://arcanai.tech">
-    <img src="public/arcan_logo.svg" height="200">
-    <h3 align="center"></h3>
-  </a>
-</p>
+Arcan is the core from which new agentic enterprises like **Wedi** (for seamless Web3 payments) emerge, each inheriting the power of the meta-platform to address unique challenges and create value.
 
-<p align="center">Unleash AI potential with Arcan — your gateway to blockchain-powered, personalized AI experiences. Code smart, own smarter. Visit the live demo at <a href="https://arcanai.tech/">arcanai.tech</a>.</p>
+## 🚀 Core Features
 
-<br/>
+Arcan provides a rich set of capabilities to bring your AI-driven visions to life:
 
-## Built With
+  * **🤖 Agent Creation & Orchestration:** Visually design, build, and deploy sophisticated AI agents using **LangGraph**. Leverage pre-built templates (e.g., "Travel Agent," "Invoice Generator") or create custom workflows with self-improving logic via **AZR (Absolute Zero Reasoner)** integration.
+  * **🎨 Multimodal UI (AG-UI):** Engage with agents through dynamic, real-time UIs powered by a unified JSON event stream (e.g., via **CopilotKit**). Build interactive experiences with embeddable React components adhering to the Arcan Design System.
+  * **🔗 A2A Agent Gateway:** Enable secure and discoverable communication between agents using standardized protocols (FIPA ACL-inspired, Google A2A). Manage trust and permissions for external agent interactions.
+  * **💾 Data & State Management:** Utilize a unified **JSON Schema** registry for all data models, ensuring consistency across a **Delta Lakehouse** backend with **Unity Catalog** governance. Implement schema-driven forms and validation.
+  * **💸 Payments & Wallets (Wedi Pay & Thirdweb):** Seamlessly integrate Web3 identity (**Thirdweb SDK & Engine**) and payment rails (**Wedi Pay** for fiat/crypto, **Thirdweb Pay**) into your agents for monetization and transactions. Facilitate easy wallet onboarding (email/social login to wallet).
+  * **🛍️ Agent Marketplace:** Publish, discover, and subscribe to agents. Define flexible pricing models (subscription, one-off, pay-per-use) and monitor performance via a dedicated sales dashboard.
+  * **🏛️ DAO Governance & ARC Token:** Participate in the decentralized governance of the Arcan platform through the **ARC token**. Influence protocol evolution, schema management, agent registry policies, and ecosystem funding via on-chain voting.
 
-<!-- - [Next.js](https://nextjs.org/) - The web framework used -->
-- [Python](https://www.python.org/) - Backend programming language
-- [Rust](https://www.rust-lang.org/) - Smart contract programming language
+## ✨ Guiding Philosophy: The Arcanist's Creed
 
-## Installation
+  * **Democratize Creation:** Lowering barriers for everyone. "Create at the command of a thought."
+  * **AI-Native & Data-Native First:** AI and structured data are foundational, not afterthoughts.
+  * **Open Core, Enterprise Reliability:** Fostering community with dependable SaaS offerings.
+  * **Decentralization by Default:** Empowering users with Web3 identity, payments, and true DAO governance.
+  * **User Empowerment & True Ownership:** Resisting techno-feudalism; users control their data and creations.
+  * **Embrace the Paradigm Shift:** Enabling transformative agentic companies and a new way of interacting with technology and economy.
+  * **Inspired by Lore & Magic:** Infusing the platform with a sense of wonder, possibility, and the power to change the world.
 
-### Prerequisites
+## 🛠️ Technology Stack
 
-<!-- - [Next.js](https://nextjs.org/) -->
-- [Python](https://www.python.org/)
-- [Rust](https://www.rust-lang.org/)
-- Access to a blockchain test network (e.g., Ethereum's or Solana's Testnet)
+Arcan leverages a modern, polyglot technology stack for performance, scalability, and flexibility:
 
-### Quick Install
+  * **Monorepo Management:** Turborepo
+  * **Frontend:** Next.js (TypeScript), React, AG-UI (e.g., CopilotKit)
+  * **Backend & AI:** Python (FastAPI, LangGraph), Absolute Zero Reasoner (AZR)
+  * **Event Streaming:** Apache Kafka / Redpanda
+  * **Data Lakehouse:** Delta Lake, Unity Catalog (on Databricks)
+  * **Relational Database:** PostgreSQL (e.g., NeonDB for transactional outbox)
+  * **Containerization & Orchestration:** Docker, Kubernetes
+  * **Web3 Integration:** Thirdweb SDK & Engine, Solidity (for Smart Contracts), Wedi Pay
+  * **API Gateway:** Kong / AWS API Gateway (examples)
+  * **Infrastructure as Code:** Terraform, Helm, Kustomize
+  * **CI/CD:** GitHub Actions / GitLab CI (examples)
 
-    python -m pip install arcan
+## 📂 Project Structure (Turborepo Monorepo)
 
-### Build from Source
+Arcan's codebase is meticulously organized within a Turborepo monorepo to manage its polyglot nature and ensure high-performance, atomic builds:
 
-    git clone https://github.com/Broomva/arcan.git
-    cd arcan &&  make build
+  * `apps/`: Contains deployable applications.
+      * `frontend-main`: The primary web UI for Arcan.
+      * *Other Next.js frontends (e.g., Agent Flow Editor, Marketplace UI).*
+      * *Python backend microservices (e.g., `payment-service`, `agent-orchestration-service`, `azr-integration-service`).*
+  * `packages/`: Houses shared libraries, utilities, and configurations.
+      * `schemas-core`: Centralized JSON Schema definitions (the single source of truth).
+      * `ui-shared-components`: Reusable React UI components (Arcan Design System, Storybook).
+      * `agent-python-sdk`: Core SDK for Python agent development (LangGraph nodes, tool interfaces).
+      * `agent-typescript-sdk`: Core SDK for TypeScript agent/UI development (AG-UI clients).
+      * `common-utils`: Shared utility functions, constants, and helper libraries.
+      * `arcan/`: Python package for the Arcan spellbook
+  * `infra/`: Infrastructure-as-Code definitions (Terraform for cloud resources, Helm charts for Kubernetes).
+  * `scripts/`: Utility scripts for development, deployment, and operational tasks.
+  * `tools/`: CLI tools and developer utilities specific to Arcan.
+  * `contracts/`: Solidity smart contracts for DAO governance, ARC token, payment logic, etc.
 
-### Manual Build
+Each sub-folder is a self-contained package with its own `package.json` (JS/TS) or `pyproject.toml` (Python), promoting modularity and independent development cycles.
 
-    conda create -n arcan python=3.10
-    conda activate arcan
-    pip install -r requirements.txt
-    python setup.py install
-<!-- 
-## Building the Next.js App
+## 🚀 Getting Started
 
-To clone the repository and create the Next.js app, you can use the following commands:
+Welcome, Arcanist\! To begin your journey with Arcan:
 
-    npx create-next-app arcan --example "https://github.com/Broomva/arcan"
+1.  \*\*Clone the Repository:\*\*bash
+    git clone [https://github.com/your-org/arcan.git](https://www.google.com/search?q=https://github.com/your-org/arcan.git)
+    cd arcan
+    ```
+    ```
+2.  **Install Dependencies:** (Turborepo handles workspace linking)
+    ```bash
+    npm install # or yarn install
+    ```
+3.  **Local Development Environment:**
+      * Spin up essential services (PostgreSQL, Kafka, Redis, MinIO for S3 mock) using Docker Compose:
+        ```bash
+        docker-compose up -d
+        ```
+      * Configure local environment variables by copying `.env.example` files in respective packages/apps to `.env.local` and customizing them.
+4.  **Run an Application (Example: Main Frontend):**
+    ```bash
+    turbo run dev --filter=@arcan/frontend-main
+    ```
+5.  **Explore Packages:** Each package in `packages/` and application in `apps/` has its own README with specific instructions.
 
-Once you have cloned the repository and created the app, install the dependencies:
+For a more comprehensive guide on local setup, including Kubernetes emulation with `kind`, advanced configurations, and contribution workflows, please refer to our `DEVELOPMENT_GUIDE.md`.
 
-    yarn install
+## 🏛️ Governance (Arcan DAO)
 
-After that, you can run the development server:
+Arcan is not just built *for* the community; it is governed *by* the community. The **Arcan DAO**, powered by the **ARC token**, is the heart of our decentralized governance model.
 
-    yarn dev
-    # or
-    make rerun
+  * **ARC Token Utility:** ARC tokens grant voting power in DAO decisions, and may be used for staking (e.g., to publish agents, secure network operations) or accessing premium features.
+  * **On-Chain Governance:** Proposals regarding protocol upgrades, shared schema evolution, Agent Registry policies, treasury management, and ecosystem grants are submitted, discussed, and voted upon on-chain.
+  * **Transparency:** All governance processes are designed to be transparent and auditable. Smart contracts defining DAO rules and schema versions are open-source and verifiable.
+  * **Inspired by Proven Models:** Arcan's DAO structure draws inspiration from successful frameworks like Aragon and Juicebox for robust treasury management and permissioned operations.
 
-You can then view your application by opening [http://localhost:3000](http://localhost:3000) with your browser. -->
+Join the discussion and help shape the future of Arcan\! (Link to governance forum/portal to be added).
 
-## Contributing
+## 🤝 Contributing
 
-Please read [CONTRIBUTING.md](https://github.com/broomva/arcan/CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.
+Arcan is a collective endeavor. We believe in the power of community to build something truly revolutionary. Whether you're a developer, designer, AI researcher, Web3 enthusiast, writer, or visionary, your contributions are invaluable.
 
-## Versioning
+Please read our `CONTRIBUTING.md` for details on:
 
-We use [SemVer](http://semver.org/) for versioning with release-please. For the versions available, see the [tags on this repository](https://github.com/broomva/arcan/tags).
+  * Our Code of Conduct.
+  * The development workflow (including Git practices and PR submissions).
+  * How to set up your environment for contributing.
+  * Areas where you can help (e.g., core platform features, SDKs, new agents, UI components, documentation, DAO proposals).
+  * Wallet-signed commits for contributions to DAO-governed code.
 
-## Authors
+## 🔮 Future Vision: The Unfolding Meta-Platform
 
-- **Carlos D. Escobar-Valbuena** - [broomva](https://github.com/broomva)
+Arcan is architected for evolution, designed to be the universal "agent development kit" and the bedrock for a new generation of AI-driven enterprises. Our roadmap includes:
 
-See also the list of [contributors](https://github.com/broomva/arcan/contributors) who participated in this project.
+  * **Modular and Swappable Reasoning Engines:** Expanding beyond AZR to integrate diverse AI reasoning paradigms, allowing an agent's "brain" to be updated or ensembled.
+  * **Swarm Orchestration:** Enabling sophisticated, dynamic coordination among vast populations of agents, including ephemeral sub-agents and geographically distributed operations.
+  * **Inter-Agent Token Micropayments:** Facilitating a true agent economy where agents can autonomously "rent" compute, data, or services from each other using ARC tokens or stablecoins.
+  * **Edge and Offline Agent Support:** Extending Arcan's capabilities to on-device agents (mobile, IoT) that can operate with intermittent connectivity, leveraging federated learning and distributed caches.
 
-## Get Involved
+We envision Arcan as the catalyst for a new wave of platform-enabled entrepreneurship, making it possible for anyone, anywhere, to transform their ideas into impactful, autonomous, and decentralized businesses with unprecedented ease and freedom.
 
-Interested in Arcan or looking to collaborate? Visit [broomva.tech](https://broomva.tech) for more information and to get in touch.
+## 📜 License
 
-## License
+The core Arcan framework and its associated open-source components are typically licensed under the **Apache 2.0 License** or a similar permissive license. We are committed to fostering an open and collaborative ecosystem.
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE.md](LICENSE.md) file for details.
-<!-- 
-## Subscription Model
+Please refer to the `LICENSE` file in the root directory and individual `LICENSE` files within specific packages for detailed licensing information.
 
-Arcan operates on a freemium/subscription model. While the open-source code can be deployed in your own environment free of charge, subscription tiers for access to premium features such as enhanced support and additional tools. Visit our [Pricing Page](https://arcanapp.io/pricing) for more details.
+-----
 
-## Live Demo & Deployment
-
-Check out the live demo at [arcanapp.io](https://arcanapp.io/).
-
-To deploy Arcan on your own, you can clone & deploy it with one click:
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FBroomva%2Farcan%2Ftree%2Fmain)
-
-## Learn More
-
-To learn more about the technologies we use, check out:
-
-- [Next.js Documentation](https://nextjs.org/docs)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/) -->
-
-<!-- ## Attribution
-
-Arcan builds upon the hard work of others. Here are the original repositories we leveraged:
-
-- [NextJS FastAPI Template](https://github.com/digitros/nextjs-fastapi)
-
- -->
+*The Arcanum is open. The future is agentic. Join us in weaving the next reality.*
