@@ -1,0 +1,399 @@
+<context>
+# Overview
+
+Arcan is an open-source AI-native meta-platform engineered to democratize the development, deployment, and governance of full-stack AI agents at scale. The platform addresses the complexity and fragmentation inherent in building sophisticated AI agentic systems by providing a unified, cohesive environment that enables organizations and individuals to translate ideas into functional AI infrastructure through natural language specifications - "from idea to infrastructure in a message."
+
+The core problem Arcan solves is the current requirement to stitch together disparate tools for AI model orchestration, data management, user interface development, payment processing, and governance. By providing a comprehensive meta-platform, Arcan significantly lowers the go-to-market time for agentic companies and fosters a new wave of AI-driven entrepreneurship.
+
+# Core Features
+
+## 1. Unified Agent Definition System
+- **What it does**: Provides a "one-source" model for agents encompassing UI context, event schemas, database models, and data lake schemas
+- **Why it's important**: Ensures consistency across the entire system and eliminates integration friction
+- **How it works**: JSON Schema serves as the single source of truth with automated code generation for Pydantic (Python) and TypeScript interfaces
+
+## 2. Event-Driven Architecture (EDA)
+- **What it does**: Serves as the data backbone using Kafka/streaming pipelines with transactional outbox pattern
+- **Why it's important**: Enables decoupled, real-time, and resilient communication between services and agents
+- **How it works**: All data flow traverses event streams with at-least-once delivery guarantees and idempotent consumers
+
+## 3. Agentic Compute with LangGraph
+- **What it does**: Enables creation of stateful, graph-structured agent workflows
+- **Why it's important**: Supports complex, long-running, and collaborative multi-agent systems
+- **How it works**: Agents are implemented as directed graphs where nodes represent tasks and edges represent data/control flow
+
+## 4. Blockchain-Anchored Identity & Governance
+- **What it does**: Provides decentralized identity for all participants and DAO-based platform governance
+- **Why it's important**: Ensures trust, transparency, and community-driven evolution
+- **How it works**: Leverages Thirdweb SDK for wallet management and ARC token for governance voting
+
+## 5. Standardized Interoperability Protocols
+- **What it does**: Native support for A2A, MCP, and AG-UI protocols
+- **Why it's important**: Enables seamless agent-to-agent, agent-to-data, and agent-to-UI communication
+- **How it works**: Implements industry-standard protocols with JSON Schema validation
+
+## 6. Integrated Monetization & Payment Rails
+- **What it does**: Built-in payment gateway supporting fiat and crypto transactions
+- **Why it's important**: Enables agents to charge for services and transact autonomously
+- **How it works**: Integrates Wedi Pay with MCP-based payment protocol
+
+## 7. Self-Improving AI with Absolute Zero Reasoner (AZR)
+- **What it does**: Enables agents to autonomously improve their reasoning capabilities
+- **Why it's important**: Reduces reliance on manual updates and human-labeled data
+- **How it works**: Self-play mechanism with code executor for reinforcement learning
+
+# User Experience
+
+## User Personas
+
+### 1. AI Developer (Primary)
+- Technical background but may not be AI/ML expert
+- Wants to build and deploy AI agents quickly
+- Needs reliable infrastructure and tools
+- Values documentation and community support
+
+### 2. Enterprise Architect
+- Responsible for AI strategy at large organizations
+- Needs governance, security, and compliance features
+- Requires multi-tenancy and RBAC
+- Values scalability and reliability
+
+### 3. Non-Technical Entrepreneur
+- Has business ideas involving AI agents
+- Limited coding experience
+- Needs visual tools and natural language interfaces
+- Values simplicity and quick results
+
+### 4. AI Researcher
+- Developing cutting-edge AI capabilities
+- Needs flexible, extensible platform
+- Values open-source and community collaboration
+- Requires advanced features like AZR
+
+## Key User Flows
+
+### Agent Creation Flow
+1. User describes agent purpose in natural language
+2. Platform generates initial agent structure and manifest
+3. User refines agent using visual workflow editor
+4. Agent is deployed with automatic scaling and monitoring
+
+### Agent Marketplace Flow
+1. Developer publishes agent to marketplace
+2. Users discover agents via search/categories
+3. One-click deployment with payment processing
+4. Automatic revenue sharing via smart contracts
+
+### Collaborative Development Flow
+1. Team creates shared workspace
+2. Multiple developers work on agent components
+3. Version control and merge capabilities
+4. Integrated testing and staging environments
+
+## UI/UX Considerations
+- **Consistency**: Unified design system across web and mobile
+- **Accessibility**: WCAG AA compliance, keyboard navigation
+- **Real-time Feedback**: Streaming UI updates via AG-UI protocol
+- **Progressive Disclosure**: Simple defaults with advanced options
+- **Cross-platform**: Shared components between web and mobile
+</context>
+<PRD>
+# Technical Architecture
+
+## System Components
+
+### Core Platform Services
+1. **API Gateway** (Kong/AWS API Gateway)
+   - Central entry point for all requests
+   - Authentication, rate limiting, routing
+   - Protocol translation and versioning
+
+2. **Agent Runtime Service** (FastAPI/Python)
+   - LangGraph workflow execution
+   - State management and persistence
+   - Tool invocation and orchestration
+
+3. **Event Streaming Platform** (Kafka/Redpanda)
+   - Central message bus for all events
+   - Transactional outbox implementation
+   - Schema registry integration
+
+4. **Data Platform** (Delta Lake + Unity Catalog)
+   - Medallion architecture (Bronze/Silver/Gold)
+   - Time-travel and versioning
+   - Fine-grained access control
+
+5. **Blockchain Services** (Thirdweb Engine)
+   - Wallet management for users and agents
+   - Smart contract interactions
+   - On-chain audit trails
+
+## Data Models
+
+### Core Entities
+```
+Agent {
+  id: UUID
+  tenantId: UUID
+  name: string
+  manifest: AgentManifest
+  status: enum
+  walletAddress: string
+}
+
+AgentManifest {
+  version: string
+  capabilities: Capability[]
+  protocols: Protocol[]
+  pricing: PricingModel
+  accessPolicy: AccessPolicy
+}
+
+Workflow {
+  id: UUID
+  agentId: UUID
+  graphDefinition: LangGraphDef
+  state: WorkflowState
+}
+
+Event {
+  eventId: UUID
+  tenantId: UUID
+  aggregateId: string
+  eventType: string
+  payload: object
+  timestamp: datetime
+}
+```
+
+## APIs and Integrations
+
+### Internal APIs
+- **Agent Management API**: CRUD operations for agents
+- **Workflow Execution API**: Run and monitor workflows
+- **Event Publishing API**: Emit events to streams
+- **Schema Registry API**: Manage data schemas
+
+### External Integrations
+- **LLM Providers**: OpenAI, Anthropic, Google, Mistral
+- **Blockchain Networks**: Ethereum L2s, Polygon
+- **Payment Processors**: Stripe, Wedi Pay
+- **Cloud Services**: AWS/Azure/GCP
+
+## Infrastructure Requirements
+
+### Compute
+- Kubernetes clusters (AKS/EKS/GKE)
+- Auto-scaling for agent workloads
+- GPU nodes for AI model inference
+
+### Storage
+- PostgreSQL (NeonDB) for transactional data
+- Delta Lake for analytical data
+- Redis for caching and session state
+- S3/Blob storage for artifacts
+
+### Networking
+- Load balancers for high availability
+- CDN for global content delivery
+- VPN/Private endpoints for security
+
+# Development Roadmap
+
+## Phase 1: Foundation (MVP)
+**Goal**: Establish core infrastructure and basic agent capabilities
+
+### Schema Management System
+- JSON Schema repository with versioning
+- Automated code generation for Python/TypeScript
+- Basic schema registry implementation
+
+### Event-Driven Architecture
+- Kafka/Redpanda setup with basic topics
+- Transactional outbox pattern
+- Event publisher/consumer libraries
+
+### Data Platform Foundation
+- Delta Lake with Bronze layer only
+- Basic streaming ingestion
+- Simple data access APIs
+
+### Basic Agent Framework
+- LangGraph integration for simple workflows
+- Single-agent execution only
+- Basic tool abstractions
+
+## Phase 2: Agent Orchestration
+**Goal**: Enable complex agent workflows and interactions
+
+### Advanced Agent Features
+- Multi-step workflow support
+- State persistence and recovery
+- Tool registry with 10+ built-in tools
+
+### Communication Protocols
+- A2A protocol for agent messaging
+- AG-UI for real-time UI updates
+- MCP for tool/data access
+
+### Agent Runtime Service
+- Scalable execution environment
+- Monitoring and observability
+- Basic error handling and retry
+
+## Phase 3: Platform Ecosystem
+**Goal**: Build marketplace and collaboration features
+
+### Agent Marketplace
+- Publishing and discovery
+- One-click deployment
+- Rating and review system
+
+### Developer Tools
+- Visual workflow editor
+- Testing framework
+- Documentation generator
+
+### Web3 Integration
+- Wallet creation and management
+- Basic payment processing
+- Agent identity on blockchain
+
+## Phase 4: Enterprise & Advanced Features
+**Goal**: Production-ready platform with advanced capabilities
+
+### Enterprise Features
+- Multi-tenancy with isolation
+- RBAC and compliance tools
+- SLA monitoring and guarantees
+
+### Advanced AI Capabilities
+- AZR integration for self-improvement
+- Multi-agent orchestration
+- Advanced reasoning tools
+
+### Platform Governance
+- DAO implementation with ARC token
+- On-chain voting mechanisms
+- Decentralized schema registry
+
+# Logical Dependency Chain
+
+## Foundation Layer (Must be built first)
+1. **Monorepo Setup**: Turborepo configuration with multi-language support
+2. **Schema Management**: JSON Schema definitions and code generation
+3. **Core Data Models**: Agent, Workflow, Event entities
+4. **Basic Infrastructure**: Docker, local development environment
+
+## Infrastructure Layer (Depends on Foundation)
+1. **Event Streaming**: Kafka setup with outbox pattern
+2. **Data Platform**: Delta Lake with basic ingestion
+3. **API Gateway**: Basic routing and authentication
+4. **Database Setup**: PostgreSQL with migrations
+
+## Agent Layer (Depends on Infrastructure)
+1. **LangGraph Integration**: Basic workflow execution
+2. **Tool Abstractions**: Core tool interfaces
+3. **Agent Runtime**: Execution environment
+4. **State Management**: Persistence layer
+
+## Communication Layer (Depends on Agent Layer)
+1. **Protocol Implementations**: A2A, MCP, AG-UI
+2. **Message Routing**: Event-based communication
+3. **UI Synchronization**: Real-time updates
+4. **API Contracts**: OpenAPI specifications
+
+## Platform Layer (Depends on Communication)
+1. **Web Application**: Next.js frontend
+2. **Mobile Application**: Expo app
+3. **Developer Portal**: Documentation site
+4. **Marketplace UI**: Discovery interface
+
+## Advanced Layer (Can be built in parallel after Platform)
+1. **Web3 Features**: Blockchain integration
+2. **AI Enhancements**: AZR, advanced reasoning
+3. **Enterprise Features**: Multi-tenancy, RBAC
+4. **Governance**: DAO implementation
+
+# Risks and Mitigations
+
+## Technical Challenges
+
+### Complexity Management
+- **Risk**: System becomes too complex to maintain
+- **Mitigation**: Strict adherence to microservices principles, comprehensive documentation, automated testing
+
+### Performance at Scale
+- **Risk**: System cannot handle enterprise workloads
+- **Mitigation**: Design for horizontal scaling from day one, implement caching layers, use event-driven architecture
+
+### Security Vulnerabilities
+- **Risk**: AI agents could be exploited or compromised
+- **Mitigation**: Input sanitization, LLM firewalls, secure key management, regular security audits
+
+## MVP Definition
+- **Risk**: MVP scope too large, delays launch
+- **Mitigation**: Focus on single-agent execution with basic tools, defer advanced features to later phases
+
+## Resource Constraints
+
+### Team Expertise
+- **Risk**: Lack of specialized knowledge (blockchain, AI, distributed systems)
+- **Mitigation**: Hire specialists early, invest in training, leverage open-source communities
+
+### Infrastructure Costs
+- **Risk**: Cloud costs spiral out of control
+- **Mitigation**: Implement cost monitoring, use spot instances, optimize resource usage
+
+### Development Timeline
+- **Risk**: 6-month timeline proves unrealistic
+- **Mitigation**: Agile development with 2-week sprints, regular reassessment, willingness to defer features
+
+# Appendix
+
+## Research Findings
+
+### Market Analysis
+- Growing demand for AI agent platforms
+- Current solutions are fragmented and complex
+- Enterprises seeking unified platforms
+- $50B+ TAM for AI infrastructure by 2030
+
+### Technology Evaluation
+- LangGraph chosen for flexibility and state management
+- Kafka/Redpanda for proven event streaming
+- Delta Lake for ACID compliance and time-travel
+- Thirdweb for comprehensive Web3 toolkit
+
+### Competitive Landscape
+- AutoGPT: Open-source but limited orchestration
+- LangChain: Good tools but not full platform
+- Fixie: Closed-source, limited customization
+- Arcan differentiator: Open-source meta-platform with Web3
+
+## Technical Specifications
+
+### Performance Requirements
+- Agent execution latency: <100ms overhead
+- Event streaming: 10,000+ events/second
+- API response time: <200ms p95
+- Availability: 99.9% uptime SLA
+
+### Scalability Targets
+- Support 10,000+ concurrent agents
+- Handle 1M+ daily active users
+- Store 1PB+ in data lakehouse
+- Process 100M+ events daily
+
+### Security Standards
+- SOC 2 Type II compliance
+- GDPR/CCPA data privacy
+- End-to-end encryption option
+- Zero-trust architecture
+
+### Integration Requirements
+- OpenAPI 3.0 for all APIs
+- Webhook support for events
+- SDK support for Python, TypeScript, Go
+- CLI tools for developers
+</PRD> 
