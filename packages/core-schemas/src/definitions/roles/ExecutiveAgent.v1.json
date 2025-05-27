@@ -1,0 +1,546 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/ExecutiveAgent.v1.json",
+  "title": "ExecutiveAgent",
+  "description": "Agent role for executive decision-making, strategic planning, and organizational leadership",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["executiveCapabilities", "strategicPlanning", "decisionFramework"],
+          "properties": {
+            "executiveCapabilities": {
+              "type": "object",
+              "properties": {
+                "leadershipFunctions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "strategic_planning",
+                      "vision_setting",
+                      "organizational_design",
+                      "culture_development",
+                      "stakeholder_management",
+                      "board_relations",
+                      "investor_relations",
+                      "crisis_management",
+                      "succession_planning",
+                      "merger_acquisition",
+                      "transformation_leadership",
+                      "innovation_strategy"
+                    ]
+                  },
+                  "description": "Executive leadership functions"
+                },
+                "decisionAuthority": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["area", "limit"],
+                    "properties": {
+                      "area": {
+                        "type": "string",
+                        "enum": [
+                          "financial",
+                          "strategic",
+                          "operational",
+                          "personnel",
+                          "legal",
+                          "technology",
+                          "marketing",
+                          "product"
+                        ]
+                      },
+                      "limit": {
+                        "type": "object",
+                        "properties": {
+                          "monetary": {
+                            "type": "number",
+                            "description": "Monetary limit for autonomous decisions"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": ["department", "division", "company", "unlimited"]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "reportingLines": {
+                  "type": "object",
+                  "properties": {
+                    "reportsTo": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["board", "ceo", "coo", "cfo", "cto", "shareholders"]
+                      }
+                    },
+                    "directReports": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "strategicPlanning": {
+              "type": "object",
+              "properties": {
+                "planningHorizons": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["horizon", "focus"],
+                    "properties": {
+                      "horizon": {
+                        "type": "string",
+                        "enum": ["quarterly", "annual", "3_year", "5_year", "10_year"]
+                      },
+                      "focus": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "reviewFrequency": {
+                        "type": "string",
+                        "enum": ["monthly", "quarterly", "semi_annually", "annually"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "strategicFrameworks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "balanced_scorecard",
+                      "okr",
+                      "swot",
+                      "pestle",
+                      "porters_five_forces",
+                      "blue_ocean",
+                      "scenario_planning",
+                      "hoshin_kanri"
+                    ]
+                  }
+                },
+                "kpiTracking": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["category", "metrics"],
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": ["financial", "customer", "internal_process", "learning_growth"]
+                      },
+                      "metrics": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": ["name", "target", "frequency"],
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "target": {
+                              "type": ["number", "string"]
+                            },
+                            "frequency": {
+                              "type": "string",
+                              "enum": ["real_time", "daily", "weekly", "monthly", "quarterly"]
+                            },
+                            "threshold": {
+                              "type": "object",
+                              "properties": {
+                                "critical": {
+                                  "type": ["number", "string"]
+                                },
+                                "warning": {
+                                  "type": ["number", "string"]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "decisionFramework": {
+              "type": "object",
+              "properties": {
+                "decisionModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "data_driven",
+                      "consensus",
+                      "consultative",
+                      "directive",
+                      "delegative",
+                      "analytical_hierarchy",
+                      "cost_benefit",
+                      "decision_tree"
+                    ]
+                  }
+                },
+                "decisionCriteria": {
+                  "type": "object",
+                  "properties": {
+                    "financial": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["roi", "npv", "irr", "payback_period", "tco", "revenue_impact"]
+                      }
+                    },
+                    "strategic": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["alignment", "competitive_advantage", "market_position", "innovation", "risk"]
+                      }
+                    },
+                    "operational": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["efficiency", "scalability", "quality", "speed", "flexibility"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "approvalMatrix": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["decisionType", "threshold", "approvers"],
+                    "properties": {
+                      "decisionType": {
+                        "type": "string"
+                      },
+                      "threshold": {
+                        "type": "object",
+                        "properties": {
+                          "monetary": {
+                            "type": "number"
+                          },
+                          "impact": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high", "critical"]
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "approvers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "escalation": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "stakeholderManagement": {
+              "type": "object",
+              "properties": {
+                "stakeholderGroups": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["group", "priority", "engagementStrategy"],
+                    "properties": {
+                      "group": {
+                        "type": "string",
+                        "enum": [
+                          "board_members",
+                          "investors",
+                          "employees",
+                          "customers",
+                          "partners",
+                          "regulators",
+                          "media",
+                          "community"
+                        ]
+                      },
+                      "priority": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low"]
+                      },
+                      "engagementStrategy": {
+                        "type": "object",
+                        "properties": {
+                          "frequency": {
+                            "type": "string",
+                            "enum": ["continuous", "weekly", "monthly", "quarterly", "as_needed"]
+                          },
+                          "channels": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "keyMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "communicationProtocols": {
+                  "type": "object",
+                  "properties": {
+                    "internalComms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["all_hands", "town_halls", "newsletters", "intranet", "slack", "email"]
+                      }
+                    },
+                    "externalComms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["press_releases", "earnings_calls", "conferences", "social_media", "annual_reports"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "performanceManagement": {
+              "type": "object",
+              "properties": {
+                "organizationalMetrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "owner", "target"],
+                    "properties": {
+                      "metric": {
+                        "type": "string",
+                        "enum": [
+                          "revenue_growth",
+                          "profitability",
+                          "market_share",
+                          "customer_satisfaction",
+                          "employee_engagement",
+                          "innovation_index",
+                          "operational_efficiency",
+                          "sustainability_score"
+                        ]
+                      },
+                      "owner": {
+                        "type": "string"
+                      },
+                      "target": {
+                        "type": ["number", "string"]
+                      },
+                      "actual": {
+                        "type": ["number", "string"]
+                      },
+                      "variance": {
+                        "type": ["number", "string"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "dashboards": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "audience", "updateFrequency"],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "audience": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "updateFrequency": {
+                        "type": "string",
+                        "enum": ["real_time", "hourly", "daily", "weekly", "monthly"]
+                      },
+                      "components": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "riskGovernance": {
+              "type": "object",
+              "properties": {
+                "riskAppetite": {
+                  "type": "object",
+                  "properties": {
+                    "financial": {
+                      "type": "string",
+                      "enum": ["conservative", "moderate", "aggressive"]
+                    },
+                    "operational": {
+                      "type": "string",
+                      "enum": ["conservative", "moderate", "aggressive"]
+                    },
+                    "strategic": {
+                      "type": "string",
+                      "enum": ["conservative", "moderate", "aggressive"]
+                    },
+                    "reputational": {
+                      "type": "string",
+                      "enum": ["conservative", "moderate", "aggressive"]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "riskMonitoring": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["riskCategory", "indicators", "mitigationStrategies"],
+                    "properties": {
+                      "riskCategory": {
+                        "type": "string"
+                      },
+                      "indicators": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "mitigationStrategies": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "owner": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "innovationLeadership": {
+              "type": "object",
+              "properties": {
+                "innovationStrategy": {
+                  "type": "object",
+                  "properties": {
+                    "focus": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "product_innovation",
+                          "process_innovation",
+                          "business_model_innovation",
+                          "organizational_innovation",
+                          "marketing_innovation"
+                        ]
+                      }
+                    },
+                    "approach": {
+                      "type": "string",
+                      "enum": ["incremental", "radical", "disruptive", "architectural"]
+                    },
+                    "investmentAllocation": {
+                      "type": "object",
+                      "properties": {
+                        "core": {
+                          "type": "number",
+                          "description": "Percentage for core business"
+                        },
+                        "adjacent": {
+                          "type": "number",
+                          "description": "Percentage for adjacent opportunities"
+                        },
+                        "transformational": {
+                          "type": "number",
+                          "description": "Percentage for transformational initiatives"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "innovationMetrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "new_product_revenue",
+                      "time_to_market",
+                      "innovation_pipeline_value",
+                      "patent_applications",
+                      "employee_ideas_implemented",
+                      "partnership_value"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

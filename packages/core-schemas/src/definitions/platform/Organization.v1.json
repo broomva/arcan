@@ -1,0 +1,243 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/Organization.v1.json",
+  "title": "Organization",
+  "description": "Represents a tenant company or team on the Arcan platform",
+  "type": "object",
+  "required": [
+    "organizationId",
+    "name",
+    "ownerUserId",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "organizationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for the organization"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 100,
+      "description": "Official name of the organization"
+    },
+    "displayName": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "Shorter display name"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{3,50}$",
+      "description": "URL-friendly unique identifier"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Organization description"
+    },
+    "logoUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL to organization logo"
+    },
+    "ownerUserId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who created/owns the organization"
+    },
+    "onChainIdentity": {
+      "type": "object",
+      "description": "Blockchain identity for the organization",
+      "properties": {
+        "daoWalletAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "DAO treasury wallet address"
+        },
+        "governanceContractAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "DAO governance contract address"
+        },
+        "multiSigAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "Multi-signature wallet address"
+        }
+      },
+      "additionalProperties": false
+    },
+    "subscriptionPlanId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Current subscription plan"
+    },
+    "billingDetailsId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to billing details"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "trial", "suspended", "archived", "pending"],
+      "description": "Organization status"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["personal", "team", "company", "enterprise", "dao"],
+      "description": "Organization type"
+    },
+    "industry": {
+      "type": "string",
+      "description": "Industry sector"
+    },
+    "size": {
+      "type": "string",
+      "enum": ["1-10", "11-50", "51-200", "201-500", "501-1000", "1000+"],
+      "description": "Organization size"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Organization creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    },
+    "customDomains": {
+      "type": "array",
+      "description": "Custom domains for the organization",
+      "items": {
+        "type": "object",
+        "required": ["domain", "status"],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "format": "hostname",
+            "description": "Custom domain name"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "verified", "failed"],
+            "description": "Domain verification status"
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When domain was verified"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "settings": {
+      "type": "object",
+      "description": "Organization-level settings",
+      "properties": {
+        "branding": {
+          "type": "object",
+          "properties": {
+            "primaryColor": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "description": "Primary brand color"
+            },
+            "secondaryColor": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$",
+              "description": "Secondary brand color"
+            },
+            "customCss": {
+              "type": "string",
+              "description": "Custom CSS for organization workspace"
+            }
+          },
+          "additionalProperties": false
+        },
+        "security": {
+          "type": "object",
+          "properties": {
+            "requireTwoFactor": {
+              "type": "boolean",
+              "default": false,
+              "description": "Require 2FA for all members"
+            },
+            "allowedIpRanges": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "CIDR notation IP ranges"
+              }
+            },
+            "sessionTimeout": {
+              "type": "integer",
+              "minimum": 300,
+              "maximum": 86400,
+              "default": 3600,
+              "description": "Session timeout in seconds"
+            }
+          },
+          "additionalProperties": false
+        },
+        "defaults": {
+          "type": "object",
+          "properties": {
+            "agentPermissions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Default permissions for new agents"
+            },
+            "memberRole": {
+              "type": "string",
+              "default": "member",
+              "description": "Default role for new members"
+            },
+            "dataRetention": {
+              "type": "integer",
+              "minimum": 7,
+              "maximum": 365,
+              "default": 90,
+              "description": "Data retention period in days"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional organization metadata",
+      "properties": {
+        "website": {
+          "type": "string",
+          "format": "uri",
+          "description": "Organization website"
+        },
+        "contactEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Primary contact email"
+        },
+        "taxId": {
+          "type": "string",
+          "description": "Tax identification number"
+        },
+        "registrationNumber": {
+          "type": "string",
+          "description": "Company registration number"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

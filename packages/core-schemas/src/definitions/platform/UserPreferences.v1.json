@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/UserPreferences.v1.json",
+  "title": "UserPreferences",
+  "description": "User-specific settings and preferences for the Arcan platform",
+  "type": "object",
+  "required": [
+    "preferencesId",
+    "userId"
+  ],
+  "properties": {
+    "preferencesId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this preferences record"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to the User these preferences belong to"
+    },
+    "notifications": {
+      "type": "object",
+      "description": "Notification preferences",
+      "properties": {
+        "emailEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to receive email notifications"
+        },
+        "inAppEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to receive in-app notifications"
+        },
+        "pushEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to receive push notifications"
+        },
+        "eventPreferences": {
+          "type": "object",
+          "description": "Granular notification settings for different event types",
+          "properties": {
+            "agentCompleted": {
+              "type": "boolean",
+              "default": true
+            },
+            "agentFailed": {
+              "type": "boolean",
+              "default": true
+            },
+            "workflowCompleted": {
+              "type": "boolean",
+              "default": true
+            },
+            "subscriptionRenewal": {
+              "type": "boolean",
+              "default": true
+            },
+            "securityAlerts": {
+              "type": "boolean",
+              "default": true
+            },
+            "marketplaceUpdates": {
+              "type": "boolean",
+              "default": false
+            },
+            "productUpdates": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "frequency": {
+          "type": "string",
+          "enum": ["realtime", "hourly", "daily", "weekly"],
+          "default": "realtime",
+          "description": "Notification batching frequency"
+        }
+      },
+      "additionalProperties": false
+    },
+    "theme": {
+      "type": "string",
+      "enum": ["light", "dark", "system"],
+      "default": "system",
+      "description": "UI theme preference"
+    },
+    "accessibility": {
+      "type": "object",
+      "description": "Accessibility-related preferences",
+      "properties": {
+        "highContrast": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable high contrast mode"
+        },
+        "reducedMotion": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reduce animations and transitions"
+        },
+        "screenReaderOptimized": {
+          "type": "boolean",
+          "default": false,
+          "description": "Optimize for screen readers"
+        },
+        "fontSize": {
+          "type": "string",
+          "enum": ["small", "medium", "large", "extra-large"],
+          "default": "medium",
+          "description": "Font size preference"
+        }
+      },
+      "additionalProperties": false
+    },
+    "privacy": {
+      "type": "object",
+      "description": "Privacy preferences",
+      "properties": {
+        "shareUsageAnalytics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Share anonymous usage analytics"
+        },
+        "publicProfile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Make profile publicly visible"
+        },
+        "showOnlineStatus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show online status to organization members"
+        }
+      },
+      "additionalProperties": false
+    },
+    "developer": {
+      "type": "object",
+      "description": "Developer-specific preferences",
+      "properties": {
+        "apiKeyVisibility": {
+          "type": "string",
+          "enum": ["hidden", "masked", "visible"],
+          "default": "masked",
+          "description": "How to display API keys"
+        },
+        "codeEditor": {
+          "type": "string",
+          "enum": ["monaco", "codemirror", "simple"],
+          "default": "monaco",
+          "description": "Preferred code editor"
+        },
+        "syntaxTheme": {
+          "type": "string",
+          "description": "Code syntax highlighting theme"
+        },
+        "enableBetaFeatures": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable experimental features"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent": {
+      "type": "object",
+      "description": "Agent interaction preferences",
+      "properties": {
+        "defaultTimeout": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600,
+          "default": 300,
+          "description": "Default agent execution timeout in seconds"
+        },
+        "autoApproveActions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve agent actions"
+        },
+        "verboseLogs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show detailed agent execution logs"
+        }
+      },
+      "additionalProperties": false
+    },
+    "customPreferences": {
+      "type": "object",
+      "description": "Additional custom preferences",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

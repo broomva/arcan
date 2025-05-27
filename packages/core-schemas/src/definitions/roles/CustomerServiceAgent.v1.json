@@ -1,0 +1,422 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/CustomerServiceAgent.v1.json",
+  "title": "CustomerServiceAgent",
+  "description": "Agent role for customer support, helpdesk operations, and service management",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["serviceCapabilities", "ticketingSystem", "knowledgeManagement"],
+          "properties": {
+            "serviceCapabilities": {
+              "type": "object",
+              "properties": {
+                "supportChannels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "chat",
+                      "phone",
+                      "social_media",
+                      "in_app_messaging",
+                      "sms",
+                      "video_call",
+                      "community_forum"
+                    ]
+                  },
+                  "description": "Customer support channels this agent can handle"
+                },
+                "supportTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "technical_support",
+                      "billing_inquiries",
+                      "account_management",
+                      "product_information",
+                      "order_tracking",
+                      "returns_refunds",
+                      "complaints",
+                      "feedback_collection",
+                      "onboarding_assistance",
+                      "troubleshooting"
+                    ]
+                  },
+                  "description": "Types of support this agent can provide"
+                },
+                "automationCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "auto_response",
+                      "ticket_routing",
+                      "sentiment_analysis",
+                      "priority_classification",
+                      "knowledge_base_search",
+                      "solution_suggestion",
+                      "escalation_management",
+                      "follow_up_scheduling",
+                      "satisfaction_surveys"
+                    ]
+                  },
+                  "description": "Automation capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "ticketingSystem": {
+              "type": "object",
+              "required": ["platform", "ticketLifecycle"],
+              "properties": {
+                "platform": {
+                  "type": "string",
+                  "enum": ["Zendesk", "Freshdesk", "ServiceNow", "Jira_Service_Desk", "Intercom", "HubSpot_Service", "custom"],
+                  "description": "Primary ticketing platform"
+                },
+                "ticketLifecycle": {
+                  "type": "object",
+                  "properties": {
+                    "statuses": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["new", "open", "pending", "on_hold", "escalated", "resolved", "closed", "reopened"]
+                      }
+                    },
+                    "priorities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["level", "responseTime", "resolutionTime"],
+                        "properties": {
+                          "level": {
+                            "type": "string",
+                            "enum": ["critical", "high", "medium", "low"]
+                          },
+                          "responseTime": {
+                            "type": "string",
+                            "description": "Target response time (e.g., '1 hour', '4 hours')"
+                          },
+                          "resolutionTime": {
+                            "type": "string",
+                            "description": "Target resolution time (e.g., '24 hours', '3 days')"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "categories": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Ticket categories for classification"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "automationRules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["trigger", "action"],
+                    "properties": {
+                      "trigger": {
+                        "type": "string",
+                        "description": "Condition that triggers the rule"
+                      },
+                      "action": {
+                        "type": "string",
+                        "description": "Action to take when triggered"
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "default": true
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "integrations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["crm", "knowledge_base", "chat", "phone_system", "analytics", "survey_tool"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "knowledgeManagement": {
+              "type": "object",
+              "properties": {
+                "knowledgeBase": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "description": "Knowledge base platform"
+                    },
+                    "articleTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["faq", "how_to", "troubleshooting", "product_guide", "video_tutorial", "release_notes"]
+                      }
+                    },
+                    "searchCapabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["full_text", "semantic", "multilingual", "voice_search"]
+                      }
+                    },
+                    "aiPowered": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Whether AI is used for knowledge base operations"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "contentManagement": {
+                  "type": "object",
+                  "properties": {
+                    "autoSuggestion": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Automatically suggest relevant articles"
+                    },
+                    "contentCreation": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Can create new knowledge base content"
+                    },
+                    "contentReview": {
+                      "type": "object",
+                      "properties": {
+                        "frequency": {
+                          "type": "string",
+                          "enum": ["monthly", "quarterly", "semi_annually", "annually"]
+                        },
+                        "metrics": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": ["views", "helpfulness", "search_ranking", "age"]
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "customerInteraction": {
+              "type": "object",
+              "properties": {
+                "communicationStyle": {
+                  "type": "object",
+                  "properties": {
+                    "tone": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["professional", "friendly", "empathetic", "casual", "formal"]
+                      }
+                    },
+                    "personalization": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Personalize responses based on customer data"
+                    },
+                    "languageSupport": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Supported languages for customer interaction"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "responseTemplates": {
+                  "type": "object",
+                  "properties": {
+                    "categories": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["category", "templateCount"],
+                        "properties": {
+                          "category": {
+                            "type": "string"
+                          },
+                          "templateCount": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "aiGenerated": {
+                            "type": "boolean",
+                            "default": false
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "dynamicVariables": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Variables that can be used in templates"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "performanceMetrics": {
+              "type": "object",
+              "properties": {
+                "slaTargets": {
+                  "type": "object",
+                  "properties": {
+                    "firstResponseTime": {
+                      "type": "string",
+                      "description": "Target first response time"
+                    },
+                    "resolutionTime": {
+                      "type": "string",
+                      "description": "Target resolution time"
+                    },
+                    "customerSatisfaction": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 5,
+                      "description": "Target CSAT score"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "kpis": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "target"],
+                    "properties": {
+                      "metric": {
+                        "type": "string",
+                        "enum": [
+                          "tickets_resolved",
+                          "average_handle_time",
+                          "first_contact_resolution",
+                          "customer_satisfaction",
+                          "net_promoter_score",
+                          "ticket_backlog",
+                          "escalation_rate",
+                          "response_time"
+                        ]
+                      },
+                      "target": {
+                        "type": ["number", "string"]
+                      },
+                      "measurementPeriod": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly", "quarterly"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "qualityAssurance": {
+                  "type": "object",
+                  "properties": {
+                    "reviewFrequency": {
+                      "type": "string",
+                      "enum": ["per_ticket", "daily", "weekly", "monthly"]
+                    },
+                    "reviewCriteria": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "accuracy",
+                          "completeness",
+                          "tone",
+                          "grammar",
+                          "policy_adherence",
+                          "resolution_effectiveness"
+                        ]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "escalationManagement": {
+              "type": "object",
+              "properties": {
+                "escalationPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["level", "criteria", "target"],
+                    "properties": {
+                      "level": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Escalation level"
+                      },
+                      "criteria": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Criteria for escalation"
+                      },
+                      "target": {
+                        "type": "string",
+                        "description": "Who/what to escalate to"
+                      },
+                      "notificationMethod": {
+                        "type": "string",
+                        "enum": ["email", "slack", "pagerduty", "phone"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "autoEscalation": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Whether to automatically escalate based on rules"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

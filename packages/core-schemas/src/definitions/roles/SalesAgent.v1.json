@@ -1,0 +1,303 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/SalesAgent.v1.json",
+  "title": "SalesAgent",
+  "description": "Agent role for sales automation, lead management, and revenue operations",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["salesCapabilities", "crmIntegration", "salesProcess"],
+          "properties": {
+            "salesCapabilities": {
+              "type": "object",
+              "properties": {
+                "salesActivities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "lead_qualification",
+                      "lead_scoring",
+                      "outbound_prospecting",
+                      "email_campaigns",
+                      "call_scheduling",
+                      "demo_booking",
+                      "proposal_generation",
+                      "contract_negotiation",
+                      "deal_closing",
+                      "upselling",
+                      "cross_selling",
+                      "renewal_management"
+                    ]
+                  },
+                  "description": "Sales activities this agent can perform"
+                },
+                "communicationChannels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["email", "phone", "sms", "linkedin", "twitter", "slack", "video_call"]
+                  },
+                  "description": "Communication channels supported"
+                },
+                "salesMethodologies": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["SPIN", "BANT", "MEDDIC", "Challenger", "Solution_Selling", "Sandler", "custom"]
+                  },
+                  "description": "Sales methodologies implemented"
+                }
+              },
+              "additionalProperties": false
+            },
+            "crmIntegration": {
+              "type": "object",
+              "required": ["crmSystem", "dataSync"],
+              "properties": {
+                "crmSystem": {
+                  "type": "string",
+                  "enum": ["Salesforce", "HubSpot", "Pipedrive", "Zoho", "Microsoft_Dynamics", "custom"],
+                  "description": "Primary CRM system"
+                },
+                "dataSync": {
+                  "type": "object",
+                  "properties": {
+                    "syncFrequency": {
+                      "type": "string",
+                      "enum": ["realtime", "every_5min", "every_15min", "hourly", "daily"],
+                      "description": "How often to sync with CRM"
+                    },
+                    "syncedEntities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["leads", "contacts", "accounts", "opportunities", "activities", "tasks", "notes"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "customFields": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["fieldName", "fieldType"],
+                    "properties": {
+                      "fieldName": {
+                        "type": "string"
+                      },
+                      "fieldType": {
+                        "type": "string",
+                        "enum": ["text", "number", "date", "boolean", "picklist"]
+                      },
+                      "required": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "salesProcess": {
+              "type": "object",
+              "properties": {
+                "stages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["stageName", "probability", "actions"],
+                    "properties": {
+                      "stageName": {
+                        "type": "string"
+                      },
+                      "probability": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Actions to take at this stage"
+                      },
+                      "exitCriteria": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Criteria to move to next stage"
+                      },
+                      "averageDuration": {
+                        "type": "integer",
+                        "description": "Average days in this stage"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "qualificationCriteria": {
+                  "type": "object",
+                  "properties": {
+                    "budget": {
+                      "type": "object",
+                      "properties": {
+                        "minimum": {
+                          "type": "number"
+                        },
+                        "currency": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "authority": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Decision maker titles"
+                    },
+                    "need": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Pain points to identify"
+                    },
+                    "timeline": {
+                      "type": "string",
+                      "description": "Expected decision timeline"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "leadScoring": {
+              "type": "object",
+              "properties": {
+                "scoringModel": {
+                  "type": "string",
+                  "enum": ["demographic", "behavioral", "predictive", "hybrid"],
+                  "description": "Type of lead scoring model"
+                },
+                "scoringFactors": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["factor", "weight"],
+                    "properties": {
+                      "factor": {
+                        "type": "string"
+                      },
+                      "weight": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "values": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "string"
+                            },
+                            "score": {
+                              "type": "number"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "thresholds": {
+                  "type": "object",
+                  "properties": {
+                    "hot": {
+                      "type": "number",
+                      "description": "Score threshold for hot leads"
+                    },
+                    "warm": {
+                      "type": "number",
+                      "description": "Score threshold for warm leads"
+                    },
+                    "cold": {
+                      "type": "number",
+                      "description": "Score threshold for cold leads"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "performanceTracking": {
+              "type": "object",
+              "properties": {
+                "kpis": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "target", "period"],
+                    "properties": {
+                      "metric": {
+                        "type": "string",
+                        "enum": [
+                          "calls_made",
+                          "emails_sent",
+                          "meetings_booked",
+                          "opportunities_created",
+                          "deals_closed",
+                          "revenue_generated",
+                          "conversion_rate",
+                          "average_deal_size",
+                          "sales_cycle_length"
+                        ]
+                      },
+                      "target": {
+                        "type": "number"
+                      },
+                      "period": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly", "quarterly", "yearly"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "dashboards": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Dashboard names for reporting"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

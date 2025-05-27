@@ -1,0 +1,407 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/DataAnalystAgent.v1.json",
+  "title": "DataAnalystAgent",
+  "description": "Agent role for data analysis, business intelligence, reporting, and data-driven insights",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["analyticsCapabilities", "dataInfrastructure", "reportingFramework"],
+          "properties": {
+            "analyticsCapabilities": {
+              "type": "object",
+              "properties": {
+                "analysisTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "descriptive_analytics",
+                      "diagnostic_analytics",
+                      "predictive_analytics",
+                      "prescriptive_analytics",
+                      "exploratory_analysis",
+                      "statistical_analysis",
+                      "time_series_analysis",
+                      "cohort_analysis",
+                      "funnel_analysis",
+                      "segmentation",
+                      "a_b_testing",
+                      "regression_analysis"
+                    ]
+                  },
+                  "description": "Types of analysis this agent can perform"
+                },
+                "dataProcessingSkills": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "data_cleaning",
+                      "data_transformation",
+                      "feature_engineering",
+                      "data_aggregation",
+                      "data_normalization",
+                      "outlier_detection",
+                      "missing_data_handling",
+                      "data_validation",
+                      "etl_pipeline",
+                      "data_modeling"
+                    ]
+                  },
+                  "description": "Data processing capabilities"
+                },
+                "statisticalMethods": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "hypothesis_testing",
+                      "correlation_analysis",
+                      "anova",
+                      "chi_square",
+                      "bayesian_inference",
+                      "monte_carlo",
+                      "clustering",
+                      "classification",
+                      "dimensionality_reduction",
+                      "anomaly_detection"
+                    ]
+                  },
+                  "description": "Statistical methods available"
+                }
+              },
+              "additionalProperties": false
+            },
+            "dataInfrastructure": {
+              "type": "object",
+              "properties": {
+                "dataSources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "name"],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "relational_database",
+                          "data_warehouse",
+                          "data_lake",
+                          "api",
+                          "file_storage",
+                          "streaming",
+                          "nosql_database",
+                          "spreadsheet"
+                        ]
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "connectionType": {
+                        "type": "string",
+                        "enum": ["direct", "api", "jdbc", "odbc", "rest", "graphql"]
+                      },
+                      "refreshFrequency": {
+                        "type": "string",
+                        "enum": ["realtime", "hourly", "daily", "weekly", "monthly", "on_demand"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "dataWarehouse": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["Snowflake", "BigQuery", "Redshift", "Databricks", "Synapse", "custom"]
+                    },
+                    "dataModels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["star_schema", "snowflake_schema", "data_vault", "dimensional", "normalized"]
+                      }
+                    },
+                    "optimizationTechniques": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["partitioning", "clustering", "indexing", "materialized_views", "caching"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "queryLanguages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["language", "proficiency"],
+                    "properties": {
+                      "language": {
+                        "type": "string",
+                        "enum": ["SQL", "Python", "R", "Scala", "Julia", "SAS", "SPSS"]
+                      },
+                      "proficiency": {
+                        "type": "string",
+                        "enum": ["basic", "intermediate", "advanced", "expert"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "reportingFramework": {
+              "type": "object",
+              "properties": {
+                "visualizationTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["tool", "capabilities"],
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "enum": ["Tableau", "PowerBI", "Looker", "Qlik", "DataStudio", "Metabase", "Superset", "custom"]
+                      },
+                      "capabilities": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["dashboards", "reports", "embedded_analytics", "mobile", "real_time", "self_service"]
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "reportTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "frequency", "audience"],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "executive_dashboard",
+                          "operational_report",
+                          "financial_report",
+                          "marketing_analytics",
+                          "sales_performance",
+                          "customer_analytics",
+                          "product_analytics",
+                          "ad_hoc_analysis"
+                        ]
+                      },
+                      "frequency": {
+                        "type": "string",
+                        "enum": ["real_time", "hourly", "daily", "weekly", "monthly", "quarterly", "on_demand"]
+                      },
+                      "audience": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["executives", "managers", "analysts", "operations", "external_stakeholders"]
+                        }
+                      },
+                      "deliveryMethod": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["dashboard", "email", "slack", "api", "embedded", "pdf", "excel"]
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "chartTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "bar_chart",
+                      "line_chart",
+                      "pie_chart",
+                      "scatter_plot",
+                      "heatmap",
+                      "treemap",
+                      "sankey",
+                      "funnel",
+                      "gauge",
+                      "map",
+                      "box_plot",
+                      "histogram"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "dataGovernance": {
+              "type": "object",
+              "properties": {
+                "dataQuality": {
+                  "type": "object",
+                  "properties": {
+                    "validationRules": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["rule", "action"],
+                        "properties": {
+                          "rule": {
+                            "type": "string",
+                            "enum": ["completeness", "uniqueness", "consistency", "accuracy", "timeliness", "validity"]
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": ["alert", "reject", "quarantine", "auto_correct", "log"]
+                          },
+                          "threshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "monitoringFrequency": {
+                      "type": "string",
+                      "enum": ["continuous", "hourly", "daily", "weekly"]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "dataLineage": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Track data lineage and transformations"
+                },
+                "privacyCompliance": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["GDPR", "CCPA", "HIPAA", "PCI", "SOX"]
+                  },
+                  "description": "Privacy regulations compliance"
+                },
+                "accessControl": {
+                  "type": "object",
+                  "properties": {
+                    "rowLevelSecurity": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "columnLevelSecurity": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "dataClassification": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["public", "internal", "confidential", "restricted", "pii"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "machineLearning": {
+              "type": "object",
+              "properties": {
+                "mlCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "supervised_learning",
+                      "unsupervised_learning",
+                      "deep_learning",
+                      "nlp",
+                      "computer_vision",
+                      "recommendation_systems",
+                      "forecasting",
+                      "optimization"
+                    ]
+                  }
+                },
+                "mlFrameworks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["scikit-learn", "tensorflow", "pytorch", "xgboost", "lightgbm", "prophet", "statsmodels"]
+                  }
+                },
+                "autoML": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Automated machine learning capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "performanceOptimization": {
+              "type": "object",
+              "properties": {
+                "queryOptimization": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "query_rewriting",
+                      "index_optimization",
+                      "partition_pruning",
+                      "query_caching",
+                      "parallel_processing",
+                      "cost_based_optimization"
+                    ]
+                  }
+                },
+                "performanceMetrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "target"],
+                    "properties": {
+                      "metric": {
+                        "type": "string",
+                        "enum": ["query_time", "dashboard_load_time", "data_freshness", "resource_utilization", "cost_per_query"]
+                      },
+                      "target": {
+                        "type": "string"
+                      },
+                      "alertThreshold": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/UserProfile.v1.json",
+  "title": "UserProfile",
+  "description": "Detailed profile information for a user",
+  "type": "object",
+  "required": [
+    "profileId",
+    "userId"
+  ],
+  "properties": {
+    "profileId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this profile"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to the User this profile belongs to"
+    },
+    "displayName": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "Public display name"
+    },
+    "avatarUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL to user's avatar image"
+    },
+    "bio": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "User biography or description"
+    },
+    "timezone": {
+      "type": "string",
+      "description": "User's timezone (e.g., 'America/New_York')"
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}-[A-Z]{2}$",
+      "description": "Preferred language (e.g., 'en-US')"
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$",
+          "description": "ISO 3166-1 alpha-2 country code"
+        },
+        "city": {
+          "type": "string",
+          "description": "City name"
+        },
+        "region": {
+          "type": "string",
+          "description": "State/Province/Region"
+        }
+      },
+      "additionalProperties": false
+    },
+    "socialLinks": {
+      "type": "object",
+      "properties": {
+        "twitter": {
+          "type": "string",
+          "pattern": "^@?[A-Za-z0-9_]{1,15}$",
+          "description": "Twitter/X handle"
+        },
+        "linkedin": {
+          "type": "string",
+          "format": "uri",
+          "description": "LinkedIn profile URL"
+        },
+        "github": {
+          "type": "string",
+          "pattern": "^[a-z\\d](?:[a-z\\d]|-(?=[a-z\\d])){0,38}$",
+          "description": "GitHub username"
+        },
+        "website": {
+          "type": "string",
+          "format": "uri",
+          "description": "Personal website URL"
+        }
+      },
+      "additionalProperties": true
+    },
+    "professionalInfo": {
+      "type": "object",
+      "properties": {
+        "jobTitle": {
+          "type": "string",
+          "description": "Current job title"
+        },
+        "company": {
+          "type": "string",
+          "description": "Current company"
+        },
+        "industry": {
+          "type": "string",
+          "description": "Industry sector"
+        },
+        "yearsOfExperience": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Years of professional experience"
+        }
+      },
+      "additionalProperties": false
+    },
+    "skills": {
+      "type": "array",
+      "description": "Professional skills",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "interests": {
+      "type": "array",
+      "description": "Personal interests",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "customFields": {
+      "type": "object",
+      "description": "Additional custom profile fields",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/SubscriptionPlan.v1.json",
+  "title": "SubscriptionPlan",
+  "description": "Defines the available SaaS subscription plans for Arcan Cloud",
+  "type": "object",
+  "required": [
+    "planId",
+    "name",
+    "price",
+    "features",
+    "status"
+  ],
+  "properties": {
+    "planId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this plan"
+    },
+    "name": {
+      "type": "string",
+      "description": "Plan name (e.g., 'Developer Free', 'Team Starter', 'Enterprise Pro')"
+    },
+    "displayName": {
+      "type": "string",
+      "description": "Display name for UI"
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed plan description"
+    },
+    "price": {
+      "type": "object",
+      "required": ["amount", "currency", "billingCycle"],
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Price amount"
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "EUR", "GBP", "ARC"],
+          "description": "Currency code"
+        },
+        "billingCycle": {
+          "type": "string",
+          "enum": ["monthly", "quarterly", "annually", "lifetime"],
+          "description": "Billing frequency"
+        },
+        "discountedAmount": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Discounted price if applicable"
+        }
+      },
+      "additionalProperties": false
+    },
+    "features": {
+      "type": "array",
+      "description": "List of features included in this plan",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": ["name", "included"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Feature name"
+              },
+              "included": {
+                "type": "boolean",
+                "description": "Whether feature is included"
+              },
+              "limit": {
+                "type": ["number", "string"],
+                "description": "Feature limit if applicable"
+              },
+              "description": {
+                "type": "string",
+                "description": "Feature description"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "quotas": {
+      "type": "object",
+      "description": "Resource limits for this plan",
+      "properties": {
+        "maxAgents": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Maximum number of agents"
+        },
+        "maxUsersPerOrg": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Maximum users per organization"
+        },
+        "maxSpellExecutionsPerMonth": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Monthly spell execution limit"
+        },
+        "maxWorkflowsPerMonth": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Monthly workflow execution limit"
+        },
+        "maxDataStorageGB": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Data storage limit in GB"
+        },
+        "maxApiCallsPerMonth": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Monthly API call limit"
+        },
+        "maxTomes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Maximum number of tomes"
+        },
+        "maxConcurrentExecutions": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Concurrent execution limit"
+        }
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Plan capabilities",
+      "properties": {
+        "customDomains": {
+          "type": "boolean",
+          "default": false
+        },
+        "ssoEnabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "advancedAnalytics": {
+          "type": "boolean",
+          "default": false
+        },
+        "prioritySupport": {
+          "type": "boolean",
+          "default": false
+        },
+        "slaGuarantee": {
+          "type": "boolean",
+          "default": false
+        },
+        "customIntegrations": {
+          "type": "boolean",
+          "default": false
+        },
+        "whiteLabeling": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "isPublic": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the plan is publicly available"
+    },
+    "isFeatured": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether to feature this plan"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "deprecated", "comingSoon", "beta"],
+      "description": "Plan availability status"
+    },
+    "trialDays": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Free trial period in days"
+    },
+    "setupFee": {
+      "type": "number",
+      "minimum": 0,
+      "description": "One-time setup fee"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional plan metadata",
+      "properties": {
+        "stripePriceId": {
+          "type": "string",
+          "description": "Stripe price ID"
+        },
+        "wediPayPlanId": {
+          "type": "string",
+          "description": "Wedi Pay plan ID"
+        },
+        "popularityScore": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Plan popularity score"
+        },
+        "targetAudience": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Target audience segments"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

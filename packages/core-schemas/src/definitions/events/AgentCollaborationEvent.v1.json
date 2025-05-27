@@ -1,0 +1,142 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/events/AgentCollaborationEvent.v1.json",
+  "title": "AgentCollaborationEvent",
+  "description": "Event emitted when agents collaborate or communicate in the Arcan platform",
+  "allOf": [
+    {
+      "$ref": "../ArcanEvent.v1.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": {
+          "const": "agent.collaboration"
+        },
+        "payload": {
+          "type": "object",
+          "required": ["collaborationType", "initiatorAgentId", "participantAgentIds", "context"],
+          "properties": {
+            "collaborationType": {
+              "type": "string",
+              "enum": [
+                "task_delegation",
+                "information_request",
+                "result_sharing",
+                "workflow_handoff",
+                "negotiation",
+                "consensus_building",
+                "resource_sharing"
+              ],
+              "description": "Type of collaboration"
+            },
+            "initiatorAgentId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Agent that initiated the collaboration"
+            },
+            "participantAgentIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "minItems": 1,
+              "uniqueItems": true,
+              "description": "Other agents involved in the collaboration"
+            },
+            "context": {
+              "type": "object",
+              "required": ["objective"],
+              "properties": {
+                "objective": {
+                  "type": "string",
+                  "description": "Goal of the collaboration"
+                },
+                "workflowId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Associated workflow if applicable"
+                },
+                "taskId": {
+                  "type": "string",
+                  "description": "Associated task if applicable"
+                },
+                "organizationId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Organization context"
+                }
+              },
+              "additionalProperties": true
+            },
+            "protocol": {
+              "type": "string",
+              "enum": ["A2A", "custom"],
+              "description": "Communication protocol used"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["performative", "sender", "content"],
+                "properties": {
+                  "performative": {
+                    "type": "string",
+                    "enum": [
+                      "inform",
+                      "request",
+                      "propose",
+                      "accept",
+                      "reject",
+                      "query",
+                      "confirm"
+                    ],
+                    "description": "FIPA ACL performative"
+                  },
+                  "sender": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Agent ID of sender"
+                  },
+                  "content": {
+                    "type": "object",
+                    "description": "Message content"
+                  },
+                  "timestamp": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "description": "Exchange of messages"
+            },
+            "outcome": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["successful", "failed", "partial", "ongoing"],
+                  "description": "Collaboration outcome"
+                },
+                "results": {
+                  "type": "object",
+                  "description": "Results of the collaboration",
+                  "additionalProperties": true
+                },
+                "duration": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Duration in milliseconds"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

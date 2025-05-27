@@ -1,0 +1,248 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/FinanceAgent.v1.json",
+  "title": "FinanceAgent",
+  "description": "Agent role for financial analysis, reporting, and accounting automation",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["financeCapabilities", "dataAccess", "reportingSchedule"],
+          "properties": {
+            "financeCapabilities": {
+              "type": "object",
+              "properties": {
+                "accountingStandards": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["GAAP", "IFRS", "GASB", "custom"]
+                  },
+                  "description": "Supported accounting standards"
+                },
+                "reportTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "balance_sheet",
+                      "income_statement",
+                      "cash_flow",
+                      "budget_variance",
+                      "forecast",
+                      "audit_trail",
+                      "tax_report",
+                      "custom"
+                    ]
+                  },
+                  "description": "Types of reports this agent can generate"
+                },
+                "analysisCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "ratio_analysis",
+                      "trend_analysis",
+                      "variance_analysis",
+                      "profitability_analysis",
+                      "liquidity_analysis",
+                      "risk_assessment",
+                      "forecasting",
+                      "budgeting"
+                    ]
+                  },
+                  "description": "Financial analysis capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "dataAccess": {
+              "type": "object",
+              "properties": {
+                "accountingSystems": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["systemName", "accessLevel"],
+                    "properties": {
+                      "systemName": {
+                        "type": "string",
+                        "description": "Name of accounting system"
+                      },
+                      "systemType": {
+                        "type": "string",
+                        "enum": ["ERP", "GL", "AP", "AR", "payroll", "expense"],
+                        "description": "Type of system"
+                      },
+                      "accessLevel": {
+                        "type": "string",
+                        "enum": ["read", "write", "approve"],
+                        "description": "Access level to the system"
+                      },
+                      "dataScope": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Specific data entities accessible"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "bankingIntegrations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["bankName", "accountTypes"],
+                    "properties": {
+                      "bankName": {
+                        "type": "string"
+                      },
+                      "accountTypes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["checking", "savings", "credit", "investment"]
+                        }
+                      },
+                      "permissions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["view_balance", "view_transactions", "initiate_transfer", "approve_transfer"]
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "reportingSchedule": {
+              "type": "object",
+              "properties": {
+                "dailyReports": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["reportType", "time"],
+                    "properties": {
+                      "reportType": {
+                        "type": "string"
+                      },
+                      "time": {
+                        "type": "string",
+                        "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+                        "description": "Time in HH:MM format"
+                      },
+                      "recipients": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "monthlyReports": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["reportType", "dayOfMonth"],
+                    "properties": {
+                      "reportType": {
+                        "type": "string"
+                      },
+                      "dayOfMonth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 31
+                      },
+                      "recipients": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": true
+            },
+            "complianceSettings": {
+              "type": "object",
+              "properties": {
+                "regulatoryRequirements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["SOX", "GDPR", "PCI-DSS", "HIPAA", "custom"]
+                  }
+                },
+                "auditTrail": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Whether to maintain detailed audit trail"
+                },
+                "dataRetentionDays": {
+                  "type": "integer",
+                  "minimum": 365,
+                  "default": 2555,
+                  "description": "Days to retain financial records"
+                }
+              },
+              "additionalProperties": false
+            },
+            "approvalWorkflows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["workflowName", "threshold", "approvers"],
+                "properties": {
+                  "workflowName": {
+                    "type": "string"
+                  },
+                  "threshold": {
+                    "type": "object",
+                    "properties": {
+                      "amount": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "currency": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "approvers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

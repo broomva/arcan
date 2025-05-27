@@ -1,0 +1,511 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/governance/DAOProposal.v1.json",
+  "title": "DAOProposal",
+  "description": "Schema for platform governance proposals submitted to the Arcan DAO",
+  "type": "object",
+  "required": [
+    "proposalId",
+    "proposerWalletAddress",
+    "title",
+    "description",
+    "proposalType",
+    "submissionTimestamp",
+    "status"
+  ],
+  "properties": {
+    "proposalId": {
+      "type": "string",
+      "description": "Unique identifier (UUID or on-chain ID)"
+    },
+    "proposerWalletAddress": {
+      "type": "string",
+      "pattern": "^0x[a-fA-F0-9]{40}$",
+      "description": "EVM wallet address of the proposer"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 200,
+      "description": "Proposal title"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 100,
+      "maxLength": 50000,
+      "description": "Detailed proposal description with markdown support"
+    },
+    "proposalType": {
+      "type": "string",
+      "enum": [
+        "schemaUpdate",
+        "protocolChange",
+        "treasuryAllocation",
+        "platformParameterChange",
+        "tokenomicsChange",
+        "governanceRuleChange",
+        "emergencyAction",
+        "grantProposal",
+        "partnershipProposal"
+      ],
+      "description": "Type of governance proposal"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Type-specific proposal data",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/SchemaUpdatePayload"
+        },
+        {
+          "$ref": "#/definitions/ProtocolChangePayload"
+        },
+        {
+          "$ref": "#/definitions/TreasuryAllocationPayload"
+        },
+        {
+          "$ref": "#/definitions/PlatformParameterChangePayload"
+        },
+        {
+          "$ref": "#/definitions/TokenomicsChangePayload"
+        },
+        {
+          "$ref": "#/definitions/GrantProposalPayload"
+        }
+      ]
+    },
+    "submissionTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the proposal was submitted"
+    },
+    "discussionPeriodEnd": {
+      "type": "string",
+      "format": "date-time",
+      "description": "End of discussion period"
+    },
+    "votingStartTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When voting begins"
+    },
+    "votingEndTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When voting ends"
+    },
+    "executionTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When proposal was executed (if passed)"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "submitted",
+        "discussion",
+        "activeVoting",
+        "passed",
+        "failed",
+        "executed",
+        "vetoed",
+        "cancelled"
+      ],
+      "description": "Current proposal status"
+    },
+    "votingParameters": {
+      "type": "object",
+      "properties": {
+        "quorumRequired": {
+          "type": "string",
+          "description": "Minimum token participation required"
+        },
+        "passingThreshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of votes needed to pass"
+        },
+        "votingPeriodDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Duration of voting period"
+        }
+      },
+      "additionalProperties": false
+    },
+    "voteCounts": {
+      "type": "object",
+      "properties": {
+        "for": {
+          "type": "string",
+          "description": "Token-weighted votes in favor"
+        },
+        "against": {
+          "type": "string",
+          "description": "Token-weighted votes against"
+        },
+        "abstain": {
+          "type": "string",
+          "description": "Token-weighted abstentions"
+        },
+        "totalVoters": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of unique voters"
+        },
+        "quorumReached": {
+          "type": "boolean",
+          "description": "Whether quorum was reached"
+        }
+      },
+      "additionalProperties": false
+    },
+    "onChainData": {
+      "type": "object",
+      "properties": {
+        "transactionHash": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{64}$",
+          "description": "Transaction hash of proposal submission"
+        },
+        "blockNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Block number when submitted"
+        },
+        "chainId": {
+          "type": "integer",
+          "description": "Chain ID where proposal exists"
+        },
+        "governanceContractAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "Address of governance contract"
+        }
+      },
+      "additionalProperties": false
+    },
+    "discussion": {
+      "type": "object",
+      "properties": {
+        "forumUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link to forum discussion"
+        },
+        "commentCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "supportingDocuments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "url"],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["whitepaper", "audit", "analysis", "code", "other"]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"]
+        },
+        "estimatedImpact": {
+          "type": "string",
+          "description": "Estimated impact description"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "SchemaUpdatePayload": {
+      "type": "object",
+      "required": ["schemaUrl", "newSchemaVersion"],
+      "properties": {
+        "schemaUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the schema to update"
+        },
+        "newSchemaVersion": {
+          "type": "string",
+          "description": "New version number"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "changeType"],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "changeType": {
+                "type": "string",
+                "enum": ["add", "remove", "modify", "rename"]
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "compatibilityReportUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link to compatibility analysis"
+        },
+        "migrationStrategy": {
+          "type": "string",
+          "description": "How to migrate existing data"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProtocolChangePayload": {
+      "type": "object",
+      "required": ["protocolName", "changeDescription"],
+      "properties": {
+        "protocolName": {
+          "type": "string",
+          "enum": ["A2A", "AG-UI", "MCP", "EventStream"]
+        },
+        "changeDescription": {
+          "type": "string"
+        },
+        "breakingChange": {
+          "type": "boolean",
+          "default": false
+        },
+        "implementationPlan": {
+          "type": "string"
+        },
+        "rollbackPlan": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TreasuryAllocationPayload": {
+      "type": "object",
+      "required": ["amount", "currency", "recipient", "purpose"],
+      "properties": {
+        "amount": {
+          "type": "string",
+          "description": "Amount to allocate"
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["ARC", "USDC", "ETH", "other"]
+        },
+        "recipient": {
+          "type": "string",
+          "description": "Recipient address or identifier"
+        },
+        "purpose": {
+          "type": "string",
+          "description": "Purpose of allocation"
+        },
+        "vestingSchedule": {
+          "type": "object",
+          "properties": {
+            "cliffMonths": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "vestingMonths": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "releaseSchedule": {
+              "type": "string",
+              "enum": ["linear", "quarterly", "milestone-based"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "milestones": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description", "deadline"],
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "deadline": {
+                "type": "string",
+                "format": "date"
+              },
+              "paymentPercentage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PlatformParameterChangePayload": {
+      "type": "object",
+      "required": ["parameter", "currentValue", "newValue"],
+      "properties": {
+        "parameter": {
+          "type": "string",
+          "description": "Parameter to change"
+        },
+        "currentValue": {
+          "description": "Current parameter value"
+        },
+        "newValue": {
+          "description": "Proposed new value"
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Reason for the change"
+        },
+        "effectiveDate": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When change takes effect"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TokenomicsChangePayload": {
+      "type": "object",
+      "required": ["changeType"],
+      "properties": {
+        "changeType": {
+          "type": "string",
+          "enum": ["emission", "burning", "staking", "rewards", "fees"]
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "economicAnalysis": {
+          "type": "string",
+          "format": "uri",
+          "description": "Link to economic impact analysis"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GrantProposalPayload": {
+      "type": "object",
+      "required": ["grantAmount", "recipient", "projectDescription", "deliverables"],
+      "properties": {
+        "grantAmount": {
+          "type": "object",
+          "required": ["amount", "currency"],
+          "properties": {
+            "amount": {
+              "type": "string"
+            },
+            "currency": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "recipient": {
+          "type": "object",
+          "required": ["name", "walletAddress"],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "walletAddress": {
+              "type": "string",
+              "pattern": "^0x[a-fA-F0-9]{40}$"
+            },
+            "organizationId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false
+        },
+        "projectDescription": {
+          "type": "string"
+        },
+        "deliverables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description", "deadline"],
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "deadline": {
+                "type": "string",
+                "format": "date"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "teamMembers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "github": {
+                "type": "string"
+              },
+              "linkedin": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 

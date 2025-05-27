@@ -1,0 +1,382 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/MarketingAgent.v1.json",
+  "title": "MarketingAgent",
+  "description": "Agent role for marketing automation, content creation, campaign management, and brand strategy",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["marketingCapabilities", "marTechStack", "contentStrategy"],
+          "properties": {
+            "marketingCapabilities": {
+              "type": "object",
+              "properties": {
+                "channels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "email",
+                      "social_media",
+                      "content_marketing",
+                      "seo",
+                      "sem",
+                      "display_advertising",
+                      "video_marketing",
+                      "podcast",
+                      "webinar",
+                      "influencer",
+                      "affiliate",
+                      "direct_mail"
+                    ]
+                  },
+                  "description": "Marketing channels this agent can manage"
+                },
+                "campaignTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "brand_awareness",
+                      "lead_generation",
+                      "demand_generation",
+                      "product_launch",
+                      "customer_retention",
+                      "upsell_cross_sell",
+                      "event_promotion",
+                      "seasonal",
+                      "crisis_management"
+                    ]
+                  },
+                  "description": "Types of campaigns this agent can execute"
+                },
+                "analyticsCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "attribution_modeling",
+                      "conversion_tracking",
+                      "roi_analysis",
+                      "customer_journey_mapping",
+                      "cohort_analysis",
+                      "a_b_testing",
+                      "predictive_analytics",
+                      "sentiment_analysis",
+                      "competitive_analysis"
+                    ]
+                  },
+                  "description": "Marketing analytics capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "marTechStack": {
+              "type": "object",
+              "properties": {
+                "automationPlatform": {
+                  "type": "string",
+                  "enum": ["HubSpot", "Marketo", "Pardot", "ActiveCampaign", "Mailchimp", "Braze", "custom"],
+                  "description": "Primary marketing automation platform"
+                },
+                "integrations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["toolType", "toolName"],
+                    "properties": {
+                      "toolType": {
+                        "type": "string",
+                        "enum": [
+                          "crm",
+                          "analytics",
+                          "social_media",
+                          "content_management",
+                          "email",
+                          "advertising",
+                          "seo",
+                          "design",
+                          "project_management"
+                        ]
+                      },
+                      "toolName": {
+                        "type": "string"
+                      },
+                      "apiEnabled": {
+                        "type": "boolean",
+                        "default": true
+                      },
+                      "dataSync": {
+                        "type": "string",
+                        "enum": ["realtime", "hourly", "daily", "weekly", "manual"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "dataWarehouse": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["Snowflake", "BigQuery", "Redshift", "Databricks", "custom"]
+                    },
+                    "updateFrequency": {
+                      "type": "string",
+                      "enum": ["realtime", "hourly", "daily"]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "contentStrategy": {
+              "type": "object",
+              "properties": {
+                "contentTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "frequency"],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "blog_post",
+                          "whitepaper",
+                          "case_study",
+                          "infographic",
+                          "video",
+                          "podcast",
+                          "social_post",
+                          "email_newsletter",
+                          "ebook",
+                          "webinar"
+                        ]
+                      },
+                      "frequency": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "biweekly", "monthly", "quarterly", "as_needed"]
+                      },
+                      "aiGenerated": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Whether AI can generate this content type"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "seoStrategy": {
+                  "type": "object",
+                  "properties": {
+                    "keywordResearch": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "competitorAnalysis": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "technicalSEO": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "linkBuilding": {
+                      "type": "boolean",
+                      "default": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "brandGuidelines": {
+                  "type": "object",
+                  "properties": {
+                    "toneOfVoice": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Brand voice attributes"
+                    },
+                    "messagingPillars": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Key messaging themes"
+                    },
+                    "visualStyleGuide": {
+                      "type": "string",
+                      "format": "uri",
+                      "description": "Link to visual style guide"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "campaignManagement": {
+              "type": "object",
+              "properties": {
+                "workflow": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["phase", "duration", "deliverables"],
+                    "properties": {
+                      "phase": {
+                        "type": "string",
+                        "enum": [
+                          "planning",
+                          "creative_development",
+                          "approval",
+                          "execution",
+                          "monitoring",
+                          "optimization",
+                          "reporting"
+                        ]
+                      },
+                      "duration": {
+                        "type": "string",
+                        "description": "Typical duration of this phase"
+                      },
+                      "deliverables": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "automationLevel": {
+                        "type": "string",
+                        "enum": ["fully_automated", "semi_automated", "manual"],
+                        "default": "semi_automated"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "budgetManagement": {
+                  "type": "object",
+                  "properties": {
+                    "trackingMethod": {
+                      "type": "string",
+                      "enum": ["by_channel", "by_campaign", "by_objective", "hybrid"]
+                    },
+                    "approvalThresholds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["amount", "approver"],
+                        "properties": {
+                          "amount": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "currency": {
+                            "type": "string",
+                            "default": "USD"
+                          },
+                          "approver": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "performanceMetrics": {
+              "type": "object",
+              "properties": {
+                "kpis": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "target", "frequency"],
+                    "properties": {
+                      "metric": {
+                        "type": "string",
+                        "enum": [
+                          "leads_generated",
+                          "conversion_rate",
+                          "cost_per_lead",
+                          "customer_acquisition_cost",
+                          "lifetime_value",
+                          "roi",
+                          "engagement_rate",
+                          "click_through_rate",
+                          "open_rate",
+                          "share_of_voice",
+                          "net_promoter_score"
+                        ]
+                      },
+                      "target": {
+                        "type": ["number", "string"]
+                      },
+                      "frequency": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly", "quarterly"]
+                      },
+                      "dataSource": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "reportingSchedule": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["reportType", "frequency", "audience"],
+                    "properties": {
+                      "reportType": {
+                        "type": "string",
+                        "enum": [
+                          "campaign_performance",
+                          "channel_analysis",
+                          "content_performance",
+                          "lead_quality",
+                          "attribution",
+                          "competitive_intelligence"
+                        ]
+                      },
+                      "frequency": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "monthly", "quarterly", "on_demand"]
+                      },
+                      "audience": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

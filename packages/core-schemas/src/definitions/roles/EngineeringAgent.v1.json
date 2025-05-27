@@ -1,0 +1,432 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/EngineeringAgent.v1.json",
+  "title": "EngineeringAgent",
+  "description": "Agent role for software development, DevOps, infrastructure management, and technical operations",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["engineeringCapabilities", "developmentEnvironment", "cicdPipeline"],
+          "properties": {
+            "engineeringCapabilities": {
+              "type": "object",
+              "properties": {
+                "developmentTasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "code_generation",
+                      "code_review",
+                      "bug_fixing",
+                      "refactoring",
+                      "testing",
+                      "documentation",
+                      "api_development",
+                      "database_design",
+                      "architecture_design",
+                      "performance_optimization",
+                      "security_hardening",
+                      "dependency_management"
+                    ]
+                  },
+                  "description": "Development tasks this agent can perform"
+                },
+                "programmingLanguages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["language", "proficiency"],
+                    "properties": {
+                      "language": {
+                        "type": "string",
+                        "enum": [
+                          "Python",
+                          "JavaScript",
+                          "TypeScript",
+                          "Java",
+                          "Go",
+                          "Rust",
+                          "C++",
+                          "C#",
+                          "Ruby",
+                          "PHP",
+                          "Swift",
+                          "Kotlin"
+                        ]
+                      },
+                      "proficiency": {
+                        "type": "string",
+                        "enum": ["basic", "intermediate", "advanced", "expert"]
+                      },
+                      "frameworks": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "devOpsCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "infrastructure_as_code",
+                      "container_orchestration",
+                      "ci_cd_pipeline",
+                      "monitoring_alerting",
+                      "log_management",
+                      "backup_recovery",
+                      "scaling_optimization",
+                      "security_scanning",
+                      "deployment_automation",
+                      "incident_response"
+                    ]
+                  },
+                  "description": "DevOps capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "developmentEnvironment": {
+              "type": "object",
+              "properties": {
+                "versionControl": {
+                  "type": "object",
+                  "required": ["system", "workflow"],
+                  "properties": {
+                    "system": {
+                      "type": "string",
+                      "enum": ["Git", "SVN", "Mercurial", "Perforce"],
+                      "default": "Git"
+                    },
+                    "platforms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["GitHub", "GitLab", "Bitbucket", "Azure_DevOps"]
+                      }
+                    },
+                    "workflow": {
+                      "type": "string",
+                      "enum": ["GitFlow", "GitHub_Flow", "GitLab_Flow", "trunk_based", "custom"]
+                    },
+                    "branchProtection": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "ide": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["VSCode", "IntelliJ", "Eclipse", "Vim", "Emacs", "Sublime", "Atom"]
+                  }
+                },
+                "codeQualityTools": {
+                  "type": "object",
+                  "properties": {
+                    "linters": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "formatters": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "staticAnalysis": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["SonarQube", "CodeClimate", "Coverity", "Checkmarx", "Snyk"]
+                      }
+                    },
+                    "testCoverage": {
+                      "type": "object",
+                      "properties": {
+                        "minimum": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "default": 80
+                        },
+                        "tools": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "cicdPipeline": {
+              "type": "object",
+              "required": ["platform", "stages"],
+              "properties": {
+                "platform": {
+                  "type": "string",
+                  "enum": ["Jenkins", "GitHub_Actions", "GitLab_CI", "CircleCI", "Travis_CI", "Azure_Pipelines", "ArgoCD", "Tekton"]
+                },
+                "stages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "actions"],
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "enum": ["build", "test", "security_scan", "quality_gate", "deploy_staging", "integration_test", "deploy_production", "smoke_test", "rollback"]
+                      },
+                      "actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "parallel": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in minutes"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "deploymentStrategies": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["blue_green", "canary", "rolling", "recreate", "a_b_testing"]
+                  }
+                },
+                "environments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "type"],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": ["development", "staging", "production", "qa", "uat"]
+                      },
+                      "approvalRequired": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "autoScaling": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "infrastructureManagement": {
+              "type": "object",
+              "properties": {
+                "cloudProviders": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["provider", "services"],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "enum": ["AWS", "Azure", "GCP", "DigitalOcean", "Linode", "on_premise"]
+                      },
+                      "services": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "regions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "iacTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["Terraform", "CloudFormation", "Pulumi", "Ansible", "Chef", "Puppet"]
+                  }
+                },
+                "containerization": {
+                  "type": "object",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "enum": ["Docker", "Podman", "containerd"]
+                    },
+                    "orchestration": {
+                      "type": "string",
+                      "enum": ["Kubernetes", "Docker_Swarm", "ECS", "AKS", "GKE", "OpenShift"]
+                    },
+                    "registry": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "monitoringAndObservability": {
+              "type": "object",
+              "properties": {
+                "metrics": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["Prometheus", "DataDog", "NewRelic", "CloudWatch", "Azure_Monitor", "Grafana"]
+                    },
+                    "customMetrics": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "logging": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["ELK", "Splunk", "DataDog", "CloudWatch", "Loki", "Fluentd"]
+                    },
+                    "logLevels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "tracing": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["Jaeger", "Zipkin", "AWS_X-Ray", "DataDog_APM", "NewRelic_APM"]
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "alerting": {
+                  "type": "object",
+                  "properties": {
+                    "channels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["email", "slack", "pagerduty", "webhook", "sms"]
+                      }
+                    },
+                    "severityLevels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low", "info"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "securityPractices": {
+              "type": "object",
+              "properties": {
+                "scanningTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "tool"],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["SAST", "DAST", "dependency", "container", "infrastructure"]
+                      },
+                      "tool": {
+                        "type": "string"
+                      },
+                      "schedule": {
+                        "type": "string",
+                        "enum": ["on_commit", "daily", "weekly", "on_demand"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "secretsManagement": {
+                  "type": "string",
+                  "enum": ["HashiCorp_Vault", "AWS_Secrets_Manager", "Azure_Key_Vault", "Kubernetes_Secrets", "dotenv"]
+                },
+                "compliance": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["SOC2", "ISO27001", "PCI-DSS", "HIPAA", "GDPR", "FedRAMP"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

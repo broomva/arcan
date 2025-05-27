@@ -1,0 +1,550 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/LegalAgent.v1.json",
+  "title": "LegalAgent",
+  "description": "Agent role for legal operations, compliance management, contract analysis, and regulatory affairs",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["legalCapabilities", "contractManagement", "complianceFramework"],
+          "properties": {
+            "legalCapabilities": {
+              "type": "object",
+              "properties": {
+                "practiceAreas": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "corporate_law",
+                      "intellectual_property",
+                      "employment_law",
+                      "data_privacy",
+                      "contract_law",
+                      "regulatory_compliance",
+                      "litigation_support",
+                      "mergers_acquisitions",
+                      "securities_law",
+                      "tax_law",
+                      "international_law",
+                      "real_estate"
+                    ]
+                  },
+                  "description": "Legal practice areas this agent covers"
+                },
+                "legalServices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "contract_review",
+                      "contract_drafting",
+                      "legal_research",
+                      "compliance_monitoring",
+                      "risk_assessment",
+                      "policy_development",
+                      "dispute_resolution",
+                      "due_diligence",
+                      "regulatory_filing",
+                      "legal_advice"
+                    ]
+                  },
+                  "description": "Legal services this agent can provide"
+                },
+                "jurisdictions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["country", "states"],
+                    "properties": {
+                      "country": {
+                        "type": "string"
+                      },
+                      "states": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "specializations": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "contractManagement": {
+              "type": "object",
+              "properties": {
+                "contractTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "nda",
+                      "service_agreement",
+                      "purchase_agreement",
+                      "employment_contract",
+                      "licensing_agreement",
+                      "partnership_agreement",
+                      "vendor_contract",
+                      "lease_agreement",
+                      "terms_of_service",
+                      "privacy_policy"
+                    ]
+                  },
+                  "description": "Types of contracts handled"
+                },
+                "contractLifecycle": {
+                  "type": "object",
+                  "properties": {
+                    "stages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["stage", "actions"],
+                        "properties": {
+                          "stage": {
+                            "type": "string",
+                            "enum": [
+                              "request",
+                              "drafting",
+                              "review",
+                              "negotiation",
+                              "approval",
+                              "execution",
+                              "storage",
+                              "monitoring",
+                              "renewal",
+                              "termination"
+                            ]
+                          },
+                          "actions": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "automationLevel": {
+                            "type": "string",
+                            "enum": ["manual", "semi_automated", "fully_automated"]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "approvalWorkflow": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["contractValue", "approvers"],
+                        "properties": {
+                          "contractValue": {
+                            "type": "object",
+                            "properties": {
+                              "min": {
+                                "type": "number"
+                              },
+                              "max": {
+                                "type": "number"
+                              },
+                              "currency": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "approvers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "clauseLibrary": {
+                  "type": "object",
+                  "properties": {
+                    "standardClauses": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["clauseType", "versions"],
+                        "properties": {
+                          "clauseType": {
+                            "type": "string"
+                          },
+                          "versions": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "riskLevel": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high"]
+                          },
+                          "lastUpdated": {
+                            "type": "string",
+                            "format": "date"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "aiGeneration": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Can generate custom clauses using AI"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "contractAnalytics": {
+                  "type": "object",
+                  "properties": {
+                    "extractionCapabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "key_terms",
+                          "obligations",
+                          "deadlines",
+                          "payment_terms",
+                          "termination_clauses",
+                          "liability_caps",
+                          "warranties",
+                          "indemnification"
+                        ]
+                      }
+                    },
+                    "riskScoring": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "comparisonAnalysis": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "complianceFramework": {
+              "type": "object",
+              "properties": {
+                "regulations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["regulation", "scope"],
+                    "properties": {
+                      "regulation": {
+                        "type": "string",
+                        "enum": [
+                          "GDPR",
+                          "CCPA",
+                          "HIPAA",
+                          "SOX",
+                          "PCI_DSS",
+                          "FCPA",
+                          "AML",
+                          "KYC",
+                          "COPPA",
+                          "FERPA",
+                          "GLBA",
+                          "TCPA"
+                        ]
+                      },
+                      "scope": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "lastAudit": {
+                        "type": "string",
+                        "format": "date"
+                      },
+                      "nextAudit": {
+                        "type": "string",
+                        "format": "date"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "complianceActivities": {
+                  "type": "object",
+                  "properties": {
+                    "monitoring": {
+                      "type": "object",
+                      "properties": {
+                        "frequency": {
+                          "type": "string",
+                          "enum": ["continuous", "daily", "weekly", "monthly", "quarterly"]
+                        },
+                        "automatedChecks": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "reporting": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["reportType", "frequency", "recipients"],
+                        "properties": {
+                          "reportType": {
+                            "type": "string"
+                          },
+                          "frequency": {
+                            "type": "string",
+                            "enum": ["monthly", "quarterly", "annually", "on_demand"]
+                          },
+                          "recipients": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "training": {
+                      "type": "object",
+                      "properties": {
+                        "programs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "frequency": {
+                          "type": "string",
+                          "enum": ["quarterly", "semi_annually", "annually"]
+                        },
+                        "tracking": {
+                          "type": "boolean",
+                          "default": true
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "policyManagement": {
+                  "type": "object",
+                  "properties": {
+                    "policyTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "privacy_policy",
+                          "security_policy",
+                          "code_of_conduct",
+                          "anti_corruption",
+                          "data_retention",
+                          "incident_response",
+                          "acceptable_use",
+                          "whistleblower"
+                        ]
+                      }
+                    },
+                    "reviewCycle": {
+                      "type": "string",
+                      "enum": ["quarterly", "semi_annually", "annually"]
+                    },
+                    "versionControl": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "legalResearch": {
+              "type": "object",
+              "properties": {
+                "researchDatabases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["Westlaw", "LexisNexis", "Bloomberg_Law", "Fastcase", "Google_Scholar", "PACER"]
+                  }
+                },
+                "researchCapabilities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "case_law_research",
+                      "statutory_research",
+                      "regulatory_research",
+                      "precedent_analysis",
+                      "jurisdiction_comparison",
+                      "legal_memo_drafting"
+                    ]
+                  }
+                },
+                "citationFormats": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["Bluebook", "ALWD", "APA", "MLA", "Chicago"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "documentManagement": {
+              "type": "object",
+              "properties": {
+                "documentTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "contracts",
+                      "legal_opinions",
+                      "court_filings",
+                      "regulatory_filings",
+                      "corporate_documents",
+                      "intellectual_property",
+                      "correspondence"
+                    ]
+                  }
+                },
+                "retentionPolicies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["documentType", "retentionPeriod"],
+                    "properties": {
+                      "documentType": {
+                        "type": "string"
+                      },
+                      "retentionPeriod": {
+                        "type": "string"
+                      },
+                      "destructionMethod": {
+                        "type": "string",
+                        "enum": ["secure_deletion", "shredding", "archival"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "accessControl": {
+                  "type": "object",
+                  "properties": {
+                    "privilegeManagement": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "ethicalWalls": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "auditTrail": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "riskManagement": {
+              "type": "object",
+              "properties": {
+                "riskCategories": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "regulatory",
+                      "contractual",
+                      "litigation",
+                      "reputational",
+                      "operational",
+                      "financial",
+                      "cybersecurity",
+                      "intellectual_property"
+                    ]
+                  }
+                },
+                "riskAssessment": {
+                  "type": "object",
+                  "properties": {
+                    "methodology": {
+                      "type": "string",
+                      "enum": ["qualitative", "quantitative", "hybrid"]
+                    },
+                    "frequency": {
+                      "type": "string",
+                      "enum": ["continuous", "quarterly", "annually"]
+                    },
+                    "scoringMatrix": {
+                      "type": "object",
+                      "properties": {
+                        "impact": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": ["negligible", "minor", "moderate", "major", "severe"]
+                          }
+                        },
+                        "likelihood": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": ["rare", "unlikely", "possible", "likely", "almost_certain"]
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

@@ -1,0 +1,460 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/marketplace/MarketplaceListing.v1.json",
+  "title": "MarketplaceListing",
+  "description": "Schema for listings of Agents, Spells, or Tomes offered on Arcan's marketplace",
+  "type": "object",
+  "required": [
+    "listingId",
+    "resourceType",
+    "resourceId",
+    "publisherOrgId",
+    "title",
+    "description",
+    "pricingModel",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "listingId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this marketplace listing"
+    },
+    "resourceType": {
+      "type": "string",
+      "enum": ["ArcanAgent", "ArcanSpell", "ArcanTome", "AgentRoleTemplate", "WorkflowTemplate"],
+      "description": "Type of resource being listed"
+    },
+    "resourceId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID of the actual resource being listed"
+    },
+    "publisherOrgId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organization publishing this listing"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 200,
+      "description": "Listing title for marketplace display"
+    },
+    "shortDescription": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "Brief description for search results"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 10000,
+      "description": "Detailed description with markdown support"
+    },
+    "category": {
+      "type": "string",
+      "description": "Primary category for classification"
+    },
+    "subcategories": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "uniqueItems": true,
+      "description": "Additional categories for discovery"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 50
+      },
+      "maxItems": 20,
+      "uniqueItems": true,
+      "description": "Tags for search and filtering"
+    },
+    "pricingModel": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["free", "oneTimePurchase", "subscription", "payPerUse", "freemium", "custom"],
+          "description": "Pricing model type"
+        },
+        "price": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Price amount"
+            },
+            "currency": {
+              "type": "string",
+              "enum": ["USD", "EUR", "GBP", "ARC"],
+              "description": "Currency for pricing"
+            }
+          },
+          "additionalProperties": false
+        },
+        "subscriptionTiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "price", "features"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Tier name"
+              },
+              "price": {
+                "type": "object",
+                "required": ["amount", "currency", "interval"],
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "interval": {
+                    "type": "string",
+                    "enum": ["monthly", "quarterly", "annually"]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "usageMetrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["metricName", "unit", "pricePerUnit"],
+            "properties": {
+              "metricName": {
+                "type": "string",
+                "description": "Name of usage metric"
+              },
+              "unit": {
+                "type": "string",
+                "description": "Unit of measurement"
+              },
+              "pricePerUnit": {
+                "type": "number",
+                "minimum": 0
+              },
+              "freeQuota": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Free usage before charging"
+              },
+              "volumeDiscounts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["threshold", "discountPercent"],
+                  "properties": {
+                    "threshold": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "discountPercent": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "trialPeriod": {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Trial duration in days"
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Features available during trial"
+            },
+            "creditCardRequired": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "media": {
+      "type": "object",
+      "properties": {
+        "icon": {
+          "type": "string",
+          "format": "uri",
+          "description": "Icon URL for the listing"
+        },
+        "banner": {
+          "type": "string",
+          "format": "uri",
+          "description": "Banner image URL"
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "videos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["url", "title"],
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "title": {
+                "type": "string"
+              },
+              "duration": {
+                "type": "string",
+                "description": "Duration in ISO 8601 format"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "documentation": {
+      "type": "object",
+      "properties": {
+        "readmeUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to detailed documentation"
+        },
+        "apiDocsUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "API documentation URL"
+        },
+        "tutorialsUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Tutorials URL"
+        },
+        "changelogUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Changelog URL"
+        }
+      },
+      "additionalProperties": false
+    },
+    "support": {
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "responseTime": {
+          "type": "string",
+          "description": "Expected response time"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "requirements": {
+      "type": "object",
+      "properties": {
+        "minimumPlanRequired": {
+          "type": "string",
+          "description": "Minimum Arcan subscription plan required"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "name"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["agent", "spell", "tome", "service"]
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "optional": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required platform permissions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "downloads": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeInstalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rating": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "reviewCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "pendingReview", "published", "rejected", "suspended", "archived"],
+      "description": "Listing status"
+    },
+    "reviewStatus": {
+      "type": "object",
+      "properties": {
+        "lastReviewedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reviewedBy": {
+          "type": "string"
+        },
+        "reviewNotes": {
+          "type": "string"
+        },
+        "rejectionReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "Current version of the listed resource"
+    },
+    "versionHistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["version", "releaseDate", "changes"],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "releaseDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "changes": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publishedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+} 
