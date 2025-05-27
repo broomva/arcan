@@ -9,13 +9,13 @@ permissions:
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ['main']
     paths:
       - 'packages/arcan/**'
       - '.github/workflows/python-ci.yml'
       - 'turbo.json'
   pull_request:
-    branches: [ "main" ]
+    branches: ['main']
     paths:
       - 'packages/arcan/**'
       - '.github/workflows/python-ci.yml'
@@ -28,9 +28,9 @@ on:
         default: 'warning'
         type: choice
         options:
-        - info
-        - warning
-        - debug
+          - info
+          - warning
+          - debug
       tags:
         description: 'CI Tags'
         required: false
@@ -45,171 +45,171 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ['3.10', '3.11', '3.12']
 
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Needed for release-please
-    
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v1
-      with:
-        bun-version: 1.2.2
-    
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: true
-        cache-dependency-glob: "packages/arcan/pyproject.toml"
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      run: |
-        uv python install ${{ matrix.python-version }}
-        uv python pin ${{ matrix.python-version }}
-    
-    - name: Cache Turborepo
-      uses: actions/cache@v3
-      with:
-        path: .turbo
-        key: ${{ runner.os }}-turbo-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-turbo-
-    
-    - name: Install Node dependencies
-      run: bun install
-    
-    - name: Install Python dependencies
-      run: |
-        cd packages/arcan
-        uv sync --all-extras
-    
-    - name: Run Turborepo Python lint
-      run: |
-        # Add Python linting to turbo.json if not present
-        if ! grep -q "lint:python" turbo.json; then
-          echo "Adding Python lint task to turbo.json"
-          jq '.tasks["lint:python"] = {"dependsOn": ["^lint:python"], "cache": true, "outputs": [".coverage/**", "htmlcov/**", ".mypy_cache/**"]}' turbo.json > turbo.tmp.json && mv turbo.tmp.json turbo.json
-        fi
-        
-        # Create lint script for Python
-        cat > packages/arcan/lint.sh << 'EOF'
-        #!/bin/bash
-        set -e
-        echo "Running Black formatter check..."
-        uv run black --check --diff .
-        echo "Running Ruff linter..."
-        uv run ruff check .
-        echo "Running MyPy type checker..."
-        uv run mypy . --ignore-missing-imports
-        EOF
-        chmod +x packages/arcan/lint.sh
-        
-        # Run linting through Turborepo
-        bun run turbo run lint:python --filter=arcan
-    
-    - name: Run tests with coverage
-      run: |
-        cd packages/arcan
-        uv run pytest -v --cov=arcan --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=90 -n auto
-      env:
-        PYTHONPATH: ${{ github.workspace }}/packages/arcan
-    
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./packages/arcan/coverage.xml
-        flags: python-${{ matrix.python-version }}
-        name: arcan-coverage-${{ matrix.python-version }}
-    
-    - name: Build package
-      run: |
-        cd packages/arcan
-        uv build
-    
-    - name: Validate package
-      run: |
-        cd packages/arcan
-        uv run twine check dist/*
-    
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: python-package-${{ matrix.python-version }}
-        path: packages/arcan/dist/
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for release-please
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'packages/arcan/pyproject.toml'
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: |
+          uv python install ${{ matrix.python-version }}
+          uv python pin ${{ matrix.python-version }}
+
+      - name: Cache Turborepo
+        uses: actions/cache@v3
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
+
+      - name: Install Node dependencies
+        run: bun install
+
+      - name: Install Python dependencies
+        run: |
+          cd packages/arcan
+          uv sync --all-extras
+
+      - name: Run Turborepo Python lint
+        run: |
+          # Add Python linting to turbo.json if not present
+          if ! grep -q "lint:python" turbo.json; then
+            echo "Adding Python lint task to turbo.json"
+            jq '.tasks["lint:python"] = {"dependsOn": ["^lint:python"], "cache": true, "outputs": [".coverage/**", "htmlcov/**", ".mypy_cache/**"]}' turbo.json > turbo.tmp.json && mv turbo.tmp.json turbo.json
+          fi
+
+          # Create lint script for Python
+          cat > packages/arcan/lint.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          echo "Running Black formatter check..."
+          uv run black --check --diff .
+          echo "Running Ruff linter..."
+          uv run ruff check .
+          echo "Running MyPy type checker..."
+          uv run mypy . --ignore-missing-imports
+          EOF
+          chmod +x packages/arcan/lint.sh
+
+          # Run linting through Turborepo
+          bun run turbo run lint:python --filter=arcan
+
+      - name: Run tests with coverage
+        run: |
+          cd packages/arcan
+          uv run pytest -v --cov=arcan --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=90 -n auto
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages/arcan
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./packages/arcan/coverage.xml
+          flags: python-${{ matrix.python-version }}
+          name: arcan-coverage-${{ matrix.python-version }}
+
+      - name: Build package
+        run: |
+          cd packages/arcan
+          uv build
+
+      - name: Validate package
+        run: |
+          cd packages/arcan
+          uv run twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: python-package-${{ matrix.python-version }}
+          path: packages/arcan/dist/
 
   auto-fix:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     needs: build
-    
+
     steps:
-    - uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        ref: ${{ github.head_ref }}
-    
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v1
-      with:
-        bun-version: 1.2.2
-    
-    - name: Install uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: true
-    
-    - name: Set up Python
-      run: |
-        uv python install 3.12
-        uv python pin 3.12
-    
-    - name: Install dependencies
-      run: |
-        bun install
-        cd packages/arcan
-        uv sync --all-extras
-    
-    - name: Auto-format code
-      run: |
-        cd packages/arcan
-        uv run black .
-        uv run ruff check --fix .
-    
-    - name: Commit and push changes
-      run: |
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        git add .
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "chore: auto-format Python code [skip ci]"
-          git push
-        fi
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: |
+          uv python install 3.12
+          uv python pin 3.12
+
+      - name: Install dependencies
+        run: |
+          bun install
+          cd packages/arcan
+          uv sync --all-extras
+
+      - name: Auto-format code
+        run: |
+          cd packages/arcan
+          uv run black .
+          uv run ruff check --fix .
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: auto-format Python code [skip ci]"
+            git push
+          fi
 
   release:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
+
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    
-    - name: Handle Versioning
-      uses: google-github-actions/release-please-action@v4
-      id: release
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        release-type: python
-    
-    - name: Dispatch CD workflow
-      if: ${{ steps.release.outputs.release_created }}
-      uses: peter-evans/repository-dispatch@v2
-      with:
-        token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
-        repository: ${{ github.repository }}
-        event-type: python-cd
-        client-payload: '{"version": "${{ steps.release.outputs.version }}", "tag": "${{ steps.release.outputs.tag_name }}"}'
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Handle Versioning
+        uses: google-github-actions/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-type: python
+
+      - name: Dispatch CD workflow
+        if: ${{ steps.release.outputs.release_created }}
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          event-type: python-cd
+          client-payload: '{"version": "${{ steps.release.outputs.version }}", "tag": "${{ steps.release.outputs.tag_name }}"}'

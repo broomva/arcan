@@ -5,17 +5,20 @@
 ### Day 1-2: Core Schemas Package Setup
 
 1. **Create Package Structure**
+
 ```bash
 mkdir -p packages/core-schemas/{json,python,typescript,scripts}
 mkdir -p packages/core-schemas/json/{common,agent,event,workflow,finance}
 ```
 
 2. **Initialize Package Configuration**
+
 - Create `package.json` for TypeScript tooling
 - Create `pyproject.toml` for Python tooling
 - Add to Turborepo pipeline
 
 3. **Install Code Generation Tools**
+
 ```json
 // packages/core-schemas/package.json
 {
@@ -40,6 +43,7 @@ mkdir -p packages/core-schemas/json/{common,agent,event,workflow,finance}
 ### Day 3-4: Define Core JSON Schemas
 
 1. **Common Types Schema**
+
 ```json
 // packages/core-schemas/json/common/types.json
 {
@@ -63,6 +67,7 @@ mkdir -p packages/core-schemas/json/{common,agent,event,workflow,finance}
 ```
 
 2. **Agent Event Schema**
+
 ```json
 // packages/core-schemas/json/event/agent-interaction.json
 {
@@ -88,6 +93,7 @@ mkdir -p packages/core-schemas/json/{common,agent,event,workflow,finance}
 ### Day 5: Code Generation Pipeline
 
 1. **Python Generation Script**
+
 ```javascript
 // packages/core-schemas/scripts/generate-python.js
 const { exec } = require('child_process');
@@ -97,13 +103,13 @@ const path = require('path');
 const generatePython = async () => {
   const jsonDir = path.join(__dirname, '../json');
   const outputDir = path.join(__dirname, '../python/models');
-  
+
   // Ensure output directory exists
   fs.mkdirSync(outputDir, { recursive: true });
-  
+
   // Generate Pydantic models
   const cmd = `datamodel-codegen --input ${jsonDir} --output ${outputDir} --use-default --target-python-version 3.10`;
-  
+
   exec(cmd, (error, stdout, stderr) => {
     if (error) {
       console.error(`Error: ${error}`);
@@ -121,11 +127,13 @@ generatePython();
 ### Day 1-2: Event Streaming Package
 
 1. **Create Event Streaming Package**
+
 ```bash
 mkdir -p packages/event-streaming/{src,tests}
 ```
 
 2. **Base Event Publisher**
+
 ```python
 # packages/event-streaming/src/publisher.py
 from typing import Any, Dict, Optional
@@ -140,7 +148,7 @@ logger = logging.getLogger(__name__)
 
 class EventPublisher(ABC):
     """Abstract base class for event publishers"""
-    
+
     @abstractmethod
     async def publish(self, topic: str, event: BaseModel) -> None:
         """Publish an event to a topic"""
@@ -148,12 +156,12 @@ class EventPublisher(ABC):
 
 class KafkaEventPublisher(EventPublisher):
     """Kafka implementation of event publisher"""
-    
+
     def __init__(self, bootstrap_servers: str, **kwargs):
         self.bootstrap_servers = bootstrap_servers
         self.producer: Optional[AIOKafkaProducer] = None
         self.kwargs = kwargs
-    
+
     async def start(self):
         """Start the Kafka producer"""
         self.producer = AIOKafkaProducer(
@@ -163,18 +171,18 @@ class KafkaEventPublisher(EventPublisher):
         )
         await self.producer.start()
         logger.info("Kafka producer started")
-    
+
     async def stop(self):
         """Stop the Kafka producer"""
         if self.producer:
             await self.producer.stop()
             logger.info("Kafka producer stopped")
-    
+
     async def publish(self, topic: str, event: BaseModel) -> None:
         """Publish an event to Kafka"""
         if not self.producer:
             raise RuntimeError("Producer not started")
-        
+
         try:
             await self.producer.send_and_wait(
                 topic,
@@ -189,6 +197,7 @@ class KafkaEventPublisher(EventPublisher):
 ### Day 3-4: Transactional Outbox Implementation
 
 1. **Outbox Models**
+
 ```python
 # packages/event-streaming/src/outbox.py
 from sqlmodel import SQLModel, Field, Session
@@ -204,9 +213,9 @@ class OutboxStatus(str, enum.Enum):
 
 class OutboxEvent(SQLModel, table=True):
     """Transactional outbox for reliable event publishing"""
-    
+
     __tablename__ = "transactional_outbox"
-    
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     aggregate_id: str = Field(index=True)
     event_type: str
@@ -220,6 +229,7 @@ class OutboxEvent(SQLModel, table=True):
 ```
 
 2. **Outbox Publisher Service**
+
 ```python
 # packages/event-streaming/src/outbox_publisher.py
 import asyncio
@@ -236,7 +246,7 @@ logger = logging.getLogger(__name__)
 
 class OutboxPublisherService:
     """Service to publish events from the transactional outbox"""
-    
+
     def __init__(
         self,
         session_factory,
@@ -251,12 +261,12 @@ class OutboxPublisherService:
         self.max_retries = max_retries
         self.retry_delay_seconds = retry_delay_seconds
         self._running = False
-    
+
     async def start(self):
         """Start the outbox publisher"""
         self._running = True
         await self.event_publisher.start()
-        
+
         while self._running:
             try:
                 await self._process_batch()
@@ -264,45 +274,45 @@ class OutboxPublisherService:
             except Exception as e:
                 logger.error(f"Error processing outbox batch: {e}")
                 await asyncio.sleep(5)  # Error backoff
-    
+
     async def stop(self):
         """Stop the outbox publisher"""
         self._running = False
         await self.event_publisher.stop()
-    
+
     async def _process_batch(self):
         """Process a batch of pending events"""
         async with self.session_factory() as session:
             # Query for pending events
             retry_threshold = datetime.utcnow() - timedelta(seconds=self.retry_delay_seconds)
-            
+
             statement = select(OutboxEvent).where(
                 (OutboxEvent.status == OutboxStatus.PENDING) |
-                ((OutboxEvent.status == OutboxStatus.FAILED) & 
+                ((OutboxEvent.status == OutboxStatus.FAILED) &
                  (OutboxEvent.retry_count < self.max_retries) &
                  (OutboxEvent.published_at < retry_threshold))
             ).limit(self.batch_size)
-            
+
             events = await session.execute(statement)
             events = events.scalars().all()
-            
+
             for event in events:
                 await self._publish_event(session, event)
-            
+
             await session.commit()
-    
+
     async def _publish_event(self, session: AsyncSession, event: OutboxEvent):
         """Publish a single event"""
         try:
             # Create a Pydantic model from the payload
             # In real implementation, you'd deserialize based on event_type
             await self.event_publisher.publish(event.topic, event.payload)
-            
+
             # Mark as published
             event.status = OutboxStatus.PUBLISHED
             event.published_at = datetime.utcnow()
             logger.info(f"Published event {event.id} to {event.topic}")
-            
+
         except Exception as e:
             # Mark as failed
             event.status = OutboxStatus.FAILED
@@ -315,6 +325,7 @@ class OutboxPublisherService:
 ### Day 5: Integration with API Service
 
 1. **Update API Service Dependencies**
+
 ```toml
 # apps/api/pyproject.toml
 [project]
@@ -326,6 +337,7 @@ dependencies = [
 ```
 
 2. **Add Outbox to Agent Service**
+
 ```python
 # apps/api/src/db/services/agent.py
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -343,7 +355,7 @@ class AgentService:
             )
             self.session.add(db_agent)
             await self.session.flush()
-            
+
             # Create outbox event
             event_payload = {
                 "agent_id": str(db_agent.id),
@@ -353,7 +365,7 @@ class AgentService:
                 "status": db_agent.status,
                 "created_at": db_agent.created_at.isoformat()
             }
-            
+
             outbox_event = OutboxEvent(
                 aggregate_id=str(db_agent.id),
                 event_type="agent.created.v1",
@@ -361,7 +373,7 @@ class AgentService:
                 payload=event_payload
             )
             self.session.add(outbox_event)
-            
+
         return db_agent
 ```
 
@@ -370,11 +382,13 @@ class AgentService:
 ### Day 1-2: Delta Lake Setup
 
 1. **Create Data Platform Package**
+
 ```bash
 mkdir -p packages/data-platform/{src,tests,notebooks}
 ```
 
 2. **Delta Lake Configuration**
+
 ```python
 # packages/data-platform/src/config.py
 from pydantic_settings import BaseSettings
@@ -382,28 +396,29 @@ from typing import Optional
 
 class DataPlatformSettings(BaseSettings):
     """Configuration for the data platform"""
-    
+
     # Storage
     storage_account_name: str
     storage_container_name: str = "arcan-lakehouse"
-    
+
     # Databricks
     databricks_host: Optional[str] = None
     databricks_token: Optional[str] = None
-    
+
     # Delta Lake paths
     bronze_path: str = "bronze"
     silver_path: str = "silver"
     gold_path: str = "gold"
-    
+
     # Unity Catalog
     catalog_name: str = "arcan_catalog"
-    
+
     class Config:
         env_prefix = "ARCAN_DATA_"
 ```
 
 3. **Delta Lake Writer**
+
 ```python
 # packages/data-platform/src/delta_writer.py
 from delta import DeltaTable, configure_spark_with_delta_pip
@@ -416,11 +431,11 @@ logger = logging.getLogger(__name__)
 
 class DeltaLakeWriter:
     """Writer for Delta Lake tables"""
-    
+
     def __init__(self, spark: SparkSession, base_path: str):
         self.spark = spark
         self.base_path = base_path
-    
+
     @classmethod
     def create_spark_session(cls, app_name: str = "ArcanDataPlatform") -> SparkSession:
         """Create a Spark session configured for Delta Lake"""
@@ -428,10 +443,10 @@ class DeltaLakeWriter:
             .appName(app_name) \
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
             .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        
+
         spark = configure_spark_with_delta_pip(builder).getOrCreate()
         return spark
-    
+
     def write_to_bronze(
         self,
         data: Dict[str, Any],
@@ -440,17 +455,17 @@ class DeltaLakeWriter:
     ):
         """Write raw data to bronze layer"""
         path = f"{self.base_path}/bronze/{table_name}"
-        
+
         df = self.spark.createDataFrame([data])
-        
+
         writer = df.write.format("delta").mode("append")
-        
+
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
-        
+
         writer.save(path)
         logger.info(f"Written data to bronze layer: {path}")
-    
+
     def create_silver_table(
         self,
         bronze_table: str,
@@ -460,14 +475,14 @@ class DeltaLakeWriter:
         """Create or update silver table from bronze"""
         bronze_path = f"{self.base_path}/bronze/{bronze_table}"
         silver_path = f"{self.base_path}/silver/{silver_table}"
-        
+
         # Read bronze data
         bronze_df = self.spark.read.format("delta").load(bronze_path)
         bronze_df.createOrReplaceTempView("bronze_data")
-        
+
         # Apply transformation
         silver_df = self.spark.sql(transformation_sql)
-        
+
         # Write to silver
         silver_df.write.format("delta").mode("overwrite").save(silver_path)
         logger.info(f"Created/updated silver table: {silver_path}")
@@ -476,6 +491,7 @@ class DeltaLakeWriter:
 ### Day 3-4: Unity Catalog Integration
 
 1. **Unity Catalog Manager**
+
 ```python
 # packages/data-platform/src/unity_catalog.py
 from databricks.sdk import WorkspaceClient
@@ -487,14 +503,14 @@ logger = logging.getLogger(__name__)
 
 class UnityCatalogManager:
     """Manager for Unity Catalog operations"""
-    
+
     def __init__(self, workspace_client: WorkspaceClient):
         self.client = workspace_client
         self.catalog_api = workspace_client.catalogs
         self.schemas_api = workspace_client.schemas
         self.tables_api = workspace_client.tables
         self.grants_api = workspace_client.grants
-    
+
     async def setup_catalog(self, catalog_name: str):
         """Set up the Arcan catalog"""
         try:
@@ -506,12 +522,12 @@ class UnityCatalogManager:
                 logger.info(f"Catalog already exists: {catalog_name}")
             else:
                 raise
-        
+
         # Create schemas
         schemas = ["bronze", "silver", "gold", "ml_features"]
         for schema in schemas:
             await self.create_schema(catalog_name, schema)
-    
+
     async def create_schema(self, catalog_name: str, schema_name: str):
         """Create a schema in the catalog"""
         full_name = f"{catalog_name}.{schema_name}"
@@ -526,7 +542,7 @@ class UnityCatalogManager:
                 logger.info(f"Schema already exists: {full_name}")
             else:
                 raise
-    
+
     async def grant_permissions(
         self,
         principal: str,
@@ -548,6 +564,7 @@ class UnityCatalogManager:
 ### Day 5: Event to Delta Lake Pipeline
 
 1. **Kafka to Delta Streaming**
+
 ```python
 # packages/data-platform/src/streaming_ingestion.py
 from pyspark.sql import SparkSession
@@ -559,14 +576,14 @@ logger = logging.getLogger(__name__)
 
 class StreamingIngestion:
     """Ingest streaming data from Kafka to Delta Lake"""
-    
+
     def __init__(self, spark: SparkSession, kafka_brokers: str):
         self.spark = spark
         self.kafka_brokers = kafka_brokers
-    
+
     def start_agent_event_stream(self, bronze_path: str):
         """Start streaming agent events to bronze layer"""
-        
+
         # Define schema for agent events
         event_schema = StructType([
             StructField("eventId", StringType(), False),
@@ -576,7 +593,7 @@ class StreamingIngestion:
             StructField("eventType", StringType(), False),
             StructField("payload", StringType(), True)
         ])
-        
+
         # Read from Kafka
         df = self.spark \
             .readStream \
@@ -585,7 +602,7 @@ class StreamingIngestion:
             .option("subscribe", "arcan.agents") \
             .option("startingOffsets", "latest") \
             .load()
-        
+
         # Parse JSON
         parsed_df = df.select(
             from_json(col("value").cast("string"), event_schema).alias("data")
@@ -593,7 +610,7 @@ class StreamingIngestion:
             "data.*",
             current_timestamp().alias("ingestion_timestamp")
         )
-        
+
         # Write to Delta Lake bronze layer
         query = parsed_df \
             .writeStream \
@@ -602,7 +619,7 @@ class StreamingIngestion:
             .option("checkpointLocation", f"{bronze_path}/_checkpoints/agent_events") \
             .trigger(processingTime="10 seconds") \
             .start(f"{bronze_path}/agent_events")
-        
+
         logger.info("Started agent event streaming to bronze layer")
         return query
 ```
@@ -612,6 +629,7 @@ class StreamingIngestion:
 ### Day 1-2: Integration Tests
 
 1. **Schema Validation Tests**
+
 ```python
 # packages/core-schemas/tests/test_schema_validation.py
 import pytest
@@ -621,13 +639,13 @@ from pathlib import Path
 
 class TestSchemaValidation:
     """Test JSON schema validation"""
-    
+
     @pytest.fixture
     def agent_event_schema(self):
         schema_path = Path(__file__).parent.parent / "json/event/agent-interaction.json"
         with open(schema_path) as f:
             return json.load(f)
-    
+
     def test_valid_agent_event(self, agent_event_schema):
         """Test valid agent event"""
         valid_event = {
@@ -638,10 +656,10 @@ class TestSchemaValidation:
             "eventType": "message.received",
             "payload": {"message": "Hello"}
         }
-        
+
         # Should not raise
         validate(instance=valid_event, schema=agent_event_schema)
-    
+
     def test_invalid_agent_event_missing_field(self, agent_event_schema):
         """Test invalid agent event with missing required field"""
         invalid_event = {
@@ -652,12 +670,13 @@ class TestSchemaValidation:
             "eventType": "message.received",
             "payload": {"message": "Hello"}
         }
-        
+
         with pytest.raises(ValidationError):
             validate(instance=invalid_event, schema=agent_event_schema)
 ```
 
 2. **Event Streaming Integration Test**
+
 ```python
 # packages/event-streaming/tests/test_integration.py
 import pytest
@@ -673,27 +692,27 @@ from packages.event_streaming.src.outbox_publisher import OutboxPublisherService
 @pytest.mark.asyncio
 class TestEventStreamingIntegration:
     """Integration tests for event streaming"""
-    
+
     @pytest.fixture
     async def kafka_container(self):
         """Start Kafka container for testing"""
         with KafkaContainer() as kafka:
             yield kafka
-    
+
     @pytest.fixture
     async def db_session(self):
         """Create test database session"""
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with engine.begin() as conn:
             await conn.run_sync(OutboxEvent.metadata.create_all)
-        
+
         async_session = sessionmaker(
             engine, class_=AsyncSession, expire_on_commit=False
         )
-        
+
         async with async_session() as session:
             yield session
-    
+
     async def test_outbox_to_kafka_flow(self, kafka_container, db_session):
         """Test full flow from outbox to Kafka"""
         # Create outbox event
@@ -705,24 +724,24 @@ class TestEventStreamingIntegration:
         )
         db_session.add(event)
         await db_session.commit()
-        
+
         # Create publisher
         publisher = KafkaEventPublisher(
             bootstrap_servers=kafka_container.get_bootstrap_server()
         )
-        
+
         # Create outbox service
         session_factory = lambda: db_session
         outbox_service = OutboxPublisherService(
             session_factory=session_factory,
             event_publisher=publisher
         )
-        
+
         # Process one batch
         await publisher.start()
         await outbox_service._process_batch()
         await publisher.stop()
-        
+
         # Verify event was published
         await db_session.refresh(event)
         assert event.status == "PUBLISHED"
@@ -732,6 +751,7 @@ class TestEventStreamingIntegration:
 ### Day 3-4: Local Development Environment
 
 1. **Docker Compose Setup**
+
 ```yaml
 # docker-compose.yml
 version: '3.8'
@@ -744,7 +764,7 @@ services:
       POSTGRES_PASSWORD: arcan_dev
       POSTGRES_DB: arcan_dev
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -765,8 +785,8 @@ services:
       - --advertise-kafka-addr
       - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
     ports:
-      - "9092:9092"
-      - "9644:9644"
+      - '9092:9092'
+      - '9644:9644'
     volumes:
       - redpanda_data:/var/lib/redpanda/data
 
@@ -777,8 +797,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - '9000:9000'
+      - '9001:9001'
     volumes:
       - minio_data:/data
 
@@ -793,7 +813,7 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
-      - "8000:8000"
+      - '8000:8000'
     depends_on:
       - postgres
       - redpanda
@@ -809,6 +829,7 @@ volumes:
 ```
 
 2. **Local Development Script**
+
 ```bash
 #!/bin/bash
 # scripts/dev-setup.sh
@@ -858,6 +879,7 @@ echo "   - Redpanda Console: http://localhost:9644"
 ### Day 5: Documentation and CI/CD
 
 1. **Update GitHub Actions Workflow**
+
 ```yaml
 # .github/workflows/ci.yml
 name: CI
@@ -871,59 +893,60 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
+
     strategy:
       matrix:
         node-version: [18.x, 20.x]
         python-version: ['3.10', '3.11', '3.12']
-    
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install Bun
-      uses: oven-sh/setup-bun@v1
-    
-    - name: Install UV
-      run: curl -LsSf https://astral.sh/uv/install.sh | sh
-    
-    - name: Cache Turborepo
-      uses: actions/cache@v3
-      with:
-        path: .turbo
-        key: ${{ runner.os }}-turbo-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-turbo-
-    
-    - name: Install dependencies
-      run: bun install
-    
-    - name: Build packages
-      run: bun run build
-    
-    - name: Run linting
-      run: bun run lint
-    
-    - name: Run tests
-      run: bun run test
-    
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      with:
-        files: ./coverage.xml,./apps/api/coverage.xml
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v1
+
+      - name: Install UV
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Cache Turborepo
+        uses: actions/cache@v3
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Run linting
+        run: bun run lint
+
+      - name: Run tests
+        run: bun run test
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml,./apps/api/coverage.xml
 ```
 
 2. **Developer Documentation**
-```markdown
+
+````markdown
 # packages/core-schemas/README.md
 
 # Arcan Core Schemas
@@ -955,6 +978,7 @@ event = AgentInteractionEvent(
     payload={"message": "Hello"}
 )
 ```
+````
 
 ### In TypeScript Applications
 
@@ -962,10 +986,10 @@ event = AgentInteractionEvent(
 import { AgentInteractionEvent } from '@arcan/core-schemas';
 
 const event: AgentInteractionEvent = {
-  tenantId: "...",
-  agentId: "...",
-  eventType: "message.received",
-  payload: { message: "Hello" }
+  tenantId: '...',
+  agentId: '...',
+  eventType: 'message.received',
+  payload: { message: 'Hello' },
 };
 ```
 
@@ -980,9 +1004,11 @@ To add a new schema:
 ## Versioning
 
 Schemas follow semantic versioning. Breaking changes require:
+
 1. New version file (e.g., `v2_0_0_AgentEvent.json`)
 2. Migration guide in `MIGRATIONS.md`
 3. DAO approval for shared schemas
+
 ```
 
 ## Summary
@@ -994,4 +1020,5 @@ This roadmap provides a concrete implementation plan for Phase 1 of Arcan develo
 3. **Data Platform**: Setting up Delta Lake with proper governance
 4. **Integration**: Ensuring all components work together seamlessly
 
-Each week builds upon the previous, creating a solid foundation for the agent framework and advanced features in subsequent phases. 
+Each week builds upon the previous, creating a solid foundation for the agent framework and advanced features in subsequent phases.
+```

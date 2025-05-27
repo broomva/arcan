@@ -1,0 +1,27 @@
+# Dependencies
+node_modules
+.venv
+venv
+
+# Build outputs
+dist
+build
+.next
+.turbo
+*.egg-info
+
+# Generated files
+*.lock
+coverage
+
+# Python files (handled by ruff/black)
+*.py
+
+# Config files
+*.config.js
+*.config.mjs
+*.config.ts
+
+# Other
+.DS_Store
+*.log 

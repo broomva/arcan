@@ -1,13 +1,13 @@
 {
-    "name": "api",
-    "version": "0.1.0",
-    "scripts": {
-        "dev": "uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
-        "build": "echo 'No build step for Python API'",
-        "start": "uv run uvicorn src.main:app --host 0.0.0.0 --port 8000",
-        "test": "uv run pytest",
-        "lint": "uv run ruff check src/",
-        "format": "uv run black src/ && uv run ruff check --fix src/",
-        "generate:requirements": "uv export --no-hashes --format requirements-txt > requirements.txt"
-    }
+  "name": "api",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
+    "build": "echo 'No build step for Python API'",
+    "start": "uv run uvicorn src.main:app --host 0.0.0.0 --port 8000",
+    "test": "uv run pytest",
+    "lint": "uv run ruff check src/",
+    "format": "uv run black src/ && uv run ruff check --fix src/",
+    "generate:requirements": "uv export --no-hashes --format requirements-txt > requirements.txt"
+  }
 }
