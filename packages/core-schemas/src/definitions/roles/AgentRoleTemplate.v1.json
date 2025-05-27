@@ -1,0 +1,291 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/AgentRoleTemplate.v1.json",
+  "title": "AgentRoleTemplate",
+  "description": "Template for defining common organizational agent roles with their required capabilities and resources",
+  "type": "object",
+  "required": [
+    "templateId",
+    "roleName",
+    "version",
+    "coreSpells",
+    "requiredTomes",
+    "interactionProtocols"
+  ],
+  "properties": {
+    "templateId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this role template"
+    },
+    "roleName": {
+      "type": "string",
+      "description": "Name of the organizational role (e.g., 'FinancialAnalyst', 'HRRecruitmentAssistant')"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "finance",
+        "hr",
+        "sales",
+        "marketing",
+        "engineering",
+        "operations",
+        "customer_service",
+        "data_analytics",
+        "legal",
+        "executive"
+      ],
+      "description": "Department or functional category"
+    },
+    "description": {
+      "type": "string",
+      "description": "Detailed description of the role's purpose and responsibilities"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "Template version"
+    },
+    "coreSpells": {
+      "type": "array",
+      "description": "Essential spells (capabilities) for this role",
+      "items": {
+        "type": "object",
+        "required": ["spellName", "purpose"],
+        "properties": {
+          "spellName": {
+            "type": "string",
+            "description": "Name of the spell"
+          },
+          "spellId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Reference to existing spell definition"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Why this spell is needed for the role"
+          },
+          "spellConfiguration": {
+            "type": "object",
+            "description": "Default parameters or settings for this spell in this role",
+            "additionalProperties": true
+          },
+          "frequency": {
+            "type": "string",
+            "enum": ["continuous", "hourly", "daily", "weekly", "monthly", "on-demand"],
+            "description": "How often this spell is typically used"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "requiredTomes": {
+      "type": "array",
+      "description": "Data sources and resources this role needs access to",
+      "items": {
+        "type": "object",
+        "required": ["tomePurpose", "requiredResourceType"],
+        "properties": {
+          "tomePurpose": {
+            "type": "string",
+            "description": "Purpose of this tome (e.g., 'AccessToFinancialStatements', 'CandidateDatabase')"
+          },
+          "requiredResourceType": {
+            "type": "string",
+            "enum": [
+              "database",
+              "apiService",
+              "fileSystem",
+              "knowledgeBase",
+              "messageStream",
+              "blockchainLedger",
+              "staticDataset",
+              "vectorStore"
+            ],
+            "description": "Type of resource needed"
+          },
+          "requiredDataSchemaKeywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Keywords to match specific data schemas"
+          },
+          "accessLevel": {
+            "type": "string",
+            "enum": ["read", "write", "admin"],
+            "default": "read",
+            "description": "Required access level"
+          },
+          "dataClassification": {
+            "type": "string",
+            "enum": ["public", "internal", "confidential", "restricted"],
+            "description": "Data sensitivity level"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "interactionProtocols": {
+      "type": "array",
+      "description": "Communication protocols this role uses",
+      "items": {
+        "type": "string",
+        "enum": ["A2A", "AG-UI", "MCP", "webhook", "email", "slack"]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "defaultPermissionsNeeded": {
+      "type": "array",
+      "description": "Platform permissions typically required for this role",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "collaboratesWith": {
+      "type": "array",
+      "description": "Other agent roles this role typically interacts with",
+      "items": {
+        "type": "object",
+        "required": ["roleName", "interactionType"],
+        "properties": {
+          "roleName": {
+            "type": "string",
+            "description": "Name of the collaborating role"
+          },
+          "interactionType": {
+            "type": "string",
+            "enum": ["reports_to", "receives_from", "coordinates_with", "supervises"],
+            "description": "Nature of the interaction"
+          },
+          "frequency": {
+            "type": "string",
+            "enum": ["continuous", "hourly", "daily", "weekly", "monthly", "as_needed"],
+            "description": "How often they interact"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "performanceMetrics": {
+      "type": "array",
+      "description": "KPIs for measuring this role's effectiveness",
+      "items": {
+        "type": "object",
+        "required": ["metricName", "unit"],
+        "properties": {
+          "metricName": {
+            "type": "string",
+            "description": "Name of the metric"
+          },
+          "description": {
+            "type": "string",
+            "description": "What this metric measures"
+          },
+          "unit": {
+            "type": "string",
+            "description": "Unit of measurement"
+          },
+          "targetValue": {
+            "type": ["number", "string"],
+            "description": "Target or benchmark value"
+          },
+          "evaluationPeriod": {
+            "type": "string",
+            "description": "Time period for evaluation"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "complianceRequirements": {
+      "type": "array",
+      "description": "Regulatory or compliance requirements for this role",
+      "items": {
+        "type": "object",
+        "required": ["requirement", "type"],
+        "properties": {
+          "requirement": {
+            "type": "string",
+            "description": "Description of the requirement"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["regulatory", "internal_policy", "industry_standard", "security"],
+            "description": "Type of requirement"
+          },
+          "standard": {
+            "type": "string",
+            "description": "Specific standard (e.g., 'GDPR', 'SOC2', 'HIPAA')"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "estimatedCost": {
+      "type": "object",
+      "description": "Estimated operational cost for this role",
+      "properties": {
+        "computeUnitsPerMonth": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Estimated compute units"
+        },
+        "storageGB": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Estimated storage needs"
+        },
+        "apiCallsPerMonth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated API calls"
+        },
+        "llmTokensPerMonth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Estimated LLM token usage"
+        }
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional template metadata",
+      "properties": {
+        "author": {
+          "type": "string",
+          "description": "Template author"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "useCases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Example use cases"
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Prerequisites for using this template"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

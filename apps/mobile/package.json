@@ -1,0 +1,24 @@
+{
+  "name": "@arcan/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "dev": "echo 'Mobile app development will be configured with Expo'",
+    "build": "echo 'Mobile app build will be configured with Expo'",
+    "start": "echo 'Mobile app start will be configured with Expo'",
+    "lint": "echo 'Mobile app linting will be configured'",
+    "check-types": "echo 'Mobile app type checking will be configured'"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-native": "^0.73.0"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "*",
+    "@repo/typescript-config": "*",
+    "@types/react": "19.1.0",
+    "eslint": "^9.27.0",
+    "typescript": "5.8.2"
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanSpell.v1.json",
+  "title": "ArcanSpell",
+  "description": "Schema for defining an agent's individual tools, actions, or capabilities - the fundamental units of functionality that an Arcan agent can execute",
+  "type": "object",
+  "required": [
+    "spellId",
+    "name",
+    "description",
+    "inputSchema",
+    "outputSchema",
+    "invocationMechanism",
+    "version"
+  ],
+  "properties": {
+    "spellId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this specific spell definition"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "Machine-friendly name for the spell (e.g., calculateLoanInterest, fetchUserProfile)"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 2000,
+      "description": "Clear, human-readable description of what the spell does, its intended purpose, expected inputs, and outputs"
+    },
+    "inputSchema": {
+      "type": "object",
+      "description": "JSON Schema definition describing the structure, data types, and validation rules for input parameters",
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "properties": {
+          "type": "object"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "outputSchema": {
+      "type": "object",
+      "description": "JSON Schema definition describing the structure and data types of the output or result",
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "properties": {
+          "type": "object"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "invocationMechanism": {
+      "type": "object",
+      "description": "Describes the primary mechanism through which this spell is invoked",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["mcpTool", "a2aSkill", "agUiAction", "internalFunction", "httpApiCall"],
+          "description": "Nature of the spell's invocation"
+        },
+        "details": {
+          "type": "object",
+          "description": "Type-specific information for invocation",
+          "properties": {
+            "mcpToolName": {
+              "type": "string",
+              "description": "Name of the MCP tool (when type is mcpTool)"
+            },
+            "a2aSkillId": {
+              "type": "string",
+              "description": "ID of the A2A skill (when type is a2aSkill)"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "URL for HTTP API calls (when type is httpApiCall)"
+            },
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+              "description": "HTTP method (when type is httpApiCall)"
+            },
+            "headersSchema": {
+              "type": "object",
+              "description": "Schema for HTTP headers (when type is httpApiCall)"
+            },
+            "bodySchema": {
+              "type": "object",
+              "description": "Schema for HTTP body (when type is httpApiCall)"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of this spell definition"
+    },
+    "tags": {
+      "type": "array",
+      "description": "Keywords or categories associated with the spell",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 50
+      },
+      "uniqueItems": true
+    },
+    "owner": {
+      "type": "string",
+      "description": "DID or URN identifier for the creator or maintainer of this spell definition"
+    },
+    "isDeterministic": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the spell consistently produces the same output given the same input"
+    },
+    "permissionsRequired": {
+      "type": "array",
+      "description": "List of permission identifiers that the invoking agent or user must possess",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+      },
+      "uniqueItems": true
+    },
+    "executionConstraints": {
+      "type": "object",
+      "description": "Optional constraints on spell execution",
+      "properties": {
+        "maxExecutionTime": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum execution time in milliseconds"
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of retry attempts on failure"
+        },
+        "rateLimiting": {
+          "type": "object",
+          "properties": {
+            "maxCallsPerMinute": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxCallsPerHour": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "examples": {
+      "type": "array",
+      "description": "Example invocations of the spell",
+      "items": {
+        "type": "object",
+        "required": ["input", "output"],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "input": {
+            "type": "object",
+            "description": "Example input matching the inputSchema"
+          },
+          "output": {
+            "type": "object",
+            "description": "Expected output matching the outputSchema"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+} 

@@ -1,0 +1,208 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/ResourceUsageLog.v1.json",
+  "title": "ResourceUsageLog",
+  "description": "Tracks consumption of platform resources by tenants/agents for monitoring and billing",
+  "type": "object",
+  "required": [
+    "usageLogId",
+    "organizationId",
+    "resourceType",
+    "unitsConsumed",
+    "timestamp"
+  ],
+  "properties": {
+    "usageLogId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this usage log entry"
+    },
+    "organizationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organization that consumed the resource"
+    },
+    "agentId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Specific agent that consumed the resource"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who initiated the resource consumption"
+    },
+    "resourceType": {
+      "type": "string",
+      "enum": [
+        "spellExecution",
+        "workflowExecution",
+        "tomeStorage",
+        "tomeQuery",
+        "apiCall",
+        "dataTransferIn",
+        "dataTransferOut",
+        "azrCompute",
+        "llmTokens",
+        "vectorEmbedding",
+        "agentRuntime",
+        "streamProcessing"
+      ],
+      "description": "Type of resource consumed"
+    },
+    "resourceSubtype": {
+      "type": "string",
+      "description": "More specific resource classification"
+    },
+    "unitsConsumed": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Amount of resource consumed"
+    },
+    "unitType": {
+      "type": "string",
+      "enum": [
+        "count",
+        "bytes",
+        "seconds",
+        "tokens",
+        "requests",
+        "embeddings",
+        "computeUnits"
+      ],
+      "description": "Unit of measurement for consumption"
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Calculated cost"
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "EUR", "GBP", "ARC"],
+          "description": "Currency of the cost"
+        },
+        "rateApplied": {
+          "type": "number",
+          "description": "Rate used for cost calculation"
+        }
+      },
+      "additionalProperties": false
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the resource was consumed"
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Duration in milliseconds for time-based resources"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional context about the usage",
+      "properties": {
+        "spellId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of spell executed"
+        },
+        "workflowId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of workflow executed"
+        },
+        "tomeId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "ID of tome accessed"
+        },
+        "apiEndpoint": {
+          "type": "string",
+          "description": "API endpoint called"
+        },
+        "httpMethod": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+          "description": "HTTP method used"
+        },
+        "statusCode": {
+          "type": "integer",
+          "description": "HTTP response status code"
+        },
+        "errorCode": {
+          "type": "string",
+          "description": "Error code if operation failed"
+        },
+        "region": {
+          "type": "string",
+          "description": "Geographic region where resource was consumed"
+        },
+        "ipAddress": {
+          "type": "string",
+          "description": "IP address of the request origin"
+        },
+        "userAgent": {
+          "type": "string",
+          "description": "User agent string"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Session identifier"
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Correlation ID for tracking across services"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Custom tags for categorization"
+        }
+      },
+      "additionalProperties": true
+    },
+    "billing": {
+      "type": "object",
+      "description": "Billing-related information",
+      "properties": {
+        "billable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this usage is billable"
+        },
+        "billingPeriod": {
+          "type": "string",
+          "description": "Billing period (e.g., '2024-01')"
+        },
+        "invoiceId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Associated invoice ID"
+        },
+        "discount": {
+          "type": "object",
+          "properties": {
+            "percentage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 

@@ -1,0 +1,168 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/User.v1.json",
+  "title": "User",
+  "description": "Represents an individual human user of the Arcan platform",
+  "type": "object",
+  "required": [
+    "userId",
+    "email",
+    "status",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for the user"
+    },
+    "username": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{3,30}$",
+      "description": "User-chosen unique username"
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "User's primary email address (verified)"
+    },
+    "hashedPassword": {
+      "type": "string",
+      "description": "Securely hashed password (if using traditional auth)"
+    },
+    "authProviders": {
+      "type": "array",
+      "description": "Federated identity providers",
+      "items": {
+        "type": "object",
+        "required": ["providerName", "providerUserId"],
+        "properties": {
+          "providerName": {
+            "type": "string",
+            "enum": ["google", "github", "microsoft", "thirdwebEmailWallet"],
+            "description": "External authentication provider"
+          },
+          "providerUserId": {
+            "type": "string",
+            "description": "User's ID from the external provider"
+          },
+          "linkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this provider was linked"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "profile": {
+      "type": "object",
+      "description": "Link to user profile",
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to UserProfile"
+        }
+      },
+      "additionalProperties": false
+    },
+    "onChainIdentity": {
+      "type": "object",
+      "description": "Blockchain identity details",
+      "properties": {
+        "walletAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "Primary EVM wallet address linked via Thirdweb"
+        },
+        "linkedWallets": {
+          "type": "array",
+          "description": "Other wallets the user controls",
+          "items": {
+            "type": "string",
+            "pattern": "^0x[a-fA-F0-9]{40}$"
+          },
+          "uniqueItems": true
+        },
+        "ensName": {
+          "type": "string",
+          "description": "ENS name if registered"
+        }
+      },
+      "additionalProperties": false
+    },
+    "roles": {
+      "type": "array",
+      "description": "Platform-level roles",
+      "items": {
+        "type": "string",
+        "enum": ["platformAdmin", "betaTester", "developer", "support", "user"]
+      },
+      "uniqueItems": true
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "pendingVerification", "suspended", "deleted"],
+      "description": "User account status"
+    },
+    "emailVerified": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether email has been verified"
+    },
+    "twoFactorEnabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether 2FA is enabled"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Account creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last update timestamp"
+    },
+    "lastLoginAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last successful login timestamp"
+    },
+    "preferences": {
+      "type": "object",
+      "description": "Link to user preferences",
+      "properties": {
+        "preferencesId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to UserPreferences"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional user metadata",
+      "properties": {
+        "referralSource": {
+          "type": "string",
+          "description": "How the user found Arcan"
+        },
+        "signupCampaign": {
+          "type": "string",
+          "description": "Marketing campaign identifier"
+        },
+        "ipCountry": {
+          "type": "string",
+          "description": "Country code from signup IP"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

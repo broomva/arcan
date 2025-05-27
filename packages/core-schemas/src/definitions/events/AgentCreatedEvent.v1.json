@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/events/AgentCreatedEvent.v1.json",
+  "title": "AgentCreatedEvent",
+  "description": "Event emitted when a new agent is created in the Arcan platform",
+  "allOf": [
+    {
+      "$ref": "../ArcanEvent.v1.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": {
+          "const": "agent.created"
+        },
+        "payload": {
+          "type": "object",
+          "required": ["agentId", "name", "owner", "forgeMethod"],
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "ID of the newly created agent"
+            },
+            "name": {
+              "type": "string",
+              "description": "Name of the agent"
+            },
+            "owner": {
+              "type": "string",
+              "description": "DID or URN of the agent owner"
+            },
+            "forgeMethod": {
+              "type": "string",
+              "enum": ["template", "natural_language", "clone", "manual"],
+              "description": "How the agent was created"
+            },
+            "templateId": {
+              "type": "string",
+              "description": "Template ID if created from template"
+            },
+            "sourceAgentId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Source agent ID if cloned"
+            },
+            "naturalLanguagePrompt": {
+              "type": "string",
+              "description": "Natural language prompt if created via NL"
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Initial capabilities assigned to the agent"
+            },
+            "walletAddress": {
+              "type": "string",
+              "pattern": "^0x[a-fA-F0-9]{40}$",
+              "description": "Blockchain wallet address assigned to agent"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

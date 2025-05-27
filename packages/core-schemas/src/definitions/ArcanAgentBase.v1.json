@@ -1,0 +1,305 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanAgentBase.v1.json",
+  "title": "ArcanAgentBase",
+  "description": "Core schema for defining any Arcan agent, encapsulating identity, manifest details, capabilities, operational state, and communication interfaces",
+  "type": "object",
+  "required": [
+    "agentId",
+    "version",
+    "name",
+    "owner",
+    "createdAt",
+    "updatedAt",
+    "status"
+  ],
+  "properties": {
+    "agentId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Universally unique identifier for the specific agent instance"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of this agent instance or its underlying definition"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Human-readable name for the agent"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Detailed description of the agent's purpose, primary functions, and general behavior"
+    },
+    "owner": {
+      "type": "string",
+      "description": "DID or URN identifier for the entity (user, organization, or DAO) that owns or is responsible for the agent"
+    },
+    "onChainIdentity": {
+      "type": "object",
+      "description": "Details specific to the agent's on-chain presence",
+      "properties": {
+        "walletAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "EVM-compatible wallet address associated with the agent"
+        },
+        "identityContractAddress": {
+          "type": "string",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "description": "Address of a smart contract representing or managing the agent's identity or capabilities on the blockchain"
+        }
+      },
+      "additionalProperties": false
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp indicating when this agent instance or definition was created"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp of the last modification to this agent instance or definition"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "inactive", "deprecated", "archived"],
+      "description": "Current operational lifecycle status of the agent"
+    },
+    "capabilitiesSummary": {
+      "type": "object",
+      "description": "High-level overview of the agent's capabilities",
+      "properties": {
+        "a2aAgentCardUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URI pointing to the agent's full A2A AgentCard for detailed skill definitions"
+        }
+      },
+      "additionalProperties": true
+    },
+    "forgeDetails": {
+      "type": "object",
+      "description": "Metadata related to the agent's creation and potential ongoing evolution through the Arcan Forge",
+      "properties": {
+        "templateId": {
+          "type": "string",
+          "description": "Identifier for the base template or archetype used during the agent's initial creation"
+        },
+        "initializationParams": {
+          "type": "object",
+          "description": "Parameters or configuration inputs used when the agent was first forged or instantiated",
+          "additionalProperties": true
+        },
+        "azrConfiguration": {
+          "type": "object",
+          "description": "Configuration for the Absolute Zero Reasoner if this agent's logic is subject to autonomous evolution",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether AZR is enabled for this agent"
+            },
+            "taskProposalStrategy": {
+              "type": "string",
+              "enum": ["deduction", "abduction", "induction", "mixed"],
+              "description": "Strategy for AZR task proposal"
+            },
+            "rewardFunction": {
+              "type": "object",
+              "description": "Reward function settings for AZR",
+              "additionalProperties": true
+            },
+            "learningRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Learning rate for AZR evolution"
+            }
+          },
+          "additionalProperties": true
+        },
+        "sourceNaturalLanguageDescription": {
+          "type": "string",
+          "description": "Original natural language prompt used for agent scaffolding, if applicable"
+        }
+      },
+      "additionalProperties": false
+    },
+    "state": {
+      "$ref": "#/definitions/AgentState"
+    },
+    "communicationInterfaces": {
+      "$ref": "#/definitions/CommunicationInterfaces"
+    }
+  },
+  "definitions": {
+    "AgentState": {
+      "type": "object",
+      "description": "Agent's internal state structure for stateful operations and workflows",
+      "properties": {
+        "currentTask": {
+          "type": "object",
+          "description": "Information about the task an agent is currently processing",
+          "properties": {
+            "taskId": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "enum": ["pending", "in-progress", "completed", "failed", "cancelled"]
+            },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "a2aTaskReference": {
+              "type": "string",
+              "format": "uri",
+              "description": "Link or reference to an A2A Task object if the task involves inter-agent collaboration"
+            }
+          },
+          "additionalProperties": true
+        },
+        "conversationHistory": {
+          "type": "array",
+          "description": "Log of messages for conversational agents",
+          "items": {
+            "type": "object",
+            "required": ["timestamp", "role", "content"],
+            "properties": {
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "role": {
+                "type": "string",
+                "enum": ["user", "assistant", "system", "tool"]
+              },
+              "content": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "scratchpad": {
+          "type": "object",
+          "description": "Flexible area for intermediate thoughts, calculations, or temporary data",
+          "additionalProperties": true
+        },
+        "activeTomes": {
+          "type": "array",
+          "description": "List of tomeIds that the agent has currently loaded or is actively querying",
+          "items": {
+            "type": "string"
+          }
+        },
+        "customState": {
+          "type": "object",
+          "description": "Agent-specific state variables",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommunicationInterfaces": {
+      "type": "object",
+      "description": "Defines how agents declare their interactions with the event-driven backbone and APIs",
+      "properties": {
+        "consumesEvents": {
+          "type": "array",
+          "description": "Event types that the agent subscribes to from Kafka topics",
+          "items": {
+            "type": "object",
+            "required": ["eventName", "topicName", "eventSchemaUrl"],
+            "properties": {
+              "eventName": {
+                "type": "string",
+                "description": "Descriptive name for the event"
+              },
+              "topicName": {
+                "type": "string",
+                "description": "Kafka topic name from which the agent consumes this event"
+              },
+              "eventSchemaUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL pointing to the JSON Schema definition for this event type"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "publishesEvents": {
+          "type": "array",
+          "description": "Event types that the agent publishes to Kafka topics",
+          "items": {
+            "type": "object",
+            "required": ["eventName", "topicName", "eventSchemaUrl"],
+            "properties": {
+              "eventName": {
+                "type": "string",
+                "description": "Descriptive name for the event"
+              },
+              "topicName": {
+                "type": "string",
+                "description": "Kafka topic name to which the agent publishes this event"
+              },
+              "eventSchemaUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL pointing to the JSON Schema definition for this event type"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "apiEndpoints": {
+          "type": "array",
+          "description": "Direct synchronous APIs exposed by the agent",
+          "items": {
+            "type": "object",
+            "required": ["path", "method"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "API endpoint path"
+              },
+              "method": {
+                "type": "string",
+                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+                "description": "HTTP method for REST APIs"
+              },
+              "requestSchemaUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL to the JSON Schema for the request payload"
+              },
+              "responseSchemaUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "URL to the JSON Schema for the response payload"
+              },
+              "openApiSpecUrl": {
+                "type": "string",
+                "format": "uri",
+                "description": "Link to a comprehensive OpenAPI specification document"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 

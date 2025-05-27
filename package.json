@@ -9,14 +9,21 @@
     "lint:python": "turbo run lint:python --filter=@arcan/python",
     "test": "turbo run test",
     "test:python": "turbo run test:python --filter=@arcan/python",
-    "format": "prettier --write \"**/*.{ts,tsx,md,json,yml,yaml}\" && turbo run format --filter=@arcan/python",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,md,json,yml,yaml}\" && turbo run format:python",
     "check-types": "turbo run check-types",
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@vitest/ui": "^3.1.4",
+    "jsdom": "^26.1.0",
     "prettier": "^3.5.3",
     "turbo": "^2.5.3",
-    "typescript": "5.8.2"
+    "typescript": "5.8.2",
+    "vitest": "^3.1.4"
   },
   "engines": {
     "node": ">=18"
@@ -25,5 +32,8 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "task-master-ai": "^0.15.0"
+  }
 }

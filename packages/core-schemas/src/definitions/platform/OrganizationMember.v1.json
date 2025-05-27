@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/platform/OrganizationMember.v1.json",
+  "title": "OrganizationMember",
+  "description": "Represents a user's membership within an organization",
+  "type": "object",
+  "required": [
+    "membershipId",
+    "organizationId",
+    "userId",
+    "roles",
+    "status"
+  ],
+  "properties": {
+    "membershipId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this membership"
+    },
+    "organizationId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organization this membership belongs to"
+    },
+    "userId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who holds this membership"
+    },
+    "roles": {
+      "type": "array",
+      "description": "Roles within this specific organization",
+      "items": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "manager",
+          "developer",
+          "analyst",
+          "viewer",
+          "billing",
+          "support",
+          "custom"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "customRoles": {
+      "type": "array",
+      "description": "Custom role IDs assigned to this member",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "uniqueItems": true
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "pendingInvite", "suspended", "revoked"],
+      "description": "Membership status"
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Explicit permissions for this member",
+      "properties": {
+        "granted": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicitly granted permissions"
+        },
+        "revoked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicitly revoked permissions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "joinedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the user joined the organization"
+    },
+    "invitedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the invitation was sent"
+    },
+    "invitedBy": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User who sent the invitation"
+    },
+    "acceptedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the invitation was accepted"
+    },
+    "lastActiveAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last activity timestamp"
+    },
+    "department": {
+      "type": "string",
+      "description": "Department within the organization"
+    },
+    "title": {
+      "type": "string",
+      "description": "Job title within the organization"
+    },
+    "reportingTo": {
+      "type": "string",
+      "format": "uuid",
+      "description": "User ID of direct manager"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional membership metadata",
+      "properties": {
+        "employeeId": {
+          "type": "string",
+          "description": "Internal employee ID"
+        },
+        "costCenter": {
+          "type": "string",
+          "description": "Cost center for billing"
+        },
+        "location": {
+          "type": "string",
+          "description": "Office location"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Internal notes about this member"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 

@@ -1,0 +1,365 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanAgentManifest.v1.json",
+  "title": "ArcanAgentManifest",
+  "description": "Manifest schema for Arcan agents, defining capabilities, protocols, pricing models, and access policies",
+  "type": "object",
+  "required": [
+    "manifestId",
+    "agentId",
+    "version",
+    "capabilities",
+    "protocols",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "manifestId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this manifest version"
+    },
+    "agentId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to the agent this manifest describes"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of this manifest"
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "List of capabilities (spells) this agent possesses",
+      "items": {
+        "$ref": "#/definitions/Capability"
+      },
+      "minItems": 1
+    },
+    "protocols": {
+      "type": "array",
+      "description": "Communication protocols supported by this agent",
+      "items": {
+        "$ref": "#/definitions/Protocol"
+      },
+      "minItems": 1
+    },
+    "pricingModel": {
+      "$ref": "#/definitions/PricingModel"
+    },
+    "accessPolicy": {
+      "$ref": "#/definitions/AccessPolicy"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the agent",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Primary category for marketplace classification"
+        },
+        "subcategories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional categories for discovery"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords for search optimization"
+        },
+        "icon": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to agent icon/avatar"
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": "URLs to screenshots or demo images"
+        },
+        "documentation": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL to detailed documentation"
+        },
+        "supportUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL for support or contact"
+        }
+      },
+      "additionalProperties": true
+    },
+    "requirements": {
+      "type": "object",
+      "description": "System requirements and dependencies",
+      "properties": {
+        "minMemory": {
+          "type": "string",
+          "description": "Minimum memory requirement (e.g., '512MB')"
+        },
+        "minCpu": {
+          "type": "string",
+          "description": "Minimum CPU requirement (e.g., '0.5 vCPU')"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["agent", "service", "tome", "external"],
+                "description": "Type of dependency"
+              },
+              "id": {
+                "type": "string",
+                "description": "Identifier of the dependency"
+              },
+              "version": {
+                "type": "string",
+                "description": "Version constraint for the dependency"
+              }
+            },
+            "required": ["type", "id"]
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this manifest was created"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this manifest was last updated"
+    }
+  },
+  "definitions": {
+    "Capability": {
+      "type": "object",
+      "required": ["spellId", "name", "description"],
+      "properties": {
+        "spellId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to the spell definition"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the capability"
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of what this capability does"
+        },
+        "category": {
+          "type": "string",
+          "description": "Category of this capability"
+        },
+        "isCore": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this is a core capability of the agent"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Protocol": {
+      "type": "object",
+      "required": ["type", "version", "enabled"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["mcp", "a2a", "ag-ui", "custom"],
+          "description": "Protocol type"
+        },
+        "version": {
+          "type": "string",
+          "description": "Protocol version supported"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this protocol is currently enabled"
+        },
+        "configuration": {
+          "type": "object",
+          "description": "Protocol-specific configuration",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "PricingModel": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["free", "subscription", "usage", "hybrid"],
+          "description": "Type of pricing model"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 currency code"
+        },
+        "subscription": {
+          "type": "object",
+          "properties": {
+            "monthly": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Monthly subscription price"
+            },
+            "yearly": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Yearly subscription price"
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Features included in subscription"
+            }
+          },
+          "additionalProperties": false
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "metrics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "unit", "pricePerUnit"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Name of the usage metric"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "description": "Unit of measurement"
+                  },
+                  "pricePerUnit": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Price per unit"
+                  },
+                  "freeQuota": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Free quota before charging"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "trial": {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Trial duration in days"
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Features available during trial"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "AccessPolicy": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["public", "private", "restricted"],
+          "description": "Access policy type"
+        },
+        "allowedUsers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of allowed user IDs (for private/restricted)"
+        },
+        "allowedRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of allowed role IDs"
+        },
+        "restrictions": {
+          "type": "object",
+          "properties": {
+            "geolocation": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Allowed countries/regions (ISO codes)"
+            },
+            "ipWhitelist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Allowed IP addresses or ranges"
+            },
+            "timeWindow": {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "string",
+                  "format": "time",
+                  "description": "Start time (HH:MM)"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "time",
+                  "description": "End time (HH:MM)"
+                },
+                "timezone": {
+                  "type": "string",
+                  "description": "Timezone for time window"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 

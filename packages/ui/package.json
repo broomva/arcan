@@ -8,7 +8,10 @@
   "scripts": {
     "lint": "eslint . --max-warnings 0",
     "generate:component": "turbo gen react-component",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@repo/eslint-config": "*",

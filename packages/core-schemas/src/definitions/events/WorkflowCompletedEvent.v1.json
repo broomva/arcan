@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/events/WorkflowCompletedEvent.v1.json",
+  "title": "WorkflowCompletedEvent",
+  "description": "Event emitted when a workflow execution completes in the Arcan platform",
+  "allOf": [
+    {
+      "$ref": "../ArcanEvent.v1.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "eventType": {
+          "const": "workflow.completed"
+        },
+        "payload": {
+          "type": "object",
+          "required": ["executionId", "workflowId", "agentId", "status", "duration"],
+          "properties": {
+            "executionId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "ID of the workflow execution"
+            },
+            "workflowId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "ID of the workflow definition"
+            },
+            "agentId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "ID of the agent that executed the workflow"
+            },
+            "status": {
+              "type": "string",
+              "enum": ["success", "failed", "cancelled", "timeout"],
+              "description": "Final status of the workflow"
+            },
+            "duration": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Execution duration in milliseconds"
+            },
+            "nodesExecuted": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of nodes executed"
+            },
+            "output": {
+              "type": "object",
+              "description": "Workflow output (if successful)",
+              "additionalProperties": true
+            },
+            "error": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "nodeId": {
+                  "type": "string",
+                  "description": "Node where error occurred"
+                }
+              },
+              "description": "Error details (if failed)"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

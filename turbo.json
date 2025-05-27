@@ -1,12 +1,7 @@
 {
   "$schema": "https://turborepo.com/schema.json",
-  "globalDependencies": [
-    "**/.env"
-  ],
-  "globalEnv": [
-    "NODE_ENV",
-    "PYTHONPATH"
-  ],
+  "globalDependencies": ["**/.env"],
+  "globalEnv": ["NODE_ENV", "PYTHONPATH"],
   "ui": "tui",
   "tasks": {
     "build": {
@@ -15,18 +10,33 @@
       "outputs": [".next/**", "!.next/cache/**", "dist/**", "build/**"]
     },
     "build:python": {
-      "dependsOn": ["^build:python", "test:python"],
+      "dependsOn": ["^build:python"],
       "inputs": ["$TURBO_DEFAULT$", "pyproject.toml", "**/*.py"],
       "outputs": ["dist/**", "*.egg-info/**"],
       "cache": true
     },
     "lint": {
-      "dependsOn": ["^lint"]
+      "dependsOn": ["^lint"],
+      "inputs": ["$TURBO_DEFAULT$", ".eslintrc*", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"],
+      "outputs": [],
+      "cache": true
     },
     "lint:python": {
       "dependsOn": ["^lint:python"],
       "inputs": ["$TURBO_DEFAULT$", "pyproject.toml", "**/*.py"],
       "outputs": [".mypy_cache/**", ".ruff_cache/**"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["^test"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/*.spec.ts",
+        "**/*.spec.tsx"
+      ],
+      "outputs": ["coverage/**"],
       "cache": true
     },
     "test:python": {
@@ -37,7 +47,31 @@
       "env": ["PYTHONPATH"]
     },
     "check-types": {
-      "dependsOn": ["^check-types"]
+      "dependsOn": ["^check-types"],
+      "inputs": ["$TURBO_DEFAULT$", "tsconfig.json", "**/*.ts", "**/*.tsx"],
+      "outputs": [],
+      "cache": true
+    },
+    "format": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.jsx",
+        "**/*.json",
+        "**/*.md"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "format:python": {
+      "inputs": ["$TURBO_DEFAULT$", "**/*.py"],
+      "outputs": [],
+      "cache": false
+    },
+    "clean": {
+      "cache": false
     },
     "dev": {
       "cache": false,
@@ -47,10 +81,21 @@
       "cache": false,
       "persistent": true
     },
+    "generate": {
+      "cache": false
+    },
     "api#dev": {
       "cache": false,
       "persistent": true,
-      "dependsOn": ["@arcan/python#build"]
+      "dependsOn": ["@arcan/python#build:python"]
+    },
+    "@repo/core-schemas#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "@repo/ui#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
     }
   }
 }

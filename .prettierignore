@@ -1,0 +1,43 @@
+# Dependencies
+node_modules
+.venv
+venv
+
+# Build outputs
+dist
+build
+.next
+.turbo
+*.egg-info
+__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+htmlcov
+coverage
+
+# Generated files
+*.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.idea
+.vscode
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.* 

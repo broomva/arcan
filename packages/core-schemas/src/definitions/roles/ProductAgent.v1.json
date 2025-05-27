@@ -1,0 +1,541 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/ProductAgent.v1.json",
+  "title": "ProductAgent",
+  "description": "Agent role for product management, roadmap planning, feature prioritization, and user experience",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["productCapabilities", "roadmapManagement", "userResearch"],
+          "properties": {
+            "productCapabilities": {
+              "type": "object",
+              "properties": {
+                "productFunctions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "product_strategy",
+                      "roadmap_planning",
+                      "feature_prioritization",
+                      "requirements_gathering",
+                      "user_story_creation",
+                      "competitive_analysis",
+                      "market_research",
+                      "pricing_strategy",
+                      "launch_planning",
+                      "stakeholder_alignment",
+                      "metrics_definition",
+                      "product_analytics"
+                    ]
+                  },
+                  "description": "Product management functions this agent can perform"
+                },
+                "productDomains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "b2b_saas",
+                      "b2c_consumer",
+                      "marketplace",
+                      "platform",
+                      "mobile",
+                      "web",
+                      "api",
+                      "ai_ml",
+                      "iot",
+                      "blockchain"
+                    ]
+                  },
+                  "description": "Product domains expertise"
+                },
+                "methodologies": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "agile",
+                      "scrum",
+                      "kanban",
+                      "lean",
+                      "design_thinking",
+                      "jobs_to_be_done",
+                      "outcome_driven_innovation",
+                      "continuous_discovery"
+                    ]
+                  },
+                  "description": "Product development methodologies"
+                }
+              },
+              "additionalProperties": false
+            },
+            "roadmapManagement": {
+              "type": "object",
+              "properties": {
+                "roadmapHorizons": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["horizon", "focus", "confidence"],
+                    "properties": {
+                      "horizon": {
+                        "type": "string",
+                        "enum": ["now", "next", "later", "quarterly", "annual"]
+                      },
+                      "focus": {
+                        "type": "string",
+                        "description": "Focus area for this horizon"
+                      },
+                      "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "Confidence level in roadmap items"
+                      },
+                      "reviewFrequency": {
+                        "type": "string",
+                        "enum": ["weekly", "biweekly", "monthly", "quarterly"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "prioritizationFrameworks": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "rice",
+                      "ice",
+                      "value_effort",
+                      "kano",
+                      "moscow",
+                      "weighted_scoring",
+                      "opportunity_scoring"
+                    ]
+                  }
+                },
+                "featureTracking": {
+                  "type": "object",
+                  "properties": {
+                    "statuses": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "ideation",
+                          "discovery",
+                          "definition",
+                          "design",
+                          "development",
+                          "testing",
+                          "beta",
+                          "launched",
+                          "deprecated"
+                        ]
+                      }
+                    },
+                    "metrics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["metric", "measurement"],
+                        "properties": {
+                          "metric": {
+                            "type": "string",
+                            "enum": [
+                              "adoption_rate",
+                              "usage_frequency",
+                              "user_satisfaction",
+                              "revenue_impact",
+                              "cost_reduction",
+                              "time_saved",
+                              "error_reduction"
+                            ]
+                          },
+                          "measurement": {
+                            "type": "string",
+                            "description": "How this metric is measured"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "userResearch": {
+              "type": "object",
+              "properties": {
+                "researchMethods": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "user_interviews",
+                      "surveys",
+                      "usability_testing",
+                      "a_b_testing",
+                      "card_sorting",
+                      "journey_mapping",
+                      "persona_development",
+                      "ethnographic_research",
+                      "diary_studies",
+                      "analytics_analysis"
+                    ]
+                  }
+                },
+                "userSegments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["segmentName", "characteristics"],
+                    "properties": {
+                      "segmentName": {
+                        "type": "string"
+                      },
+                      "characteristics": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "size": {
+                        "type": "string",
+                        "description": "Estimated segment size"
+                      },
+                      "value": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "Business value of segment"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "feedbackChannels": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["channel", "frequency"],
+                    "properties": {
+                      "channel": {
+                        "type": "string",
+                        "enum": [
+                          "in_app_feedback",
+                          "support_tickets",
+                          "user_forums",
+                          "social_media",
+                          "reviews",
+                          "nps_surveys",
+                          "customer_calls",
+                          "advisory_board"
+                        ]
+                      },
+                      "frequency": {
+                        "type": "string",
+                        "enum": ["continuous", "daily", "weekly", "monthly", "quarterly"]
+                      },
+                      "analysisMethod": {
+                        "type": "string",
+                        "enum": ["manual", "automated", "ai_assisted"]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "requirementsManagement": {
+              "type": "object",
+              "properties": {
+                "requirementTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "functional",
+                      "non_functional",
+                      "technical",
+                      "business",
+                      "regulatory",
+                      "user_experience",
+                      "performance",
+                      "security"
+                    ]
+                  }
+                },
+                "documentationFormats": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "user_stories",
+                      "use_cases",
+                      "prd",
+                      "technical_specs",
+                      "wireframes",
+                      "prototypes",
+                      "api_documentation",
+                      "acceptance_criteria"
+                    ]
+                  }
+                },
+                "collaborationTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "jira",
+                      "confluence",
+                      "notion",
+                      "productboard",
+                      "aha",
+                      "figma",
+                      "miro",
+                      "slack"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "analyticsAndMetrics": {
+              "type": "object",
+              "properties": {
+                "productMetrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["category", "metrics"],
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "acquisition",
+                          "activation",
+                          "retention",
+                          "revenue",
+                          "referral",
+                          "engagement",
+                          "performance"
+                        ]
+                      },
+                      "metrics": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": ["name", "definition", "target"],
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "definition": {
+                              "type": "string"
+                            },
+                            "target": {
+                              "type": ["number", "string"]
+                            },
+                            "current": {
+                              "type": ["number", "string"]
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "analyticsTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "google_analytics",
+                      "mixpanel",
+                      "amplitude",
+                      "segment",
+                      "heap",
+                      "fullstory",
+                      "hotjar",
+                      "custom"
+                    ]
+                  }
+                },
+                "experimentationPlatform": {
+                  "type": "object",
+                  "properties": {
+                    "platform": {
+                      "type": "string",
+                      "enum": ["optimizely", "google_optimize", "vwo", "launchdarkly", "split", "custom"]
+                    },
+                    "experimentTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["a_b_test", "multivariate", "feature_flag", "rollout", "beta"]
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "stakeholderManagement": {
+              "type": "object",
+              "properties": {
+                "stakeholderGroups": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["group", "influence", "interest"],
+                    "properties": {
+                      "group": {
+                        "type": "string",
+                        "enum": [
+                          "engineering",
+                          "design",
+                          "sales",
+                          "marketing",
+                          "customer_success",
+                          "executive",
+                          "customers",
+                          "partners"
+                        ]
+                      },
+                      "influence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"]
+                      },
+                      "interest": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"]
+                      },
+                      "communicationStrategy": {
+                        "type": "object",
+                        "properties": {
+                          "frequency": {
+                            "type": "string",
+                            "enum": ["daily", "weekly", "biweekly", "monthly", "quarterly"]
+                          },
+                          "format": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": ["meetings", "emails", "reports", "dashboards", "presentations"]
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "communicationArtifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "product_vision",
+                      "strategy_deck",
+                      "roadmap_presentation",
+                      "release_notes",
+                      "feature_announcements",
+                      "success_metrics",
+                      "competitive_analysis"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "launchManagement": {
+              "type": "object",
+              "properties": {
+                "launchTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "alpha",
+                      "beta",
+                      "soft_launch",
+                      "phased_rollout",
+                      "full_launch",
+                      "feature_flag",
+                      "dark_launch"
+                    ]
+                  }
+                },
+                "launchChecklist": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["category", "items"],
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "product_readiness",
+                          "marketing_readiness",
+                          "sales_enablement",
+                          "support_readiness",
+                          "technical_readiness",
+                          "legal_compliance"
+                        ]
+                      },
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "successCriteria": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["metric", "target", "timeframe"],
+                    "properties": {
+                      "metric": {
+                        "type": "string"
+                      },
+                      "target": {
+                        "type": ["number", "string"]
+                      },
+                      "timeframe": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

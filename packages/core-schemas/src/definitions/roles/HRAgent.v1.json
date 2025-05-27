@@ -1,0 +1,367 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/roles/HRAgent.v1.json",
+  "title": "HRAgent",
+  "description": "Agent role for human resources management, recruitment, and employee lifecycle automation",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../ArcanAgentBase.v1.json"
+    },
+    {
+      "type": "object",
+      "required": ["roleSpecific"],
+      "properties": {
+        "roleSpecific": {
+          "type": "object",
+          "required": ["hrCapabilities", "hrisIntegration", "complianceManagement"],
+          "properties": {
+            "hrCapabilities": {
+              "type": "object",
+              "properties": {
+                "recruitmentFunctions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "job_posting",
+                      "resume_screening",
+                      "candidate_sourcing",
+                      "interview_scheduling",
+                      "assessment_coordination",
+                      "reference_checking",
+                      "offer_generation",
+                      "onboarding_automation",
+                      "talent_pipeline_management"
+                    ]
+                  },
+                  "description": "Recruitment functions this agent can perform"
+                },
+                "employeeManagement": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "employee_records",
+                      "performance_reviews",
+                      "goal_tracking",
+                      "compensation_management",
+                      "benefits_administration",
+                      "time_tracking",
+                      "leave_management",
+                      "training_coordination",
+                      "career_development",
+                      "succession_planning"
+                    ]
+                  },
+                  "description": "Employee management capabilities"
+                },
+                "hrAnalytics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "turnover_analysis",
+                      "diversity_metrics",
+                      "compensation_benchmarking",
+                      "engagement_surveys",
+                      "productivity_metrics",
+                      "skills_gap_analysis",
+                      "workforce_planning",
+                      "retention_prediction"
+                    ]
+                  },
+                  "description": "HR analytics capabilities"
+                }
+              },
+              "additionalProperties": false
+            },
+            "hrisIntegration": {
+              "type": "object",
+              "required": ["hrisSystem", "dataMapping"],
+              "properties": {
+                "hrisSystem": {
+                  "type": "string",
+                  "enum": ["Workday", "BambooHR", "ADP", "SAP_SuccessFactors", "Oracle_HCM", "Rippling", "custom"],
+                  "description": "Primary HRIS system"
+                },
+                "dataMapping": {
+                  "type": "object",
+                  "properties": {
+                    "employeeFields": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["fieldName", "hrisField", "dataType"],
+                        "properties": {
+                          "fieldName": {
+                            "type": "string"
+                          },
+                          "hrisField": {
+                            "type": "string"
+                          },
+                          "dataType": {
+                            "type": "string",
+                            "enum": ["string", "number", "date", "boolean", "object"]
+                          },
+                          "required": {
+                            "type": "boolean",
+                            "default": false
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "syncDirection": {
+                      "type": "string",
+                      "enum": ["bidirectional", "from_hris", "to_hris"],
+                      "description": "Data synchronization direction"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "integrationPoints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["payroll", "benefits", "time_attendance", "recruiting", "learning", "performance"]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "recruitmentProcess": {
+              "type": "object",
+              "properties": {
+                "pipeline": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["stage", "actions", "duration"],
+                    "properties": {
+                      "stage": {
+                        "type": "string",
+                        "enum": [
+                          "application_received",
+                          "screening",
+                          "phone_interview",
+                          "technical_assessment",
+                          "onsite_interview",
+                          "reference_check",
+                          "offer",
+                          "negotiation",
+                          "accepted",
+                          "rejected"
+                        ]
+                      },
+                      "actions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "duration": {
+                        "type": "object",
+                        "properties": {
+                          "target": {
+                            "type": "integer",
+                            "description": "Target duration in days"
+                          },
+                          "sla": {
+                            "type": "integer",
+                            "description": "SLA in hours"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "screeningCriteria": {
+                  "type": "object",
+                  "properties": {
+                    "requiredSkills": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "experienceYears": {
+                      "type": "object",
+                      "properties": {
+                        "minimum": {
+                          "type": "integer"
+                        },
+                        "preferred": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "education": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "certifications": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "complianceManagement": {
+              "type": "object",
+              "properties": {
+                "regulations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["EEOC", "ADA", "FLSA", "FMLA", "GDPR", "CCPA", "SOC2", "ISO27001"]
+                  },
+                  "description": "Compliance regulations tracked"
+                },
+                "documentManagement": {
+                  "type": "object",
+                  "properties": {
+                    "requiredDocuments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["documentType", "renewalPeriod"],
+                        "properties": {
+                          "documentType": {
+                            "type": "string",
+                            "enum": ["I9", "W4", "contract", "NDA", "background_check", "drug_test", "certification"]
+                          },
+                          "renewalPeriod": {
+                            "type": "string",
+                            "description": "Renewal period (e.g., 'annual', 'never')"
+                          },
+                          "expiryTracking": {
+                            "type": "boolean",
+                            "default": true
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "retentionPolicies": {
+                      "type": "object",
+                      "properties": {
+                        "activeEmployee": {
+                          "type": "integer",
+                          "description": "Years to retain for active employees"
+                        },
+                        "terminatedEmployee": {
+                          "type": "integer",
+                          "description": "Years to retain after termination"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "auditTrails": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Maintain audit trails for compliance"
+                }
+              },
+              "additionalProperties": false
+            },
+            "employeeLifecycle": {
+              "type": "object",
+              "properties": {
+                "onboarding": {
+                  "type": "object",
+                  "properties": {
+                    "checklistItems": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["task", "owner", "dueDay"],
+                        "properties": {
+                          "task": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string",
+                            "enum": ["hr", "it", "manager", "employee", "finance"]
+                          },
+                          "dueDay": {
+                            "type": "integer",
+                            "description": "Due by day X of employment"
+                          },
+                          "automated": {
+                            "type": "boolean",
+                            "default": false
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "buddyProgram": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "probationPeriod": {
+                      "type": "integer",
+                      "description": "Probation period in days"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "offboarding": {
+                  "type": "object",
+                  "properties": {
+                    "checklistItems": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["task", "owner", "timing"],
+                        "properties": {
+                          "task": {
+                            "type": "string"
+                          },
+                          "owner": {
+                            "type": "string",
+                            "enum": ["hr", "it", "manager", "finance", "security"]
+                          },
+                          "timing": {
+                            "type": "string",
+                            "description": "When to complete (e.g., 'last_day', 'before_last_day')"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "exitInterview": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "knowledgeTransfer": {
+                      "type": "boolean",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+} 

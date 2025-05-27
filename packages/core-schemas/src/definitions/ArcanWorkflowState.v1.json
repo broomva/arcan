@@ -1,0 +1,259 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanWorkflowState.v1.json",
+  "title": "ArcanWorkflowState",
+  "description": "Schema for representing the runtime state of a workflow execution in the Arcan platform",
+  "type": "object",
+  "required": [
+    "executionId",
+    "workflowId",
+    "status",
+    "startedAt",
+    "currentNodeId",
+    "state"
+  ],
+  "properties": {
+    "executionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this workflow execution instance"
+    },
+    "workflowId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Reference to the workflow definition being executed"
+    },
+    "parentExecutionId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "If this is a subgraph execution, reference to parent execution"
+    },
+    "agentId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "ID of the agent executing this workflow"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "paused", "completed", "failed", "cancelled", "timeout"],
+      "description": "Current status of the workflow execution"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the workflow execution started"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the workflow execution completed"
+    },
+    "currentNodeId": {
+      "type": "string",
+      "description": "ID of the currently executing node"
+    },
+    "executionPath": {
+      "type": "array",
+      "description": "Ordered list of nodes that have been executed",
+      "items": {
+        "$ref": "#/definitions/ExecutedNode"
+      }
+    },
+    "state": {
+      "type": "object",
+      "description": "Current workflow state data (conforms to workflow's stateSchema)",
+      "additionalProperties": true
+    },
+    "input": {
+      "type": "object",
+      "description": "Input data provided to the workflow",
+      "additionalProperties": true
+    },
+    "output": {
+      "type": "object",
+      "description": "Output data from the workflow (when completed)",
+      "additionalProperties": true
+    },
+    "error": {
+      "$ref": "#/definitions/WorkflowError"
+    },
+    "checkpoints": {
+      "type": "array",
+      "description": "Saved checkpoints for workflow recovery",
+      "items": {
+        "$ref": "#/definitions/WorkflowCheckpoint"
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional execution metadata",
+      "properties": {
+        "triggeredBy": {
+          "type": "string",
+          "description": "What triggered this execution (e.g., 'manual', 'event:OrderCreated')"
+        },
+        "tenantId": {
+          "type": "string",
+          "description": "Tenant ID for multi-tenancy"
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Correlation ID for tracking across services"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "ExecutedNode": {
+      "type": "object",
+      "required": ["nodeId", "startedAt", "status"],
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "description": "ID of the executed node"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this node started executing"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this node completed executing"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["success", "failed", "skipped", "timeout"],
+          "description": "Execution status of this node"
+        },
+        "input": {
+          "type": "object",
+          "description": "Input provided to this node",
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "description": "Output from this node",
+          "additionalProperties": true
+        },
+        "error": {
+          "$ref": "#/definitions/NodeError"
+        },
+        "retryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of retry attempts for this node"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowError": {
+      "type": "object",
+      "required": ["code", "message", "timestamp"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Error code"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error message"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the error occurred"
+        },
+        "nodeId": {
+          "type": "string",
+          "description": "Node where the error occurred"
+        },
+        "details": {
+          "type": "object",
+          "description": "Additional error details",
+          "additionalProperties": true
+        },
+        "stackTrace": {
+          "type": "string",
+          "description": "Stack trace for debugging"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NodeError": {
+      "type": "object",
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Error message"
+        },
+        "type": {
+          "type": "string",
+          "description": "Error type/category"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCheckpoint": {
+      "type": "object",
+      "required": ["checkpointId", "nodeId", "timestamp", "state"],
+      "properties": {
+        "checkpointId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Unique identifier for this checkpoint"
+        },
+        "nodeId": {
+          "type": "string",
+          "description": "Node where checkpoint was created"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the checkpoint was created"
+        },
+        "state": {
+          "type": "object",
+          "description": "Workflow state at this checkpoint",
+          "additionalProperties": true
+        },
+        "executionPath": {
+          "type": "array",
+          "description": "Execution path up to this checkpoint",
+          "items": {
+            "$ref": "#/definitions/ExecutedNode"
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Why this checkpoint was created"
+            },
+            "isAutomatic": {
+              "type": "boolean",
+              "description": "Whether this was an automatic checkpoint"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 
