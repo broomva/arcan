@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateSchema, createValidator } from './validator';
+import { validateSchema } from './validator';
 import { SchemaRegistry } from './registry';
 import * as schemas from '../definitions';
 

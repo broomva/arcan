@@ -1,4 +1,5 @@
 import { validateSchema } from './validator';
+import type { JSONSchema7 } from 'json-schema';
 
 interface SchemaMetadata {
   id: string;
@@ -10,7 +11,7 @@ interface SchemaMetadata {
 }
 
 interface RegisteredSchema {
-  schema: any; // Using any to handle imported JSON schemas
+  schema: unknown; // Using unknown to handle imported JSON schemas safely
   metadata: SchemaMetadata;
 }
 
@@ -26,20 +27,21 @@ export class SchemaRegistry {
    * @param schema - The JSON Schema to register
    * @param metadata - Additional metadata for the schema
    */
-  registerSchema(schema: any, metadata?: Partial<SchemaMetadata>): void {
-    if (!schema.$id) {
+  registerSchema(schema: unknown, metadata?: Partial<SchemaMetadata>): void {
+    const schemaObj = schema as JSONSchema7;
+    if (!schemaObj.$id) {
       throw new Error('Schema must have an $id property');
     }
 
-    const id = schema.$id;
+    const id = schemaObj.$id;
     const version = this.extractVersion(id) || '1.0.0';
-    const title = schema.title || 'Untitled Schema';
+    const title = schemaObj.title || 'Untitled Schema';
 
     const fullMetadata: SchemaMetadata = {
       id,
       version,
       title,
-      description: schema.description,
+      description: schemaObj.description,
       createdAt: new Date(),
       updatedAt: new Date(),
       ...metadata,

@@ -1,5 +1,6 @@
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
+import type { JSONSchema7 } from 'json-schema';
 
 // Initialize AJV with JSON Schema draft-07 support
 const ajv = new Ajv({
@@ -19,7 +20,7 @@ addFormats(ajv);
  * @returns Validation result with errors if any
  */
 export function validateSchema(
-  schema: any, // Using any to handle imported JSON schemas
+  schema: unknown, // Using unknown to handle imported JSON schemas safely
   data: unknown
 ): {
   valid: boolean;
@@ -30,7 +31,7 @@ export function validateSchema(
     params: Record<string, unknown>;
   }>;
 } {
-  const validate = ajv.compile(schema);
+  const validate = ajv.compile(schema as JSONSchema7);
   const valid = validate(data);
 
   if (!valid && validate.errors) {
@@ -53,8 +54,8 @@ export function validateSchema(
  * @param schema - The JSON Schema to create a validator for
  * @returns A validator function
  */
-export function createValidator(schema: any) {
-  const validate = ajv.compile(schema);
+export function createValidator(schema: unknown) {
+  const validate = ajv.compile(schema as JSONSchema7);
   
   return (data: unknown): boolean => {
     return validate(data);
