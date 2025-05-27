@@ -1,0 +1,418 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanWorkflow.v1.json",
+  "title": "ArcanWorkflow",
+  "description": "Schema for defining LangGraph-based workflows in the Arcan platform",
+  "type": "object",
+  "required": [
+    "workflowId",
+    "name",
+    "version",
+    "langGraphDef",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "workflowId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this workflow definition"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Human-readable name for the workflow"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Detailed description of the workflow's purpose and behavior"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of this workflow definition"
+    },
+    "langGraphDef": {
+      "$ref": "#/definitions/LangGraphDefinition"
+    },
+    "inputSchema": {
+      "type": "object",
+      "description": "JSON Schema defining the expected input for this workflow",
+      "additionalProperties": true
+    },
+    "outputSchema": {
+      "type": "object",
+      "description": "JSON Schema defining the expected output from this workflow",
+      "additionalProperties": true
+    },
+    "triggers": {
+      "type": "array",
+      "description": "Events or conditions that can trigger this workflow",
+      "items": {
+        "$ref": "#/definitions/WorkflowTrigger"
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Permissions required to execute this workflow",
+      "properties": {
+        "executeRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Roles allowed to execute this workflow"
+        },
+        "viewRoles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Roles allowed to view this workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the workflow",
+      "properties": {
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "category": {
+          "type": "string"
+        },
+        "estimatedDuration": {
+          "type": "string",
+          "description": "Estimated execution duration (e.g., '5m', '1h')"
+        }
+      },
+      "additionalProperties": true
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this workflow was created"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this workflow was last updated"
+    },
+    "createdBy": {
+      "type": "string",
+      "description": "DID or URN of the entity that created this workflow"
+    }
+  },
+  "definitions": {
+    "LangGraphDefinition": {
+      "type": "object",
+      "description": "LangGraph workflow definition structure",
+      "required": ["nodes", "edges", "entryPoint"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "description": "Nodes in the workflow graph",
+          "items": {
+            "$ref": "#/definitions/WorkflowNode"
+          },
+          "minItems": 1
+        },
+        "edges": {
+          "type": "array",
+          "description": "Edges connecting nodes in the workflow",
+          "items": {
+            "$ref": "#/definitions/WorkflowEdge"
+          }
+        },
+        "entryPoint": {
+          "type": "string",
+          "description": "ID of the entry node for the workflow"
+        },
+        "conditionalEdges": {
+          "type": "array",
+          "description": "Conditional edges with routing logic",
+          "items": {
+            "$ref": "#/definitions/ConditionalEdge"
+          }
+        },
+        "stateSchema": {
+          "type": "object",
+          "description": "Schema defining the workflow state structure",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNode": {
+      "type": "object",
+      "required": ["nodeId", "type", "name"],
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "description": "Unique identifier for this node within the workflow"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["llm", "tool", "human", "conditional", "subgraph", "custom"],
+          "description": "Type of workflow node"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for the node"
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of what this node does"
+        },
+        "config": {
+          "type": "object",
+          "description": "Node-specific configuration",
+          "properties": {
+            "llmConfig": {
+              "$ref": "#/definitions/LLMConfig"
+            },
+            "toolConfig": {
+              "$ref": "#/definitions/ToolConfig"
+            },
+            "humanConfig": {
+              "$ref": "#/definitions/HumanConfig"
+            },
+            "subgraphConfig": {
+              "$ref": "#/definitions/SubgraphConfig"
+            }
+          },
+          "additionalProperties": true
+        },
+        "retryPolicy": {
+          "type": "object",
+          "properties": {
+            "maxRetries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "backoffMultiplier": {
+              "type": "number",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowEdge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source node ID"
+        },
+        "to": {
+          "type": "string",
+          "description": "Target node ID"
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional label for the edge"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConditionalEdge": {
+      "type": "object",
+      "required": ["from", "conditions"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Source node ID"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["condition", "to"],
+            "properties": {
+              "condition": {
+                "type": "string",
+                "description": "Condition expression or function name"
+              },
+              "to": {
+                "type": "string",
+                "description": "Target node ID if condition is met"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "default": {
+          "type": "string",
+          "description": "Default target node if no conditions match"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LLMConfig": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "LLM model identifier"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt for the LLM"
+        },
+        "promptTemplate": {
+          "type": "string",
+          "description": "Template for constructing prompts"
+        }
+      },
+      "additionalProperties": true
+    },
+    "ToolConfig": {
+      "type": "object",
+      "required": ["spellId"],
+      "properties": {
+        "spellId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to the spell to invoke"
+        },
+        "inputMapping": {
+          "type": "object",
+          "description": "Mapping from workflow state to tool input",
+          "additionalProperties": true
+        },
+        "outputMapping": {
+          "type": "object",
+          "description": "Mapping from tool output to workflow state",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "HumanConfig": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Prompt to display to human"
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Timeout duration (e.g., '30m')"
+        },
+        "allowedActions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed actions for human input"
+        }
+      },
+      "additionalProperties": true
+    },
+    "SubgraphConfig": {
+      "type": "object",
+      "required": ["workflowId"],
+      "properties": {
+        "workflowId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Reference to another workflow to execute as subgraph"
+        },
+        "inputMapping": {
+          "type": "object",
+          "description": "Mapping from parent state to subgraph input",
+          "additionalProperties": true
+        },
+        "outputMapping": {
+          "type": "object",
+          "description": "Mapping from subgraph output to parent state",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowTrigger": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["event", "schedule", "webhook", "manual"],
+          "description": "Type of trigger"
+        },
+        "eventTrigger": {
+          "type": "object",
+          "properties": {
+            "eventName": {
+              "type": "string"
+            },
+            "topicName": {
+              "type": "string"
+            },
+            "filters": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "scheduleTrigger": {
+          "type": "object",
+          "properties": {
+            "cron": {
+              "type": "string",
+              "description": "Cron expression for scheduling"
+            },
+            "timezone": {
+              "type": "string",
+              "description": "Timezone for the schedule"
+            }
+          },
+          "additionalProperties": false
+        },
+        "webhookTrigger": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Webhook endpoint path"
+            },
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT"],
+              "description": "HTTP method"
+            },
+            "authentication": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+} 

@@ -1,0 +1,315 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arcan.ai/schemas/ArcanTome.v1.json",
+  "title": "ArcanTome",
+  "description": "Schema for describing resources, knowledge bases, or data sources that Arcan agents can access and utilize",
+  "type": "object",
+  "required": [
+    "tomeId",
+    "name",
+    "resourceType",
+    "accessSchema",
+    "version"
+  ],
+  "properties": {
+    "tomeId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this specific tome definition"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Human-readable name for the tome (e.g., CustomerDatabase, ProductCatalogAPI)"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Detailed description of the tome's content, purpose, type of data, and intended use"
+    },
+    "resourceType": {
+      "type": "string",
+      "enum": [
+        "database",
+        "apiService",
+        "fileSystem",
+        "knowledgeBase",
+        "messageStream",
+        "blockchainLedger",
+        "staticDataset",
+        "vectorStore"
+      ],
+      "description": "General category of the resource this tome represents"
+    },
+    "accessSchema": {
+      "type": "object",
+      "description": "Parameters and protocols required to connect to and interact with the tome",
+      "required": ["protocol"],
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "postgresql",
+            "mysql",
+            "mongodb",
+            "https",
+            "http",
+            "kafka",
+            "s3",
+            "mcp",
+            "a2a",
+            "grpc",
+            "websocket"
+          ],
+          "description": "Primary protocol used to access the resource"
+        },
+        "endpointUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Network address of the resource (e.g., database connection string, API base URL)"
+        },
+        "authentication": {
+          "type": "object",
+          "description": "Authentication mechanism details",
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "apiKey",
+                "oauth2",
+                "jwt",
+                "basicAuth",
+                "kmsSignedTransaction",
+                "serviceAccountToken",
+                "none"
+              ],
+              "description": "Type of authentication required"
+            },
+            "credentials": {
+              "type": "object",
+              "description": "Type-specific credential fields",
+              "properties": {
+                "tokenUrl": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "OAuth2 token URL"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "OAuth2 scopes"
+                },
+                "token": {
+                  "type": "string",
+                  "description": "JWT or API key token (reference to vault path recommended)"
+                },
+                "vaultPath": {
+                  "type": "string",
+                  "description": "Path to credentials in secure vault"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "database": {
+          "type": "object",
+          "description": "Database-specific configuration",
+          "properties": {
+            "dbName": {
+              "type": "string",
+              "description": "Database name"
+            },
+            "tableName": {
+              "type": "string",
+              "description": "Primary table name"
+            },
+            "queryLanguage": {
+              "type": "string",
+              "enum": ["sql", "nosql", "graphql"],
+              "description": "Query language supported"
+            }
+          },
+          "additionalProperties": true
+        },
+        "apiService": {
+          "type": "object",
+          "description": "API service-specific configuration",
+          "properties": {
+            "openApiSpecUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "Link to OpenAPI specification"
+            },
+            "rateLimitInfo": {
+              "type": "object",
+              "properties": {
+                "requestsPerMinute": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "requestsPerHour": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "messageStream": {
+          "type": "object",
+          "description": "Message stream-specific configuration",
+          "properties": {
+            "topicName": {
+              "type": "string",
+              "description": "Topic or channel name"
+            },
+            "consumerGroupId": {
+              "type": "string",
+              "description": "Consumer group identifier"
+            }
+          },
+          "additionalProperties": true
+        },
+        "fileSystem": {
+          "type": "object",
+          "description": "File system or static dataset configuration",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File system path or S3 bucket path"
+            },
+            "format": {
+              "type": "string",
+              "enum": ["delta", "parquet", "csv", "json", "avro", "orc"],
+              "description": "Data format"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region for S3 resources"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "dataSchemaUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL pointing to JSON Schema definition describing the structure of data within this tome"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "description": "Semantic version of this tome definition"
+    },
+    "owner": {
+      "type": "string",
+      "description": "DID or URN identifier for the owner, provider, or maintainer of this tome"
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Access permissions for this tome",
+      "properties": {
+        "readAccess": {
+          "type": "array",
+          "description": "Role IDs or agent IDs with read access",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "writeAccess": {
+          "type": "array",
+          "description": "Role IDs or agent IDs with write access",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "manageAccess": {
+          "type": "array",
+          "description": "Role IDs or agent IDs with management access",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "updateFrequency": {
+      "type": "string",
+      "enum": ["realtime", "hourly", "daily", "weekly", "monthly", "static"],
+      "description": "How often the data within the tome is expected to change"
+    },
+    "tags": {
+      "type": "array",
+      "description": "Keywords for categorization and discovery",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 50
+      },
+      "uniqueItems": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Additional metadata about the tome",
+      "properties": {
+        "dataSize": {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "humanReadable": {
+              "type": "string",
+              "description": "Human-readable size (e.g., '1.5 GB')"
+            }
+          },
+          "additionalProperties": false
+        },
+        "recordCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of records or documents in the tome"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the data was last updated"
+        },
+        "quality": {
+          "type": "object",
+          "properties": {
+            "completeness": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Data completeness score (0-1)"
+            },
+            "accuracy": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Data accuracy score (0-1)"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+} 
