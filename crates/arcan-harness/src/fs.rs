@@ -24,12 +24,10 @@ impl FsPolicy {
             self.workspace_root.join(candidate)
         };
 
-        let canonical = joined
-            .canonicalize()
-            .map_err(|source| FsPolicyError::Io {
-                path: joined.clone(),
-                source,
-            })?;
+        let canonical = joined.canonicalize().map_err(|source| FsPolicyError::Io {
+            path: joined.clone(),
+            source,
+        })?;
 
         self.ensure_within_root(&canonical)?;
         Ok(canonical)
@@ -55,7 +53,7 @@ impl FsPolicy {
         })?;
 
         self.ensure_within_root(&canonical_parent)?;
-        
+
         // Return the path with the canonical parent but the original filename
         Ok(canonical_parent.join(joined.file_name().unwrap()))
     }
@@ -120,12 +118,14 @@ impl Tool for ReadFileTool {
     }
 
     fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let path_str = call.input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+        let path_str = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "read_file".to_string(),
                 message: "Missing or invalid 'path' argument".to_string(),
-            }
-        })?;
+            })?;
 
         let path = self
             .policy
@@ -178,18 +178,22 @@ impl Tool for WriteFileTool {
     }
 
     fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let path_str = call.input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+        let path_str = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "write_file".to_string(),
                 message: "Missing or invalid 'path' argument".to_string(),
-            }
-        })?;
-        let content = call.input.get("content").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+            })?;
+        let content = call
+            .input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "write_file".to_string(),
                 message: "Missing or invalid 'content' argument".to_string(),
-            }
-        })?;
+            })?;
 
         let path = self
             .policy
@@ -239,12 +243,14 @@ impl Tool for ListDirTool {
     }
 
     fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let path_str = call.input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+        let path_str = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "list_dir".to_string(),
                 message: "Missing or invalid 'path' argument".to_string(),
-            }
-        })?;
+            })?;
 
         let path = self
             .policy

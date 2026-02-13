@@ -146,6 +146,94 @@ mod tests {
 
         assert!(format!("{err}").contains("stale or missing"));
     }
+
+    #[test]
+    fn inserts_after_tag() {
+        let input = "line1\nline2\nline3";
+        let lines = hash_lines(input);
+
+        let output = apply_tagged_edits(
+            input,
+            &[TaggedEditOp::InsertAfterTag {
+                tag: lines[1].tag.clone(),
+                new_text: "inserted".to_string(),
+            }],
+        )
+        .expect("insert succeeds");
+
+        assert_eq!(output, "line1\nline2\ninserted\nline3");
+    }
+
+    #[test]
+    fn deletes_line_by_tag() {
+        let input = "a\nb\nc";
+        let lines = hash_lines(input);
+
+        let output = apply_tagged_edits(
+            input,
+            &[TaggedEditOp::DeleteLine {
+                tag: lines[1].tag.clone(),
+            }],
+        )
+        .expect("delete succeeds");
+
+        assert_eq!(output, "a\nc");
+    }
+
+    #[test]
+    fn multiple_operations_applied_sequentially() {
+        let input = "first\nsecond\nthird";
+        let lines = hash_lines(input);
+
+        let output = apply_tagged_edits(
+            input,
+            &[
+                TaggedEditOp::ReplaceLine {
+                    tag: lines[0].tag.clone(),
+                    new_text: "FIRST".to_string(),
+                },
+                TaggedEditOp::DeleteLine {
+                    tag: lines[2].tag.clone(),
+                },
+            ],
+        )
+        .expect("multi-op succeeds");
+
+        assert_eq!(output, "FIRST\nsecond");
+    }
+
+    #[test]
+    fn empty_content_with_ops_fails() {
+        let err = apply_tagged_edits(
+            "",
+            &[TaggedEditOp::DeleteLine {
+                tag: "any".to_string(),
+            }],
+        )
+        .expect_err("should fail on empty");
+
+        assert!(format!("{err}").contains("empty"));
+    }
+
+    #[test]
+    fn hash_lines_produces_unique_tags() {
+        let input = "same\nsame\nsame";
+        let lines = hash_lines(input);
+
+        // Each line should have a unique tag (because line_no differs)
+        assert_ne!(lines[0].tag, lines[1].tag);
+        assert_ne!(lines[1].tag, lines[2].tag);
+    }
+
+    #[test]
+    fn render_hashed_content_has_line_numbers() {
+        let input = "hello\nworld";
+        let rendered = super::render_hashed_content(input);
+        assert!(rendered.contains("   1 "));
+        assert!(rendered.contains("   2 "));
+        assert!(rendered.contains("hello"));
+        assert!(rendered.contains("world"));
+    }
 }
 
 use crate::fs::FsPolicy;
@@ -184,7 +272,7 @@ impl Tool for EditFileTool {
                                 { "properties": { "op": { "const": "insert_after_tag" }, "tag": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["op", "tag", "new_text"] },
                                 { "properties": { "op": { "const": "delete_line" }, "tag": { "type": "string" } }, "required": ["op", "tag"] }
                             ]
-                        } 
+                        }
                     }
                 },
                 "required": ["path", "ops"]
@@ -193,22 +281,25 @@ impl Tool for EditFileTool {
     }
 
     fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let path_str = call.input.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+        let path_str = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "edit_file".to_string(),
                 message: "Missing or invalid 'path' argument".to_string(),
-            }
-        })?;
+            })?;
 
-        let ops_value = call.input.get("ops").ok_or_else(|| {
-            CoreError::ToolExecution {
+        let ops_value = call
+            .input
+            .get("ops")
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "edit_file".to_string(),
                 message: "Missing 'ops' argument".to_string(),
-            }
-        })?;
+            })?;
 
-        let ops: Vec<TaggedEditOp> = serde_json::from_value(ops_value.clone())
-            .map_err(|e| CoreError::ToolExecution {
+        let ops: Vec<TaggedEditOp> =
+            serde_json::from_value(ops_value.clone()).map_err(|e| CoreError::ToolExecution {
                 tool_name: "edit_file".to_string(),
                 message: format!("Invalid 'ops' format: {}", e),
             })?;
@@ -222,25 +313,23 @@ impl Tool for EditFileTool {
             })?;
 
         // Read current content
-        let content = fs::read_to_string(&path)
-            .map_err(|e| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: format!("Failed to read file: {}", e),
-            })?;
+        let content = fs::read_to_string(&path).map_err(|e| CoreError::ToolExecution {
+            tool_name: "edit_file".to_string(),
+            message: format!("Failed to read file: {}", e),
+        })?;
 
         // Apply edits
-        let new_content = apply_tagged_edits(&content, &ops)
-            .map_err(|e| CoreError::ToolExecution {
+        let new_content =
+            apply_tagged_edits(&content, &ops).map_err(|e| CoreError::ToolExecution {
                 tool_name: "edit_file".to_string(),
                 message: format!("Edit failed: {}", e),
             })?;
 
         // Write back
-        fs::write(&path, &new_content)
-            .map_err(|e| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: format!("Failed to write file: {}", e),
-            })?;
+        fs::write(&path, &new_content).map_err(|e| CoreError::ToolExecution {
+            tool_name: "edit_file".to_string(),
+            message: format!("Failed to write file: {}", e),
+        })?;
 
         // Return hashed content of the NEW file
         let hashed_content = render_hashed_content(&new_content);

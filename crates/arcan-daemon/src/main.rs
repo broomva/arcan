@@ -1,12 +1,12 @@
-use arcan_core::runtime::{Orchestrator, OrchestratorConfig, ToolRegistry};
+use arcan_core::runtime::{Orchestrator, OrchestratorConfig, Provider, ToolRegistry};
 use arcan_daemon::{mock::MockProvider, r#loop::AgentLoop, server::create_router};
-use arcan_harness::fs::{FsPolicy, ReadFileTool, WriteFileTool, ListDirTool};
 use arcan_harness::edit::EditFileTool;
-use arcan_harness::sandbox::{LocalCommandRunner, BashTool, SandboxPolicy, NetworkPolicy};
+use arcan_harness::fs::{FsPolicy, ListDirTool, ReadFileTool, WriteFileTool};
+use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
+use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcan_store::session::JsonlSessionRepository;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::path::PathBuf;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -25,31 +25,39 @@ async fn main() -> anyhow::Result<()> {
     let sandbox_policy = SandboxPolicy {
         workspace_root: workspace_root.clone(),
         shell_enabled: true,
-        network: NetworkPolicy::AllowAll, // For MVP
-        allowed_env: BTreeSet::new(), // allow all by default if empty? No, need to check policy implementation
-        max_execution_ms: 10000,
-        max_output_bytes: 1024 * 1024,
-        max_memory_mb: 512,
+        network: NetworkPolicy::AllowAll,
+        allowed_env: BTreeSet::new(),
+        max_execution_ms: 10_000,
+        max_stdout_bytes: 1024 * 1024,
+        max_stderr_bytes: 1024 * 1024,
         max_processes: 10,
+        max_memory_mb: 512,
     };
 
     // 3. Initialize Tools
-    let mut registry = ToolRegistry::new();
-    registry.register(Arc::new(ReadFileTool::new(fs_policy.clone())));
-    registry.register(Arc::new(WriteFileTool::new(fs_policy.clone())));
-    registry.register(Arc::new(ListDirTool::new(fs_policy.clone())));
-    registry.register(Arc::new(EditFileTool::new(fs_policy.clone())));
-    
-    let runner = Box::new(LocalCommandRunner);
-    registry.register(Arc::new(BashTool::new(sandbox_policy, runner)));
+    let mut registry = ToolRegistry::default();
+    registry.register(ReadFileTool::new(fs_policy.clone()));
+    registry.register(WriteFileTool::new(fs_policy.clone()));
+    registry.register(ListDirTool::new(fs_policy.clone()));
+    registry.register(EditFileTool::new(fs_policy.clone()));
 
-    // 4. Initialize Provider (Mock for now)
-    let provider = Arc::new(MockProvider);
+    let runner = Box::new(LocalCommandRunner);
+    registry.register(BashTool::new(sandbox_policy, runner));
+
+    // 4. Initialize Provider — use Anthropic if API key is set, otherwise MockProvider
+    let provider: Arc<dyn Provider> = match AnthropicConfig::from_env() {
+        Ok(config) => {
+            println!("Provider: Anthropic ({})", config.model);
+            Arc::new(AnthropicProvider::new(config))
+        }
+        Err(_) => {
+            println!("Provider: MockProvider (set ANTHROPIC_API_KEY for real LLM)");
+            Arc::new(MockProvider)
+        }
+    };
 
     // 5. Initialize Orchestrator
-    let config = OrchestratorConfig {
-        max_iterations: 10,
-    };
+    let config = OrchestratorConfig { max_iterations: 10 };
     let orchestrator = Arc::new(Orchestrator::new(provider, registry, vec![], config));
 
     // 6. Initialize Session Repo
@@ -62,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     let router = create_router(agent_loop).await;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 3000));
     let listener = TcpListener::bind(addr).await?;
-    
+
     println!("Listening on http://{}", addr);
     axum::serve(listener, router).await?;
 

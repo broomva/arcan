@@ -9,6 +9,7 @@ The project is structured as a Rust workspace:
 - **`crates/arcan-core`**: Defines the core traits (`Provider`, `Tool`, `Middleware`), protocol types (`AgentEvent`, `ChatMessage`), and state management (`AppState` with JSON Patch).
 - **`crates/arcan-harness`**: Contains the tool harness, including filesystem operations (`fs`), safe editing logic (`edit` / "Hashline"), and sandboxing (`sandbox`).
 - **`crates/arcan-store`**: Handles persistence using an append-only log format (JSONL) and manages session history.
+- **`crates/arcan-provider`**: LLM provider implementations. Currently includes `AnthropicProvider` for the Claude Messages API.
 - **`crates/arcan-daemon`**: The executable daemon that wires everything together. It runs the agent loop and exposes an SSE (Server-Sent Events) API.
 
 ## Key Concepts
@@ -34,36 +35,54 @@ Build the daemon:
 cargo build -p arcan-daemon
 ```
 
-Run the daemon:
+Run the daemon (mock provider):
 ```bash
 cargo run -p arcan-daemon
 ```
 
+Run with real LLM (Anthropic Claude):
+```bash
+ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan-daemon
+```
+
 The server listens on `http://localhost:3000`.
+
+Test with curl:
+```bash
+curl -N -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "test-1", "message": "Hello, what can you do?"}'
+```
 
 ## Evolution Guide
 
 Here is how to continue evolving Arcan:
 
-### 1. Implement Real LLM Providers
-Currently, `MockProvider` (`arcan-daemon/src/mock.rs`) is used.
-- **Next Step**: Implement an `OpenAIProvider` or `AnthropicProvider` in `arcan-core` or a new crate.
-- **Task**: Implement the `Provider` trait to call actual APIs.
+### 1. Implement Real LLM Providers — DONE
+`AnthropicProvider` implemented in `arcan-provider` crate. Supports the Claude Messages API with tool use.
+- Set `ANTHROPIC_API_KEY` to use real LLM; falls back to `MockProvider` otherwise.
+- Configurable via `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS`, `ANTHROPIC_BASE_URL` env vars.
+- **Next Step**: Add `OpenAIProvider`, streaming support, retry/backoff logic.
 
 ### 2. Enhance Sandboxing
 The current `LocalCommandRunner` is a baseline.
 - **Next Step**: Implement a `BubblewrapRunner` or `DockerRunner` in `arcan-harness`.
 - **Task**: Use Linux namespaces or containers to strictly isolate tool execution.
 
-### 3. Improve Context Management
-The current loop simply appends messages (naive).
-- **Next Step**: Implement "Turns" or sliding window context in `arcan-daemon`.
-- **Task**: Store snapshots in `arcan-store` and query only relevant history.
+### 3. Improve Context Management — DONE (Phase 1)
+Session replay now properly reconstructs messages from events (TextDelta aggregation, ToolCallCompleted with call_id mapping).
+- `ChatMessage` now carries optional `tool_call_id` for proper tool result attribution.
+- **Next Step**: Implement sliding window / context truncation for large sessions. Add state snapshots to `arcan-store`.
 
 ### 4. Helper Client
 Developing a CLI or Web Client to consume the SSE stream.
 - **Next Step**: Build a frontend.
 - **Task**: Use `eventsource` in browser or `reqwest` in Rust CLI to connect to `/chat` and render events.
+
+### 5. Async Provider Interface
+The current `Provider` trait is synchronous (blocking). For streaming support and better performance:
+- **Next Step**: Add an async `AsyncProvider` trait or make `Provider` async.
+- **Task**: Support Server-Sent Events from the LLM directly (true streaming).
 
 ## Useful Commands
 

@@ -15,6 +15,9 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// For tool result messages, the ID of the tool call this responds to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -22,6 +25,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.into(),
+            tool_call_id: None,
         }
     }
 
@@ -29,6 +33,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.into(),
+            tool_call_id: None,
         }
     }
 
@@ -36,6 +41,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            tool_call_id: None,
         }
     }
 
@@ -43,6 +49,15 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.into(),
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_call_id: Some(call_id.into()),
         }
     }
 }

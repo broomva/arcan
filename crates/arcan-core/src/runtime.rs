@@ -39,7 +39,11 @@ pub trait Middleware: Send + Sync {
         Ok(())
     }
 
-    fn after_model_call(&self, _request: &ProviderRequest, _response: &ModelTurn) -> Result<(), CoreError> {
+    fn after_model_call(
+        &self,
+        _request: &ProviderRequest,
+        _response: &ModelTurn,
+    ) -> Result<(), CoreError> {
         Ok(())
     }
 
@@ -47,7 +51,11 @@ pub trait Middleware: Send + Sync {
         Ok(())
     }
 
-    fn post_tool_call(&self, _context: &ToolContext, _result: &ToolResult) -> Result<(), CoreError> {
+    fn post_tool_call(
+        &self,
+        _context: &ToolContext,
+        _result: &ToolResult,
+    ) -> Result<(), CoreError> {
         Ok(())
     }
 
@@ -268,9 +276,12 @@ impl Orchestrator {
                                 iteration,
                                 call_id: call.call_id.clone(),
                                 tool_name: call.tool_name.clone(),
-                                error: format!("{}", CoreError::ToolNotFound {
-                                    tool_name: call.tool_name.clone(),
-                                }),
+                                error: format!(
+                                    "{}",
+                                    CoreError::ToolNotFound {
+                                        tool_name: call.tool_name.clone(),
+                                    }
+                                ),
                             };
                             event_handler(err_event.clone());
                             events.push(err_event);
@@ -333,7 +344,11 @@ impl Orchestrator {
                                 event_handler(completed_event.clone());
                                 events.push(completed_event);
 
-                                messages.push(ChatMessage::tool(serde_json::to_string(&result.output).unwrap_or_else(|_| "{}".to_string())));
+                                messages.push(ChatMessage::tool_result(
+                                    &result.call_id,
+                                    serde_json::to_string(&result.output)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                ));
                             }
                             Err(err) => {
                                 stop_reason = RunStopReason::Error;
@@ -351,32 +366,30 @@ impl Orchestrator {
                             }
                         }
                     }
-                    ModelDirective::StatePatch { patch } => {
-                        match state.apply_patch(&patch) {
-                            Ok(()) => {
-                                let patch_event = AgentEvent::StatePatched {
-                                    run_id: input.run_id.clone(),
-                                    session_id: input.session_id.clone(),
-                                    iteration,
-                                    patch: patch.clone(),
-                                    revision: state.revision,
-                                };
-                                event_handler(patch_event.clone());
-                                events.push(patch_event);
-                            }
-                            Err(err) => {
-                                stop_reason = RunStopReason::Error;
-                                let err_event = AgentEvent::RunErrored {
-                                    run_id: input.run_id.clone(),
-                                    session_id: input.session_id.clone(),
-                                    error: err.to_string(),
-                                };
-                                event_handler(err_event.clone());
-                                events.push(err_event);
-                                break;
-                            }
+                    ModelDirective::StatePatch { patch } => match state.apply_patch(&patch) {
+                        Ok(()) => {
+                            let patch_event = AgentEvent::StatePatched {
+                                run_id: input.run_id.clone(),
+                                session_id: input.session_id.clone(),
+                                iteration,
+                                patch: patch.clone(),
+                                revision: state.revision,
+                            };
+                            event_handler(patch_event.clone());
+                            events.push(patch_event);
                         }
-                    }
+                        Err(err) => {
+                            stop_reason = RunStopReason::Error;
+                            let err_event = AgentEvent::RunErrored {
+                                run_id: input.run_id.clone(),
+                                session_id: input.session_id.clone(),
+                                error: err.to_string(),
+                            };
+                            event_handler(err_event.clone());
+                            events.push(err_event);
+                            break;
+                        }
+                    },
                     ModelDirective::FinalAnswer { text } => {
                         final_answer = Some(text.clone());
                         let delta_event = AgentEvent::TextDelta {
@@ -392,7 +405,10 @@ impl Orchestrator {
                 }
             }
 
-            if matches!(stop_reason, RunStopReason::Error | RunStopReason::BlockedByPolicy) {
+            if matches!(
+                stop_reason,
+                RunStopReason::Error | RunStopReason::BlockedByPolicy
+            ) {
                 break;
             }
 
@@ -415,7 +431,8 @@ impl Orchestrator {
                         let err_event = AgentEvent::RunErrored {
                             run_id: input.run_id.clone(),
                             session_id: input.session_id.clone(),
-                            error: "model requested tool_use stop reason without tool call".to_string(),
+                            error: "model requested tool_use stop reason without tool call"
+                                .to_string(),
                         };
                         event_handler(err_event.clone());
                         events.push(err_event);
@@ -428,7 +445,8 @@ impl Orchestrator {
                         let err_event = AgentEvent::RunErrored {
                             run_id: input.run_id.clone(),
                             session_id: input.session_id.clone(),
-                            error: "model returned non-terminal stop reason without tool call".to_string(),
+                            error: "model returned non-terminal stop reason without tool call"
+                                .to_string(),
                         };
                         event_handler(err_event.clone());
                         events.push(err_event);
@@ -438,7 +456,9 @@ impl Orchestrator {
             }
         }
 
-        if total_iterations == self.config.max_iterations && stop_reason == RunStopReason::BudgetExceeded {
+        if total_iterations == self.config.max_iterations
+            && stop_reason == RunStopReason::BudgetExceeded
+        {
             let err_event = AgentEvent::RunErrored {
                 run_id: input.run_id.clone(),
                 session_id: input.session_id.clone(),
@@ -482,7 +502,11 @@ impl Orchestrator {
             .try_for_each(|middleware| middleware.before_model_call(request))
     }
 
-    fn run_after_model(&self, request: &ProviderRequest, response: &ModelTurn) -> Result<(), CoreError> {
+    fn run_after_model(
+        &self,
+        request: &ProviderRequest,
+        response: &ModelTurn,
+    ) -> Result<(), CoreError> {
         self.middlewares
             .iter()
             .try_for_each(|middleware| middleware.after_model_call(request, response))
@@ -504,7 +528,9 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ModelDirective, ModelStopReason, ModelTurn, StatePatch, StatePatchFormat, StatePatchSource};
+    use crate::protocol::{
+        ModelDirective, ModelStopReason, ModelTurn, StatePatch, StatePatchFormat, StatePatchSource,
+    };
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -600,12 +626,15 @@ mod tests {
             OrchestratorConfig { max_iterations: 4 },
         );
 
-        let output = orchestrator.run(RunInput {
-            run_id: "run-1".to_string(),
-            session_id: "session-1".to_string(),
-            messages: vec![ChatMessage::user("test")],
-            state: AppState::default(),
-        }, |_| {});
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "session-1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
 
         assert_eq!(output.reason, RunStopReason::Completed);
         assert_eq!(output.final_answer.as_deref(), Some("done"));
@@ -616,9 +645,312 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, AgentEvent::ToolCallCompleted { .. })));
+        assert!(output.events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunFinished {
+                reason: RunStopReason::Completed,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn provider_error_stops_run() {
+        struct FailProvider;
+        impl Provider for FailProvider {
+            fn name(&self) -> &str {
+                "fail"
+            }
+            fn complete(&self, _request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
+                Err(CoreError::Provider("connection refused".to_string()))
+            }
+        }
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(FailProvider),
+            ToolRegistry::default(),
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Error);
         assert!(output
             .events
             .iter()
-            .any(|event| matches!(event, AgentEvent::RunFinished { reason: RunStopReason::Completed, .. })));
+            .any(|e| matches!(e, AgentEvent::RunErrored { .. })));
+    }
+
+    #[test]
+    fn tool_not_found_stops_run() {
+        let provider = ScriptedProvider {
+            turns: vec![ModelTurn {
+                directives: vec![ModelDirective::ToolCall {
+                    call: ToolCall {
+                        call_id: "c1".to_string(),
+                        tool_name: "nonexistent".to_string(),
+                        input: json!({}),
+                    },
+                }],
+                stop_reason: ModelStopReason::ToolUse,
+            }],
+            cursor: Mutex::new(0),
+        };
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            ToolRegistry::default(),
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Error);
+        assert!(output
+            .events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallFailed { .. })));
+    }
+
+    #[test]
+    fn middleware_blocks_model_call() {
+        struct BlockMiddleware;
+        impl Middleware for BlockMiddleware {
+            fn before_model_call(&self, _request: &ProviderRequest) -> Result<(), CoreError> {
+                Err(CoreError::Middleware("blocked by policy".to_string()))
+            }
+        }
+
+        let provider = ScriptedProvider {
+            turns: vec![ModelTurn {
+                directives: vec![ModelDirective::Text {
+                    delta: "hi".to_string(),
+                }],
+                stop_reason: ModelStopReason::EndTurn,
+            }],
+            cursor: Mutex::new(0),
+        };
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            ToolRegistry::default(),
+            vec![Arc::new(BlockMiddleware)],
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::BlockedByPolicy);
+    }
+
+    #[test]
+    fn budget_exceeded_when_iterations_exhausted() {
+        // Provider always returns ToolUse but no tool call directives → continues loop
+        // Actually, we need it to keep looping. Use a tool that works, but provider
+        // always asks for more.
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "c1".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({"value": "1"}),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "c2".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({"value": "2"}),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                },
+                // Only 2 turns, but max_iterations = 2, so it exhausts budget
+                // 3rd iteration will fail because no more scripted turns
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            tools,
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 2 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::BudgetExceeded);
+    }
+
+    #[test]
+    fn text_only_response_completes() {
+        let provider = ScriptedProvider {
+            turns: vec![ModelTurn {
+                directives: vec![ModelDirective::Text {
+                    delta: "Hello, world!".to_string(),
+                }],
+                stop_reason: ModelStopReason::EndTurn,
+            }],
+            cursor: Mutex::new(0),
+        };
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            ToolRegistry::default(),
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("hi")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Completed);
+        assert!(output.messages.iter().any(|m| m.content == "Hello, world!"));
+    }
+
+    #[test]
+    fn event_handler_receives_all_events() {
+        let provider = ScriptedProvider {
+            turns: vec![ModelTurn {
+                directives: vec![ModelDirective::FinalAnswer {
+                    text: "done".to_string(),
+                }],
+                stop_reason: ModelStopReason::EndTurn,
+            }],
+            cursor: Mutex::new(0),
+        };
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            ToolRegistry::default(),
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            move |event| {
+                received_clone.lock().unwrap().push(event);
+            },
+        );
+
+        let events = received.lock().unwrap();
+        assert!(events.len() >= 4); // RunStarted, IterationStarted, ModelOutput, TextDelta, RunFinished
+        assert!(matches!(events[0], AgentEvent::RunStarted { .. }));
+        assert!(matches!(
+            events.last().unwrap(),
+            AgentEvent::RunFinished { .. }
+        ));
+    }
+
+    #[test]
+    fn tool_result_includes_call_id() {
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "my-call-id".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({"value": "test"}),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "ok".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                },
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            tools,
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        // Verify tool result message has the correct call_id
+        let tool_msg = output
+            .messages
+            .iter()
+            .find(|m| m.role == crate::protocol::Role::Tool)
+            .expect("should have tool message");
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("my-call-id"));
     }
 }

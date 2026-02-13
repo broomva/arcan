@@ -59,7 +59,11 @@ pub struct CommandResult {
 }
 
 pub trait CommandRunner: Send + Sync {
-    fn run(&self, policy: &SandboxPolicy, request: &CommandRequest) -> Result<CommandResult, SandboxError>;
+    fn run(
+        &self,
+        policy: &SandboxPolicy,
+        request: &CommandRequest,
+    ) -> Result<CommandResult, SandboxError>;
 }
 
 #[derive(Debug, Error)]
@@ -77,14 +81,18 @@ pub enum SandboxError {
 pub struct LocalCommandRunner;
 
 impl CommandRunner for LocalCommandRunner {
-    fn run(&self, policy: &SandboxPolicy, request: &CommandRequest) -> Result<CommandResult, SandboxError> {
+    fn run(
+        &self,
+        policy: &SandboxPolicy,
+        request: &CommandRequest,
+    ) -> Result<CommandResult, SandboxError> {
         if !policy.shell_enabled {
             return Err(SandboxError::ShellDisabled);
         }
 
         // 1. Validate Env
         if let NetworkPolicy::Disabled = policy.network {
-           // In a real sandbox we'd block network, here we just trust the runner for now or use unshare
+            // In a real sandbox we'd block network, here we just trust the runner for now or use unshare
         }
 
         // 2. Prepare Command
@@ -93,7 +101,7 @@ impl CommandRunner for LocalCommandRunner {
 
         if let Some(cwd) = &request.cwd {
             // Resolve cwd against workspace root? Or just allow it if it is within workspace?
-            // For now assuming the request.cwd is absolute or relative to workspace. 
+            // For now assuming the request.cwd is absolute or relative to workspace.
             // Real implementation would use FsPolicy to resolve.
             cmd.current_dir(cwd);
         } else {
@@ -102,11 +110,12 @@ impl CommandRunner for LocalCommandRunner {
 
         cmd.env_clear();
         for (k, v) in &request.env {
-            if policy.allowed_env.contains(k) || policy.allowed_env.is_empty() { // simplistic check
-                 cmd.env(k, v);
+            if policy.allowed_env.contains(k) || policy.allowed_env.is_empty() {
+                // simplistic check
+                cmd.env(k, v);
             }
         }
-        
+
         // Always pass some basic env
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("TERM", "xterm-256color");
@@ -156,14 +165,20 @@ impl Tool for BashTool {
     }
 
     fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let command_line = call.input.get("command").and_then(|v| v.as_str()).ok_or_else(|| {
-            CoreError::ToolExecution {
+        let command_line = call
+            .input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
                 tool_name: "bash".to_string(),
                 message: "Missing 'command' argument".to_string(),
-            }
-        })?;
-        
-        let cwd = call.input.get("cwd").and_then(|v| v.as_str()).map(PathBuf::from);
+            })?;
+
+        let cwd = call
+            .input
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
 
         // Naive parsing of command line - in reality we should use words/shlex
         // For "bash" tool, we usually run ["/bin/bash", "-c", command_line]
@@ -174,10 +189,13 @@ impl Tool for BashTool {
             env: BTreeMap::new(),
         };
 
-        let result = self.runner.run(&self.policy, &request).map_err(|e| CoreError::ToolExecution {
-            tool_name: "bash".to_string(),
-            message: e.to_string(),
-        })?;
+        let result =
+            self.runner
+                .run(&self.policy, &request)
+                .map_err(|e| CoreError::ToolExecution {
+                    tool_name: "bash".to_string(),
+                    message: e.to_string(),
+                })?;
 
         Ok(ToolResult {
             call_id: call.call_id.clone(),

@@ -1,4 +1,4 @@
-use arcan-core::AgentEvent;
+use arcan_core::protocol::AgentEvent;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -91,7 +91,9 @@ impl SessionRepository for InMemorySessionRepository {
             .by_session
             .read()
             .map_err(|_| StoreError::PoisonedLock("in-memory read".to_string()))?;
-        Ok(guard.get(session_id).and_then(|records| records.last().cloned()))
+        Ok(guard
+            .get(session_id)
+            .and_then(|records| records.last().cloned()))
     }
 }
 
@@ -235,28 +237,151 @@ pub enum StoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppendEvent, InMemorySessionRepository, SessionRepository};
-    use arcan-core::{AgentEvent, RunStopReason};
+    use super::*;
+    use arcan_core::protocol::{AgentEvent, RunStopReason};
+
+    fn make_event(run_id: &str, session_id: &str) -> AgentEvent {
+        AgentEvent::RunFinished {
+            run_id: run_id.to_string(),
+            session_id: session_id.to_string(),
+            reason: RunStopReason::Completed,
+            total_iterations: 1,
+            final_answer: Some("ok".to_string()),
+        }
+    }
 
     #[test]
     fn appends_and_reads_head() {
         let store = InMemorySessionRepository::default();
+        store
+            .append(AppendEvent {
+                session_id: "s1".to_string(),
+                parent_id: None,
+                event: make_event("r1", "s1"),
+            })
+            .expect("append should succeed");
+
+        let head = store
+            .head("s1")
+            .expect("head should load")
+            .expect("head exists");
+        assert_eq!(head.session_id, "s1");
+    }
+
+    #[test]
+    fn load_session_returns_all_events_in_order() {
+        let store = InMemorySessionRepository::default();
+        for i in 0..5 {
+            store
+                .append(AppendEvent {
+                    session_id: "s1".to_string(),
+                    parent_id: None,
+                    event: make_event(&format!("r{i}"), "s1"),
+                })
+                .unwrap();
+        }
+
+        let records = store.load_session("s1").unwrap();
+        assert_eq!(records.len(), 5);
+    }
+
+    #[test]
+    fn empty_session_returns_empty() {
+        let store = InMemorySessionRepository::default();
+        let records = store.load_session("nonexistent").unwrap();
+        assert!(records.is_empty());
+        assert!(store.head("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn sessions_are_isolated() {
+        let store = InMemorySessionRepository::default();
+        store
+            .append(AppendEvent {
+                session_id: "a".to_string(),
+                parent_id: None,
+                event: make_event("r1", "a"),
+            })
+            .unwrap();
+        store
+            .append(AppendEvent {
+                session_id: "b".to_string(),
+                parent_id: None,
+                event: make_event("r2", "b"),
+            })
+            .unwrap();
+
+        assert_eq!(store.load_session("a").unwrap().len(), 1);
+        assert_eq!(store.load_session("b").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn load_children_filters_by_parent() {
+        let store = InMemorySessionRepository::default();
+        let parent = store
+            .append(AppendEvent {
+                session_id: "s1".to_string(),
+                parent_id: None,
+                event: make_event("r1", "s1"),
+            })
+            .unwrap();
+
+        store
+            .append(AppendEvent {
+                session_id: "s1".to_string(),
+                parent_id: Some(parent.id.clone()),
+                event: make_event("r2", "s1"),
+            })
+            .unwrap();
 
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
                 parent_id: None,
-                event: AgentEvent::RunFinished {
-                    run_id: "r1".to_string(),
-                    session_id: "s1".to_string(),
-                    reason: RunStopReason::Completed,
-                    total_iterations: 1,
-                    final_answer: Some("ok".to_string()),
-                },
+                event: make_event("r3", "s1"),
             })
-            .expect("append should succeed");
+            .unwrap();
 
-        let head = store.head("s1").expect("head should load").expect("head exists");
-        assert_eq!(head.session_id, "s1");
+        let children = store.load_children(&parent.id).unwrap();
+        assert_eq!(children.len(), 1);
+    }
+
+    #[test]
+    fn jsonl_repo_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionRepository::new(dir.path().to_path_buf());
+
+        store
+            .append(AppendEvent {
+                session_id: "s1".to_string(),
+                parent_id: None,
+                event: make_event("r1", "s1"),
+            })
+            .unwrap();
+
+        store
+            .append(AppendEvent {
+                session_id: "s1".to_string(),
+                parent_id: None,
+                event: make_event("r2", "s1"),
+            })
+            .unwrap();
+
+        let records = store.load_session("s1").unwrap();
+        assert_eq!(records.len(), 2);
+
+        let head = store.head("s1").unwrap().unwrap();
+        assert!(matches!(
+            head.event,
+            AgentEvent::RunFinished { ref run_id, .. } if run_id == "r2"
+        ));
+    }
+
+    #[test]
+    fn jsonl_repo_empty_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionRepository::new(dir.path().to_path_buf());
+        assert!(store.load_session("nope").unwrap().is_empty());
+        assert!(store.head("nope").unwrap().is_none());
     }
 }

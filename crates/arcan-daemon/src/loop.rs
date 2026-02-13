@@ -1,6 +1,7 @@
-use anyhow::{Context, Result};
-use arcan_core::protocol::{AgentEvent, AppState, ChatMessage, RunStopReason};
+use anyhow::Result;
+use arcan_core::protocol::{AgentEvent, ChatMessage};
 use arcan_core::runtime::{Orchestrator, RunInput, RunOutput};
+use arcan_core::state::AppState;
 use arcan_store::session::{AppendEvent, SessionRepository};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -12,10 +13,7 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    pub fn new(
-        session_repo: Arc<dyn SessionRepository>,
-        orchestrator: Arc<Orchestrator>,
-    ) -> Self {
+    pub fn new(session_repo: Arc<dyn SessionRepository>, orchestrator: Arc<Orchestrator>) -> Self {
         Self {
             session_repo,
             orchestrator,
@@ -31,83 +29,65 @@ impl AgentLoop {
         // 1. Load Session History & Reconstruct State
         let history = self.session_repo.load_session(session_id)?;
         let mut state = AppState::default();
-        let mut messages = Vec::new();
+        let mut messages: Vec<ChatMessage> = Vec::new();
 
         // Replay history to build state and context
-        // This is a simplified replay. In a real system, we might snapshot state.
         for record in history {
             match record.event {
                 AgentEvent::StatePatched { patch, .. } => {
-                    // Apply patch to state
-                    // We ignore errors here for now as we trust the admitted history
-                    let _ = state.apply_patch(&patch); 
-                }
-                AgentEvent::RunStarted { .. } => {
-                    // Start of a run
+                    let _ = state.apply_patch(&patch);
                 }
                 AgentEvent::TextDelta { delta, .. } => {
-                     // In a real system we'd aggregate these into a turn.
-                     // For now, let's assume we can reconstruct messages from bigger chunks if we had them.
-                     // But actually arcan-core `RunInput` takes `Vec<ChatMessage>`.
-                     // We need to reconstruct the conversation history.
-                     // This simple replay is tricky if we only have fine-grained events.
-                     // A better approach for the context window is to store "Snapshots" or "Turns" in the DB,
-                     // OR to have a way to aggregate events into messages.
-                     
-                     // For MVP, let's just append the user message to an empty context
-                     // and assume the model can handle it, OR implement proper reconstruction later.
-                     // A proper reconstruction would involve tracking the current "Turn" and appending to it.
+                    // Aggregate deltas into the last assistant message
+                    if let Some(last) = messages.last_mut() {
+                        if last.role == arcan_core::protocol::Role::Assistant {
+                            last.content.push_str(&delta);
+                        } else {
+                            messages.push(ChatMessage::assistant(delta));
+                        }
+                    } else {
+                        messages.push(ChatMessage::assistant(delta));
+                    }
                 }
                 AgentEvent::ToolCallCompleted { result, .. } => {
-                     // messages.push(ChatMessage::Tool(result...));
+                    let output_str =
+                        serde_json::to_string(&result.output).unwrap_or_else(|_| "{}".to_string());
+                    messages.push(ChatMessage::tool_result(&result.call_id, output_str));
                 }
-                // ... handle other events
                 _ => {}
             }
         }
-        
-        // TODO: proper message history reconstruction. 
-        // For now, we just pass the user message.
+
+        // Append the new user message
         messages.push(ChatMessage::user(user_message));
 
         let run_id = Uuid::new_v4().to_string();
-        
+
         // 2. Prepare Run Input
         let input = RunInput {
-            run_id: run_id.clone(),
+            run_id,
             session_id: session_id.to_string(),
             messages,
-            state: state.clone(),
+            state,
         };
 
-        // 3. Run Orchestrator (blocking, so we use spawn_blocking if we were async, but here we are in async fn)
-        // Since Orchestrator::run is blocking, we should wrap it.
+        // 3. Run Orchestrator in a blocking task (Provider::complete is synchronous)
         let orchestrator = self.orchestrator.clone();
         let session_repo = self.session_repo.clone();
-        let run_id_clone = run_id.clone();
-        let session_id_clone = session_id.to_string();
+        let session_id_owned = session_id.to_string();
 
         let output = tokio::task::spawn_blocking(move || {
             orchestrator.run(input, |event| {
-                // 1. Send to channel (ignore error if receiver dropped)
                 let _ = event_sender.blocking_send(event.clone());
 
-                // 2. Persist to DB
-                // We need to determine parent_id. creating a chain.
-                // For simplicity, we can just append. `JsonlSessionRepository` handles linear log.
-                // But `AppendEvent` requires `parent_id`.
-                // We need to track the last event ID.
-                // In this scope, we don't have easy access to the "last event ID" from the outer scope 
-                // unless we pass it in or track it here.
-                // Let's assume `session_repo.append` handles it or we pass None for now/root.
-                
                 let _ = session_repo.append(AppendEvent {
-                    session_id: session_id_clone.clone(),
+                    session_id: session_id_owned.clone(),
                     event,
-                    parent_id: None, // TODO: track parent_id for DAG
+                    parent_id: None,
                 });
             })
-        }).await??;
+        })
+        .await?;
 
         Ok(output)
     }

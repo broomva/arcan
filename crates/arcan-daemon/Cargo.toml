@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 arcan-core = { path = "../arcan-core" }
 arcan-harness = { path = "../arcan-harness" }
+arcan-provider = { path = "../arcan-provider" }
 arcan-store = { path = "../arcan-store" }
 anyhow = "1"
 axum.workspace = true
