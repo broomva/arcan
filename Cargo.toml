@@ -4,9 +4,9 @@ members = [
   "crates/arcan-harness",
   "crates/arcan-store",
   "crates/arcan-provider",
-  "crates/arcan-daemon",
+  "crates/arcand",
   "crates/arcan-lago",
-  "crates/agentd",
+  "crates/arcan",
 ]
 resolver = "2"
 
@@ -29,6 +29,9 @@ rust-version = "1.80.0"
 license = "MIT"
 authors = ["Arcan Contributors"]
 repository = "https://github.com/broomva/arcan-rs"
+homepage = "https://github.com/broomva/arcan-rs"
+keywords = ["agent", "llm", "runtime", "daemon", "ai"]
+categories = ["command-line-utilities", "web-programming"]
 
 [workspace.dependencies]
 anyhow = "1"

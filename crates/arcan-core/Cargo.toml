@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core traits, protocol types, and state management for the Arcan agent runtime"
+readme = "../../README.md"
 
 [dependencies]
 json-patch.workspace = true

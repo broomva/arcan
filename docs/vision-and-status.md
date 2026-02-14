@@ -79,7 +79,7 @@ The workspace is organized into focused crates:
 - **`arcan-core`**: Traits (`Runtime`, `Tool`, `Middleware`, `SessionStore`), data types, and the LLM provider interface.
 - **`arcan-harness`**: Tool implementations and sandboxing infrastructure.
 - **`arcan-store`**: Persistence layer for append-only event logs.
-- **`arcan-daemon`**: The `agentd` binary, HTTP/SSE server, and agent loop orchestration.
+- **`arcand`**: The `arcan` binary, HTTP/SSE server, and agent loop orchestration.
 
 ### 1.9 Extensibility
 
@@ -178,9 +178,9 @@ arcan-rs/
 │   ├── arcan-harness/    # Tool implementations, sandboxing, MCP bridge, skill loader
 │   ├── arcan-store/      # Append-only event persistence, session tree
 │   ├── arcan-provider/   # LLM provider adapters (Anthropic raw, Rig bridge)
-│   ├── arcan-daemon/     # Basic daemon with JSONL storage, Axum HTTP/SSE server
+│   ├── arcand/           # Basic daemon with JSONL storage, Axum HTTP/SSE server
 │   ├── arcan-lago/       # Bridge to Lago persistence and governance layer
-│   └── agentd/           # Production daemon with Lago ACID journal + policy middleware
+│   └── arcan/            # Production daemon with Lago ACID journal + policy middleware
 ├── docs/                 # Architecture and vision documentation
 ├── Cargo.toml            # Workspace definition
 ├── AGENTS.md             # Project documentation for AI agents
@@ -190,15 +190,15 @@ arcan-rs/
 ### Crate Dependency Graph
 
 ```
-agentd (production daemon)
+arcan (production daemon)
 ├── arcan-core
 ├── arcan-harness  → arcan-core
 ├── arcan-store    → arcan-core
 ├── arcan-provider → arcan-core
-├── arcan-daemon   → arcan-core, arcan-harness, arcan-store
+├── arcand         → arcan-core, arcan-harness, arcan-store
 └── arcan-lago     → arcan-core, arcan-store, lago-*
 
-arcan-daemon (basic daemon)
+arcand (basic daemon)
 ├── arcan-core
 ├── arcan-harness  → arcan-core
 ├── arcan-store    → arcan-core
@@ -209,9 +209,9 @@ arcan-daemon (basic daemon)
 - **`arcan-harness`** depends on `arcan-core` and provides all tool implementations plus sandboxing.
 - **`arcan-store`** depends on `arcan-core` and handles persistence of the event log.
 - **`arcan-provider`** depends on `arcan-core` and contains LLM provider adapters (Anthropic, Rig bridge, etc.).
-- **`arcan-daemon`** depends on core, harness, store, and provider. Basic daemon with JSONL storage.
+- **`arcand`** depends on core, harness, store, and provider. Basic daemon with JSONL storage.
 - **`arcan-lago`** bridges arcan's sync traits with lago's async persistence and policy engine. Depends on `lago-core`, `lago-journal`, `lago-store`, `lago-policy`, and `lago-api`.
-- **`agentd`** is the production daemon with ACID persistence, policy middleware, and structured logging.
+- **`arcan`** is the production daemon with ACID persistence, policy middleware, and structured logging.
 
 ---
 
@@ -259,7 +259,7 @@ Arcan events mapped to Vercel AI SDK v5 data parts:
 Arcan bridged to Lago persistence and governance platform:
 
 - `arcan-lago` bridge crate with event mapping, journal repository, policy middleware, state projection, SSE bridge.
-- `agentd` production daemon with ACID persistence via `RedbJournal`.
+- `arcan` production daemon with ACID persistence via `RedbJournal`.
 - `LagoPolicyMiddleware` for rule-based tool governance with risk assessment.
 - `AppStateProjection` implementing lago `Projection` trait.
 - Multi-format SSE via `SseBridge` (OpenAI, Anthropic, Vercel, Lago).

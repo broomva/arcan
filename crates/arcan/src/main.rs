@@ -1,11 +1,11 @@
 use arcan_core::runtime::{Orchestrator, OrchestratorConfig, Provider, ToolRegistry};
-use arcan_daemon::{mock::MockProvider, r#loop::AgentLoop, server::create_router};
 use arcan_harness::edit::EditFileTool;
 use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
 use arcan_lago::{LagoPolicyMiddleware, LagoSessionRepository};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
+use arcand::{mock::MockProvider, r#loop::AgentLoop, server::create_router};
 use clap::Parser;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
@@ -15,7 +15,10 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "agentd", about = "Arcan agent daemon with Lago persistence")]
+#[command(
+    name = "arcan",
+    about = "Arcan agent runtime with streaming and tool execution"
+)]
 struct Cli {
     /// Data directory for journal and blob storage
     #[arg(long, default_value = ".arcan")]
@@ -54,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
         workspace = %workspace_root.display(),
         journal = %journal_path.display(),
         blobs = %blobs_path.display(),
-        "Starting agentd"
+        "Starting arcan"
     );
 
     let journal = RedbJournal::open(&journal_path)?;

@@ -3,28 +3,6 @@
 version = 4
 
 [[package]]
-name = "agentd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arcan-core",
- "arcan-daemon",
- "arcan-harness",
- "arcan-lago",
- "arcan-provider",
- "axum",
- "clap",
- "lago-journal",
- "lago-policy",
- "lago-store",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -99,6 +77,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
+name = "arcan"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arcan-core",
+ "arcan-harness",
+ "arcan-lago",
+ "arcan-provider",
+ "arcand",
+ "axum",
+ "clap",
+ "lago-journal",
+ "lago-policy",
+ "lago-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "arcan-core"
 version = "0.1.0"
 dependencies = [
@@ -107,26 +107,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "arcan-daemon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arcan-core",
- "arcan-harness",
- "arcan-provider",
- "arcan-store",
- "axum",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tower-http",
- "uuid",
 ]
 
 [[package]]
@@ -194,6 +174,26 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "arcand"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arcan-core",
+ "arcan-harness",
+ "arcan-provider",
+ "arcan-store",
+ "axum",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
  "uuid",
 ]
 

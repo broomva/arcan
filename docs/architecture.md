@@ -1,6 +1,6 @@
 # Arcan Architecture (Grounding)
 
-This document defines the initial architecture for Arcan as a Rust-first agent runtime and daemon (`agentd`).
+This document defines the initial architecture for Arcan as a Rust-first agent runtime and daemon (`arcan`).
 
 ## 1. Goals
 
@@ -36,8 +36,8 @@ This document defines the initial architecture for Arcan as a Rust-first agent r
   - append-only event record model
   - session tree repository API
   - in-memory and JSONL baseline implementations
-- `crates/arcan-daemon`
-  - `agentd` transport boundary
+- `crates/arcand`
+  - `arcan` transport boundary
   - SSE encoder for typed events
   - HTTP/runtime integration (next step)
 
@@ -165,6 +165,6 @@ Expected uses:
 Phase 1: protocol + state + orchestrator skeleton (`arcan-core`)  
 Phase 2: harness policies + hashline edits (`arcan-harness`)  
 Phase 3: append-only store and session tree (`arcan-store`)  
-Phase 4: daemon SSE surface (`arcan-daemon`)  
+Phase 4: daemon SSE surface (`arcand`)  
 Phase 5: provider adapters + real tool implementations + approvals
 

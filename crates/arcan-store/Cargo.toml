@@ -4,9 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Append-only JSONL session persistence for Arcan agent events"
+readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core" }
+arcan-core = { path = "../arcan-core", version = "0.1.0" }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

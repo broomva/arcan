@@ -18,16 +18,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            binary: arcan-daemon
+            binary: arcan
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            binary: arcan-daemon
+            binary: arcan
           - target: x86_64-apple-darwin
             os: macos-latest
-            binary: arcan-daemon
+            binary: arcan
           - target: aarch64-apple-darwin
             os: macos-latest
-            binary: arcan-daemon
+            binary: arcan
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,19 +45,52 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p arcan-daemon
+        run: cargo build --release --target ${{ matrix.target }} -p arcan
 
       - name: Package
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
           cd dist
-          tar czf arcan-daemon-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
+          tar czf arcan-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arcan-daemon-${{ matrix.target }}
+          name: arcan-${{ matrix.target }}
           path: dist/*.tar.gz
+
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish crates (dependency order)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Tier 1: no internal deps
+          cargo publish -p arcan-core || true
+          sleep 30
+
+          # Tier 2: depends on arcan-core
+          cargo publish -p arcan-harness || true
+          cargo publish -p arcan-store || true
+          cargo publish -p arcan-provider || true
+          sleep 30
+
+          # Tier 3: depends on tier-2
+          cargo publish -p arcand || true
+          cargo publish -p arcan-lago || true
+          sleep 30
+
+          # Tier 4: the installable binary
+          cargo publish -p arcan || true
 
   release:
     name: Create Release

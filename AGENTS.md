@@ -10,12 +10,14 @@ The project is structured as a Rust workspace:
 - **`crates/arcan-harness`**: Contains the tool harness, including filesystem operations (`fs`), safe editing logic (`edit` / "Hashline"), and sandboxing (`sandbox`).
 - **`crates/arcan-store`**: Handles persistence using an append-only log format (JSONL) and manages session history.
 - **`crates/arcan-provider`**: LLM provider implementations. Currently includes `AnthropicProvider` for the Claude Messages API.
-- **`crates/arcan-daemon`**: The executable daemon that wires everything together. It runs the agent loop and exposes an SSE (Server-Sent Events) API.
+- **`crates/arcand`**: The agent loop, SSE server, and HTTP routing library for the daemon.
+- **`crates/arcan-lago`**: Bridge between Arcan and Lago event-sourced persistence.
+- **`crates/arcan`**: The installable binary (`cargo install arcan`) — production entry point with Clap CLI, structured logging, and policy middleware.
 
 ## Key Concepts
 
 ### Agent Loop
-The agent loop (`arcan-daemon/src/loop.rs`) follows a strict cycle:
+The agent loop (`arcand/src/loop.rs`) follows a strict cycle:
 1. **Reconstruct State**: Loads session history to build the current state.
 2. **Provider Call**: Sends context to the LLM (Provider).
 3. **Execution**: Processes LLM directives (Text, Tool Calls, State Patches).
@@ -32,17 +34,22 @@ Tools are executed within a policy-driven sandbox (`arcan-harness/src/sandbox.rs
 
 Build the daemon:
 ```bash
-cargo build -p arcan-daemon
+cargo build -p arcan
 ```
 
 Run the daemon (mock provider):
 ```bash
-cargo run -p arcan-daemon
+cargo run -p arcan
 ```
 
 Run with real LLM (Anthropic Claude):
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan-daemon
+ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan
+```
+
+Install from crates.io:
+```bash
+cargo install arcan
 ```
 
 The server listens on `http://localhost:3000`.
