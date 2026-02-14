@@ -44,6 +44,7 @@ impl LagoPolicyMiddleware {
             risk: Some(self.risk_level(&call.tool_name)),
             session_id: ctx.session_id.clone(),
             role: None,
+            sandbox_tier: None,
         }
     }
 }
@@ -165,6 +166,7 @@ mod tests {
             condition: MatchCondition::ToolName("bash".into()),
             decision: PolicyDecisionKind::Deny,
             explanation: Some("bash is not allowed".into()),
+            required_sandbox: None,
         });
         let mw = LagoPolicyMiddleware::new(engine, default_annotations());
 
@@ -184,6 +186,7 @@ mod tests {
             condition: MatchCondition::ToolName("bash".into()),
             decision: PolicyDecisionKind::Deny,
             explanation: Some("bash is not allowed".into()),
+            required_sandbox: None,
         });
         let mw = LagoPolicyMiddleware::new(engine, default_annotations());
 
@@ -201,6 +204,7 @@ mod tests {
             condition: MatchCondition::ToolName("write_file".into()),
             decision: PolicyDecisionKind::RequireApproval,
             explanation: None,
+            required_sandbox: None,
         });
         let mw = LagoPolicyMiddleware::new(engine, default_annotations());
 
@@ -229,6 +233,7 @@ mod tests {
             condition: MatchCondition::RiskAtLeast(RiskLevel::High),
             decision: PolicyDecisionKind::Deny,
             explanation: Some("high risk tools are blocked".into()),
+            required_sandbox: None,
         });
         let mw = LagoPolicyMiddleware::new(engine, default_annotations());
 

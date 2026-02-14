@@ -60,9 +60,9 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Lago persistence layer (crates.io)
-lago-api = "0.1"
-lago-core = "0.1"
-lago-journal = "0.1"
-lago-store = "0.1"
-lago-policy = "0.1"
+# Lago persistence layer (patched to local)
+lago-api = { path = "/Users/broomva/broomva.tech/lago/crates/lago-api" }
+lago-core = { path = "/Users/broomva/broomva.tech/lago/crates/lago-core" }
+lago-journal = { path = "/Users/broomva/broomva.tech/lago/crates/lago-journal" }
+lago-store = { path = "/Users/broomva/broomva.tech/lago/crates/lago-store" }
+lago-policy = { path = "/Users/broomva/broomva.tech/lago/crates/lago-policy" }

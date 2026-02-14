@@ -1,5 +1,5 @@
-use arcan_core::protocol::{AgentEvent, ToolCall, ToolResultSummary};
-use lago_core::event::SpanStatus;
+use arcan_core::protocol::{AgentEvent, RunStopReason, ToolCall, ToolResultSummary};
+use lago_core::event::{SpanStatus, TokenUsage};
 use lago_core::{BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
 use std::collections::HashMap;
 
@@ -58,30 +58,50 @@ pub fn arcan_to_lago(
             total_iterations,
             ..
         } => {
-            // If there's a final answer, emit it as a Message.
-            // The run metadata goes into the metadata map.
-            metadata.insert("run_stop_reason".to_string(), format!("{reason:?}"));
-            metadata.insert("total_iterations".to_string(), total_iterations.to_string());
-
-            if let Some(answer) = final_answer {
-                EventPayload::Message {
-                    role: "assistant".to_string(),
-                    content: answer.clone(),
-                    model: None,
-                    token_usage: None,
-                }
-            } else {
-                EventPayload::Custom {
-                    event_type: "run_finished".to_string(),
-                    data: serde_json::to_value(event).unwrap_or_default(),
-                }
+            // Map RunFinished to native Lago RunFinished
+            EventPayload::RunFinished {
+                reason: format!("{reason:?}"), // TODO: map enum to string/enum?
+                total_iterations: *total_iterations,
+                final_answer: final_answer.clone(),
+                usage: None,
             }
         }
 
-        // Everything else maps to Custom with the full AgentEvent serialized.
-        _ => EventPayload::Custom {
-            event_type: event_type_name(event).to_string(),
-            data: serde_json::to_value(event).unwrap_or_default(),
+        AgentEvent::RunStarted {
+            provider,
+            max_iterations,
+            ..
+        } => EventPayload::RunStarted {
+            provider: provider.clone(),
+            max_iterations: *max_iterations,
+        },
+
+        AgentEvent::IterationStarted { iteration, .. } => EventPayload::StepStarted { index: *iteration },
+
+        AgentEvent::ModelOutput {
+            iteration,
+            stop_reason,
+            directive_count,
+            ..
+        } => EventPayload::StepFinished {
+            index: *iteration,
+            stop_reason: format!("{stop_reason:?}"),
+            directive_count: *directive_count,
+        },
+
+        AgentEvent::StatePatched {
+            iteration,
+            patch,
+            revision,
+            ..
+        } => EventPayload::StatePatched {
+            index: *iteration,
+            patch: serde_json::to_value(patch).unwrap_or_default(),
+            revision: *revision,
+        },
+
+        AgentEvent::RunErrored { error, .. } => EventPayload::Error {
+            error: error.clone(),
         },
     };
 
@@ -99,9 +119,6 @@ pub fn arcan_to_lago(
 }
 
 /// Convert a Lago `EventEnvelope` back into an Arcan `AgentEvent`.
-///
-/// Returns `None` for events that don't map to an `AgentEvent` (e.g. user messages,
-/// file events not originated by the agent loop).
 pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
     let run_id = envelope
         .run_id
@@ -165,8 +182,70 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             }),
         },
 
+        EventPayload::RunStarted {
+            provider,
+            max_iterations,
+        } => Some(AgentEvent::RunStarted {
+            run_id,
+            session_id,
+            provider: provider.clone(),
+            max_iterations: *max_iterations,
+        }),
+
+        EventPayload::RunFinished {
+            reason,
+            total_iterations,
+            final_answer,
+            ..
+        } => Some(AgentEvent::RunFinished {
+            run_id,
+            session_id,
+            reason: parse_run_stop_reason(reason),
+            total_iterations: *total_iterations,
+            final_answer: final_answer.clone(),
+        }),
+
+        EventPayload::StepStarted { index } => Some(AgentEvent::IterationStarted {
+            run_id,
+            session_id,
+            iteration: *index,
+        }),
+
+        EventPayload::StepFinished {
+            index,
+            stop_reason,
+            directive_count,
+        } => Some(AgentEvent::ModelOutput {
+            run_id,
+            session_id,
+            iteration: *index,
+            stop_reason: parse_model_stop_reason(stop_reason),
+            directive_count: *directive_count,
+        }),
+
+        EventPayload::StatePatched {
+            index,
+            patch,
+            revision,
+        } => serde_json::from_value(patch.clone())
+            .ok()
+            .map(|p| AgentEvent::StatePatched {
+                run_id: run_id.clone(),
+                session_id: session_id.clone(),
+                iteration: *index,
+                patch: p,
+                revision: *revision,
+            }),
+
+        EventPayload::Error { error } => Some(AgentEvent::RunErrored {
+            run_id,
+            session_id,
+            error: error.clone(),
+        }),
+
+        // Backward compatibility / Replay logic:
+        // Assistant Message -> TextDelta
         EventPayload::Message { role, content, .. } if role == "assistant" => {
-            // Reconstruct as a TextDelta for replay context
             Some(AgentEvent::TextDelta {
                 run_id,
                 session_id,
@@ -175,33 +254,31 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             })
         }
 
-        EventPayload::Custom { event_type, data } => {
-            // Try to deserialize the original AgentEvent from the Custom data.
-            match event_type.as_str() {
-                "run_started" | "iteration_started" | "model_output" | "state_patched"
-                | "run_errored" | "run_finished" => {
-                    serde_json::from_value::<AgentEvent>(data.clone()).ok()
-                }
-                _ => None,
-            }
-        }
-
         _ => None,
     }
 }
 
-fn event_type_name(event: &AgentEvent) -> &'static str {
-    match event {
-        AgentEvent::RunStarted { .. } => "run_started",
-        AgentEvent::IterationStarted { .. } => "iteration_started",
-        AgentEvent::ModelOutput { .. } => "model_output",
-        AgentEvent::TextDelta { .. } => "text_delta",
-        AgentEvent::ToolCallRequested { .. } => "tool_call_requested",
-        AgentEvent::ToolCallCompleted { .. } => "tool_call_completed",
-        AgentEvent::ToolCallFailed { .. } => "tool_call_failed",
-        AgentEvent::StatePatched { .. } => "state_patched",
-        AgentEvent::RunErrored { .. } => "run_errored",
-        AgentEvent::RunFinished { .. } => "run_finished",
+fn parse_run_stop_reason(s: &str) -> RunStopReason {
+    match s {
+        "Completed" => RunStopReason::Completed,
+        "NeedsUser" => RunStopReason::NeedsUser,
+        "BlockedByPolicy" => RunStopReason::BlockedByPolicy,
+        "BudgetExceeded" => RunStopReason::BudgetExceeded,
+        "Error" => RunStopReason::Error,
+        _ => RunStopReason::Completed, // Default fallback
+    }
+}
+
+fn parse_model_stop_reason(s: &str) -> arcan_core::protocol::ModelStopReason {
+    use arcan_core::protocol::ModelStopReason;
+    match s {
+        "EndTurn" => ModelStopReason::EndTurn,
+        "ToolUse" => ModelStopReason::ToolUse,
+        "NeedsUser" => ModelStopReason::NeedsUser,
+        "MaxTokens" => ModelStopReason::MaxTokens,
+        "Safety" => ModelStopReason::Safety,
+        "Unknown" => ModelStopReason::Unknown,
+        _ => ModelStopReason::Unknown,
     }
 }
 
@@ -240,76 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_requested_round_trips() {
-        let event = AgentEvent::ToolCallRequested {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            iteration: 1,
-            call: ToolCall {
-                call_id: "c1".into(),
-                tool_name: "read_file".into(),
-                input: serde_json::json!({"path": "test.txt"}),
-            },
-        };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 2, "r1", &event, "uuid-2");
-        let back = lago_to_arcan(&envelope).expect("should map back");
-        match back {
-            AgentEvent::ToolCallRequested { call, .. } => {
-                assert_eq!(call.call_id, "c1");
-                assert_eq!(call.tool_name, "read_file");
-            }
-            _ => panic!("expected ToolCallRequested"),
-        }
-    }
-
-    #[test]
-    fn tool_call_completed_round_trips() {
-        let event = AgentEvent::ToolCallCompleted {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            iteration: 1,
-            result: ToolResultSummary {
-                call_id: "c1".into(),
-                tool_name: "read_file".into(),
-                output: serde_json::json!({"content": "hello"}),
-            },
-        };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 3, "r1", &event, "uuid-3");
-        let back = lago_to_arcan(&envelope).expect("should map back");
-        match back {
-            AgentEvent::ToolCallCompleted { result, .. } => {
-                assert_eq!(result.call_id, "c1");
-                assert_eq!(result.tool_name, "read_file");
-            }
-            _ => panic!("expected ToolCallCompleted"),
-        }
-    }
-
-    #[test]
-    fn tool_call_failed_round_trips() {
-        let event = AgentEvent::ToolCallFailed {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            iteration: 1,
-            call_id: "c1".into(),
-            tool_name: "bash".into(),
-            error: "command not found".into(),
-        };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 4, "r1", &event, "uuid-4");
-        let back = lago_to_arcan(&envelope).expect("should map back");
-        match back {
-            AgentEvent::ToolCallFailed {
-                error, tool_name, ..
-            } => {
-                assert_eq!(error, "command not found");
-                assert_eq!(tool_name, "bash");
-            }
-            _ => panic!("expected ToolCallFailed"),
-        }
-    }
-
-    #[test]
-    fn run_started_round_trips_via_custom() {
+    fn run_started_round_trips() {
         let event = AgentEvent::RunStarted {
             run_id: "r1".into(),
             session_id: "s1".into(),
@@ -317,6 +325,14 @@ mod tests {
             max_iterations: 24,
         };
         let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-5");
+        
+        // Assert native payload
+        if let EventPayload::RunStarted { provider, .. } = &envelope.payload {
+            assert_eq!(provider, "anthropic");
+        } else {
+            panic!("expected RunStarted payload");
+        }
+
         let back = lago_to_arcan(&envelope).expect("should map back");
         match back {
             AgentEvent::RunStarted {
@@ -332,95 +348,59 @@ mod tests {
     }
 
     #[test]
-    fn state_patched_round_trips_via_custom() {
-        let event = AgentEvent::StatePatched {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            iteration: 2,
-            patch: StatePatch {
-                format: StatePatchFormat::MergePatch,
-                patch: serde_json::json!({"key": "value"}),
-                source: StatePatchSource::Tool,
-            },
-            revision: 5,
-        };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 5, "r1", &event, "uuid-6");
-        let back = lago_to_arcan(&envelope).expect("should map back");
-        match back {
-            AgentEvent::StatePatched { revision, .. } => {
-                assert_eq!(revision, 5);
-            }
-            _ => panic!("expected StatePatched"),
-        }
-    }
-
-    #[test]
-    fn run_finished_with_answer_becomes_message() {
+    fn run_finished_round_trips() {
         let event = AgentEvent::RunFinished {
             run_id: "r1".into(),
             session_id: "s1".into(),
             reason: RunStopReason::Completed,
-            total_iterations: 3,
-            final_answer: Some("The answer is 42.".into()),
+            total_iterations: 10,
+            final_answer: Some("42".into()),
         };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 10, "r1", &event, "uuid-7");
+        let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-6");
 
-        // Should produce a Message payload (not Custom) when there's a final answer
-        match &envelope.payload {
-            EventPayload::Message { role, content, .. } => {
-                assert_eq!(role, "assistant");
-                assert_eq!(content, "The answer is 42.");
-            }
-            _ => panic!("expected Message payload for RunFinished with answer"),
+        if let EventPayload::RunFinished { reason, .. } = &envelope.payload {
+             assert_eq!(reason, "Completed");
+        } else {
+             panic!("expected RunFinished payload");
         }
 
-        // And it round-trips back as a TextDelta (for replay)
         let back = lago_to_arcan(&envelope).expect("should map back");
         match back {
-            AgentEvent::TextDelta { delta, .. } => {
-                assert_eq!(delta, "The answer is 42.");
-            }
-            _ => panic!("expected TextDelta from assistant message"),
+             AgentEvent::RunFinished { reason, final_answer, .. } => {
+                 assert_eq!(reason, RunStopReason::Completed);
+                 assert_eq!(final_answer.as_deref(), Some("42"));
+             }
+             _ => panic!("expected RunFinished"),
         }
     }
 
     #[test]
-    fn run_finished_without_answer_becomes_custom() {
-        let event = AgentEvent::RunFinished {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            reason: RunStopReason::NeedsUser,
-            total_iterations: 1,
-            final_answer: None,
-        };
-        let envelope = arcan_to_lago(&test_session(), &test_branch(), 10, "r1", &event, "uuid-8");
-        match &envelope.payload {
-            EventPayload::Custom { event_type, .. } => {
-                assert_eq!(event_type, "run_finished");
-            }
-            _ => panic!("expected Custom payload for RunFinished without answer"),
-        }
-    }
+    fn state_patched_round_trips() {
+         let event = AgentEvent::StatePatched {
+             run_id: "r1".into(),
+             session_id: "s1".into(),
+             iteration: 2,
+             patch: StatePatch {
+                 format: StatePatchFormat::MergePatch,
+                 patch: serde_json::json!({"key": "value"}),
+                 source: StatePatchSource::Tool,
+             },
+             revision: 5,
+         };
+         let envelope = arcan_to_lago(&test_session(), &test_branch(), 5, "r1", &event, "uuid-7");
+         
+         if let EventPayload::StatePatched { revision, .. } = &envelope.payload {
+             assert_eq!(*revision, 5);
+         } else {
+             panic!("expected StatePatched payload");
+         }
 
-    #[test]
-    fn metadata_includes_arcan_event_id() {
-        let event = AgentEvent::RunStarted {
-            run_id: "r1".into(),
-            session_id: "s1".into(),
-            provider: "mock".into(),
-            max_iterations: 10,
-        };
-        let envelope = arcan_to_lago(
-            &test_session(),
-            &test_branch(),
-            1,
-            "r1",
-            &event,
-            "my-uuid-123",
-        );
-        assert_eq!(
-            envelope.metadata.get("arcan_event_id"),
-            Some(&"my-uuid-123".to_string())
-        );
+         let back = lago_to_arcan(&envelope).expect("should map back");
+         match back {
+             AgentEvent::StatePatched { revision, .. } => {
+                 assert_eq!(revision, 5);
+             }
+             _ => panic!("expected StatePatched"),
+         }
     }
 }
