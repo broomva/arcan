@@ -390,7 +390,7 @@ impl Tool for GlobTool {
                 tool_name: "glob".to_string(),
                 message: format!("Invalid glob pattern: {}", e),
             })?
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .filter(|path| {
                 // Only include paths within the workspace
                 self.policy.resolve_existing(path).is_ok()
@@ -490,14 +490,14 @@ impl Tool for GrepTool {
         let max_matches = call
             .input
             .get("max_matches")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(100) as usize;
 
         let mut matches = Vec::new();
 
         for entry in walkdir::WalkDir::new(&base_dir)
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
         {
             let path = entry.path();
@@ -522,16 +522,14 @@ impl Tool for GrepTool {
                 }
             }
 
-            let file = match fs::File::open(path) {
-                Ok(f) => f,
-                Err(_) => continue,
+            let Ok(file) = fs::File::open(path) else {
+                continue;
             };
 
             let reader = BufReader::new(file);
             for (line_no, line) in reader.lines().enumerate() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => continue, // Skip binary/unreadable lines
+                let Ok(line) = line else {
+                    continue; // Skip binary/unreadable lines
                 };
 
                 if regex.is_match(&line) {

@@ -11,6 +11,9 @@ categories.workspace = true
 description = "Core traits, protocol types, and state management for the Arcan agent runtime"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 json-patch.workspace = true
 schemars.workspace = true

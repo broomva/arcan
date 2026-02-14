@@ -35,8 +35,22 @@ struct Cli {
 
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    ctrl_c.await.ok();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+    }
+
     tracing::info!("Received shutdown signal, draining connections...");
 }
 

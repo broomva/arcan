@@ -113,7 +113,7 @@ impl SessionRepository for LagoSessionRepository {
                 records.push(EventRecord {
                     id: arcan_id,
                     session_id: session_id.to_string(),
-                    parent_id: envelope.parent_id.as_ref().map(|id| id.to_string()),
+                    parent_id: envelope.parent_id.as_ref().map(ToString::to_string),
                     timestamp,
                     event: agent_event,
                 });

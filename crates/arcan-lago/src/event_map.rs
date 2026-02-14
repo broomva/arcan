@@ -60,7 +60,7 @@ pub fn arcan_to_lago(
         } => {
             // Map RunFinished to native Lago RunFinished
             EventPayload::RunFinished {
-                reason: format!("{reason:?}"), // TODO: map enum to string/enum?
+                reason: run_stop_reason_to_str(*reason).to_string(),
                 total_iterations: *total_iterations,
                 final_answer: final_answer.clone(),
                 usage: None,
@@ -87,7 +87,7 @@ pub fn arcan_to_lago(
             ..
         } => EventPayload::StepFinished {
             index: *iteration,
-            stop_reason: format!("{stop_reason:?}"),
+            stop_reason: model_stop_reason_to_str(*stop_reason).to_string(),
             directive_count: *directive_count,
         },
 
@@ -125,7 +125,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
     let run_id = envelope
         .run_id
         .as_ref()
-        .map(|r| r.to_string())
+        .map(ToString::to_string)
         .unwrap_or_default();
     let session_id = envelope.session_id.to_string();
 
@@ -261,6 +261,17 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
     }
 }
 
+fn run_stop_reason_to_str(reason: RunStopReason) -> &'static str {
+    match reason {
+        RunStopReason::Completed => "Completed",
+        RunStopReason::NeedsUser => "NeedsUser",
+        RunStopReason::BlockedByPolicy => "BlockedByPolicy",
+        RunStopReason::BudgetExceeded => "BudgetExceeded",
+        RunStopReason::Cancelled => "Cancelled",
+        RunStopReason::Error => "Error",
+    }
+}
+
 fn parse_run_stop_reason(s: &str) -> RunStopReason {
     match s {
         "Completed" => RunStopReason::Completed,
@@ -270,6 +281,18 @@ fn parse_run_stop_reason(s: &str) -> RunStopReason {
         "Cancelled" => RunStopReason::Cancelled,
         "Error" => RunStopReason::Error,
         _ => RunStopReason::Completed, // Default fallback
+    }
+}
+
+fn model_stop_reason_to_str(reason: arcan_core::protocol::ModelStopReason) -> &'static str {
+    use arcan_core::protocol::ModelStopReason;
+    match reason {
+        ModelStopReason::EndTurn => "EndTurn",
+        ModelStopReason::ToolUse => "ToolUse",
+        ModelStopReason::NeedsUser => "NeedsUser",
+        ModelStopReason::MaxTokens => "MaxTokens",
+        ModelStopReason::Safety => "Safety",
+        ModelStopReason::Unknown => "Unknown",
     }
 }
 

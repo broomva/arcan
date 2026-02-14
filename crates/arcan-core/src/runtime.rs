@@ -150,7 +150,7 @@ impl Orchestrator {
     pub fn run_cancellable(
         &self,
         input: RunInput,
-        cancel: Option<Arc<AtomicBool>>,
+        cancel: Option<&Arc<AtomicBool>>,
         mut event_handler: impl FnMut(AgentEvent),
     ) -> RunOutput {
         let mut events = Vec::new();
@@ -172,7 +172,7 @@ impl Orchestrator {
 
         for iteration in 1..=self.config.max_iterations {
             // Check cancellation at each iteration boundary
-            if let Some(ref flag) = cancel {
+            if let Some(flag) = cancel {
                 if flag.load(Ordering::Relaxed) {
                     stop_reason = RunStopReason::Cancelled;
                     let err_event = AgentEvent::RunErrored {
@@ -1060,7 +1060,7 @@ mod tests {
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
-            Some(cancel_clone),
+            Some(&cancel_clone),
             move |event| {
                 // Cancel after first iteration completes
                 if matches!(event, AgentEvent::ToolCallCompleted { .. }) {

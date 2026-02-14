@@ -11,8 +11,12 @@ categories.workspace = true
 description = "Agent loop, SSE server, and HTTP routing for the Arcan daemon"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
+tracing.workspace = true
 arcan-harness = { path = "../arcan-harness", version = "0.2.0" }
 arcan-provider = { path = "../arcan-provider", version = "0.2.0" }
 arcan-store = { path = "../arcan-store", version = "0.2.0" }

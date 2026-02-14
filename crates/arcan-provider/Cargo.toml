@@ -11,6 +11,9 @@ categories.workspace = true
 description = "LLM provider implementations (Anthropic Claude) for the Arcan agent runtime"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 reqwest.workspace = true

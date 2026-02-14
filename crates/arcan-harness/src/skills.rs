@@ -52,7 +52,7 @@ impl SkillRegistry {
 
             for entry in walkdir::WalkDir::new(dir)
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(Result::ok)
                 .filter(|e| e.file_type().is_file())
                 .filter(|e| {
                     e.file_name()
@@ -85,10 +85,10 @@ impl SkillRegistry {
                     }
                     Err(e) => {
                         // Log but don't fail — skip malformed skills
-                        eprintln!(
-                            "Warning: skipping malformed skill at {}: {}",
-                            path.display(),
-                            e
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Skipping malformed skill"
                         );
                     }
                 }

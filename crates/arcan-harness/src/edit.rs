@@ -3,6 +3,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::fs::FsPolicy;
+use arcan_core::error::CoreError;
+use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolDefinition, ToolResult};
+use arcan_core::runtime::{Tool, ToolContext};
+use serde_json::json;
+use std::fs;
+use std::path::Path;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct HashedLine {
     pub line_no: usize,
@@ -111,6 +119,118 @@ pub enum EditError {
     EmptyContent,
     #[error("tag is stale or missing in current content: {0}")]
     StaleTag(String),
+}
+
+// --- EditFileTool: filesystem tool wrapping the hashline editor ---
+
+pub struct EditFileTool {
+    policy: FsPolicy,
+}
+
+impl EditFileTool {
+    pub fn new(policy: FsPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl Tool for EditFileTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "edit_file".to_string(),
+            description: "Edits a file using line tags. Operations: replace_line, insert_after_tag, delete_line.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the file" },
+                    "ops": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "oneOf": [
+                                { "properties": { "op": { "const": "replace_line" }, "tag": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["op", "tag", "new_text"] },
+                                { "properties": { "op": { "const": "insert_after_tag" }, "tag": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["op", "tag", "new_text"] },
+                                { "properties": { "op": { "const": "delete_line" }, "tag": { "type": "string" } }, "required": ["op", "tag"] }
+                            ]
+                        }
+                    }
+                },
+                "required": ["path", "ops"]
+            }),
+            title: Some("Edit File".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                destructive: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "edit".to_string()],
+            timeout_secs: Some(30),
+        }
+    }
+
+    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+        let path_str = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
+                tool_name: "edit_file".to_string(),
+                message: "Missing or invalid 'path' argument".to_string(),
+            })?;
+
+        let ops_value = call
+            .input
+            .get("ops")
+            .ok_or_else(|| CoreError::ToolExecution {
+                tool_name: "edit_file".to_string(),
+                message: "Missing 'ops' argument".to_string(),
+            })?;
+
+        let ops: Vec<TaggedEditOp> =
+            serde_json::from_value(ops_value.clone()).map_err(|e| CoreError::ToolExecution {
+                tool_name: "edit_file".to_string(),
+                message: format!("Invalid 'ops' format: {}", e),
+            })?;
+
+        let path = self
+            .policy
+            .resolve_for_write(Path::new(path_str))
+            .map_err(|e| CoreError::ToolExecution {
+                tool_name: "edit_file".to_string(),
+                message: e.to_string(),
+            })?;
+
+        // Read current content
+        let content = fs::read_to_string(&path).map_err(|e| CoreError::ToolExecution {
+            tool_name: "edit_file".to_string(),
+            message: format!("Failed to read file: {}", e),
+        })?;
+
+        // Apply edits
+        let new_content =
+            apply_tagged_edits(&content, &ops).map_err(|e| CoreError::ToolExecution {
+                tool_name: "edit_file".to_string(),
+                message: format!("Edit failed: {}", e),
+            })?;
+
+        // Write back
+        fs::write(&path, &new_content).map_err(|e| CoreError::ToolExecution {
+            tool_name: "edit_file".to_string(),
+            message: format!("Failed to write file: {}", e),
+        })?;
+
+        // Return hashed content of the NEW file
+        let hashed_content = render_hashed_content(&new_content);
+
+        Ok(ToolResult {
+            call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            output: json!({ "success": true, "content": hashed_content, "path": path }),
+            content: None,
+            is_error: false,
+            state_patch: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -233,123 +353,5 @@ mod tests {
         assert!(rendered.contains("   2 "));
         assert!(rendered.contains("hello"));
         assert!(rendered.contains("world"));
-    }
-}
-
-use crate::fs::FsPolicy;
-use arcan_core::error::CoreError;
-use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolDefinition, ToolResult};
-use arcan_core::runtime::{Tool, ToolContext};
-use serde_json::json;
-use std::fs;
-use std::path::Path;
-
-pub struct EditFileTool {
-    policy: FsPolicy,
-}
-
-impl EditFileTool {
-    pub fn new(policy: FsPolicy) -> Self {
-        Self { policy }
-    }
-}
-
-impl Tool for EditFileTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "edit_file".to_string(),
-            description: "Edits a file using line tags. Operations: replace_line, insert_after_tag, delete_line.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Path to the file" },
-                    "ops": { 
-                        "type": "array", 
-                        "items": { 
-                            "type": "object",
-                            "oneOf": [
-                                { "properties": { "op": { "const": "replace_line" }, "tag": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["op", "tag", "new_text"] },
-                                { "properties": { "op": { "const": "insert_after_tag" }, "tag": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["op", "tag", "new_text"] },
-                                { "properties": { "op": { "const": "delete_line" }, "tag": { "type": "string" } }, "required": ["op", "tag"] }
-                            ]
-                        }
-                    }
-                },
-                "required": ["path", "ops"]
-            }),
-            title: Some("Edit File".to_string()),
-            output_schema: None,
-            annotations: Some(ToolAnnotations {
-                destructive: true,
-                ..Default::default()
-            }),
-            category: Some("filesystem".to_string()),
-            tags: vec!["fs".to_string(), "edit".to_string()],
-            timeout_secs: Some(30),
-        }
-    }
-
-    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-        let path_str = call
-            .input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: "Missing or invalid 'path' argument".to_string(),
-            })?;
-
-        let ops_value = call
-            .input
-            .get("ops")
-            .ok_or_else(|| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: "Missing 'ops' argument".to_string(),
-            })?;
-
-        let ops: Vec<TaggedEditOp> =
-            serde_json::from_value(ops_value.clone()).map_err(|e| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: format!("Invalid 'ops' format: {}", e),
-            })?;
-
-        let path = self
-            .policy
-            .resolve_for_write(Path::new(path_str))
-            .map_err(|e| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: e.to_string(),
-            })?;
-
-        // Read current content
-        let content = fs::read_to_string(&path).map_err(|e| CoreError::ToolExecution {
-            tool_name: "edit_file".to_string(),
-            message: format!("Failed to read file: {}", e),
-        })?;
-
-        // Apply edits
-        let new_content =
-            apply_tagged_edits(&content, &ops).map_err(|e| CoreError::ToolExecution {
-                tool_name: "edit_file".to_string(),
-                message: format!("Edit failed: {}", e),
-            })?;
-
-        // Write back
-        fs::write(&path, &new_content).map_err(|e| CoreError::ToolExecution {
-            tool_name: "edit_file".to_string(),
-            message: format!("Failed to write file: {}", e),
-        })?;
-
-        // Return hashed content of the NEW file
-        let hashed_content = render_hashed_content(&new_content);
-
-        Ok(ToolResult {
-            call_id: call.call_id.clone(),
-            tool_name: call.tool_name.clone(),
-            output: json!({ "success": true, "content": hashed_content, "path": path }),
-            content: None,
-            is_error: false,
-            state_patch: None,
-        })
     }
 }

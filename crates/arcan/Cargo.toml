@@ -15,6 +15,9 @@ readme = "../../README.md"
 name = "arcan"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 arcan-harness = { path = "../arcan-harness", version = "0.2.0" }

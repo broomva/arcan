@@ -11,6 +11,9 @@ categories.workspace = true
 description = "Append-only JSONL session persistence for Arcan agent events"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 chrono.workspace = true

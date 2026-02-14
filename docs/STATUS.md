@@ -218,13 +218,13 @@ arcan (production binary)
 | **MCP integration** | 8/10 | Full rmcp bridge with annotation mapping. Missing: HTTP transport |
 | **Skills/knowledge** | 8/10 | SKILL.md discovery + frontmatter + prompt injection. Missing: skill versioning |
 | **Sandbox enforcement** | 7/10 | Env filtering, cwd validation, timeout, output truncation. Missing: OS-level isolation |
-| **Provider coverage** | 7/10 | Anthropic (full streaming), Rig bridge (any model). Missing: native OpenAI, retry/backoff |
+| **Provider coverage** | 8/10 | Anthropic (full streaming + usage tracking), Rig bridge (any model). Missing: native OpenAI, retry/backoff |
 | **Streaming protocol** | 6/10 | Core AI SDK v5 + multi-format Lago SSE. Missing: boundary signals, step markers, reconnection IDs |
 | **Testing** | 6/10 | 121 unit tests across 5 crates. Zero integration tests for arcand/arcan. Zero end-to-end tests |
-| **Documentation** | 5/10 | 2 of 6 docs stale. AGENTS.md missing crates. No operational guide |
+| **Documentation** | 7/10 | STATUS.md as source of truth. Stale docs marked superseded. AGENTS.md current. Missing: operational guide |
 | **Context management** | 2/10 | Messages accumulate indefinitely. No compaction, no sliding window, no token counting |
 
-**Overall: 7.1/10** -- Strong technical foundation with best-in-class editing and persistence. Primary gaps: context management, integration testing, documentation freshness.
+**Overall: 7.7/10** -- Strong technical foundation with best-in-class editing and persistence. Primary gaps: context management, integration testing, streaming boundary signals.
 
 ---
 
@@ -232,36 +232,32 @@ arcan (production binary)
 
 ### Critical (blocks production use)
 
-1. **Context window management** -- Sessions will exceed provider token limits with no mitigation. No sliding window, no compaction, no token counting.
-2. **No `/health` endpoint** -- Dockerfile HEALTHCHECK assumes one but neither binary implements it.
-3. **Dockerfile targets wrong binary** -- Builds `arcand` library binary, but `arcan` is the production daemon.
-4. **No integration tests** -- arcand and arcan have zero tests. AgentLoop, SSE streaming, and end-to-end flows are untested.
-5. **Run cancellation** -- No way to stop a runaway agent. No CancellationToken in the orchestrator loop.
+1. **Context window management** -- Sessions will exceed provider token limits with no mitigation. No sliding window, no compaction.
+2. **No integration tests** -- arcand and arcan have zero tests. AgentLoop, SSE streaming, and end-to-end flows are untested.
 
 ### High (significantly limits functionality)
 
-6. **Streaming boundary signals** -- Missing text-start/end, step markers. Breaks Vercel AI SDK `useChat` compatibility.
-7. **SSE event IDs** -- Clients cannot reconnect after network interruption. No duplicate detection.
-8. **Approval workflow** -- Destructive tools execute without user confirmation. `RequireApproval` returns error instead of pausing.
-9. **Token usage tracking** -- No visibility into prompt/completion token counts. Can't monitor cost per run.
-10. **OpenAI provider** -- Limits model selection to Anthropic and rig-supported models.
+3. **Streaming boundary signals** -- Missing text-start/end, step markers. Breaks Vercel AI SDK `useChat` compatibility.
+4. **SSE event IDs** -- Clients cannot reconnect after network interruption. No duplicate detection.
+5. **Approval workflow** -- Destructive tools execute without user confirmation. `RequireApproval` returns error instead of pausing.
+6. **OpenAI provider** -- Limits model selection to Anthropic and rig-supported models.
 
 ### Medium (quality and safety improvements)
 
-11. **OS-level sandbox isolation** -- BubblewrapRunner/DockerRunner for process/network/memory limits.
-12. **Transactional edit batches** -- Partial file mutations if later operation in batch fails.
-13. **Multiline edit operations** -- ReplaceRange for replacing function bodies, config sections.
-14. **Diff-based editing** -- patch_file tool for files >400 lines where full rewrites are fragile.
-15. **Session fork API** -- parent_id field exists but no fork/branch endpoint or semantics.
-16. **Parallel tool execution** -- Sequential-only limits throughput when model requests multiple independent tools.
+7. **OS-level sandbox isolation** -- BubblewrapRunner/DockerRunner for process/network/memory limits.
+8. **Transactional edit batches** -- Partial file mutations if later operation in batch fails.
+9. **Multiline edit operations** -- ReplaceRange for replacing function bodies, config sections.
+10. **Diff-based editing** -- patch_file tool for files >400 lines where full rewrites are fragile.
+11. **Session fork API** -- parent_id field exists but no fork/branch endpoint or semantics.
+12. **Parallel tool execution** -- Sequential-only limits throughput when model requests multiple independent tools.
 
 ### Low (nice to have)
 
-17. **CLI client** -- No terminal chat interface. HTTP/SSE only.
-18. **Web client** -- No browser-based frontend.
-19. **Subagent execution** -- No nested agent loops with restricted toolsets.
-20. **Session compaction** -- Old messages are never summarized or dropped.
-21. **Reasoning chain visualization** -- No reasoning-start/delta/end events for extended thinking.
+13. **CLI client** -- No terminal chat interface. HTTP/SSE only.
+14. **Web client** -- No browser-based frontend.
+15. **Subagent execution** -- No nested agent loops with restricted toolsets.
+16. **Session compaction** -- Old messages are never summarized or dropped.
+17. **Reasoning chain visualization** -- No reasoning-start/delta/end events for extended thinking.
 
 ---
 
@@ -269,42 +265,41 @@ arcan (production binary)
 
 > Phases use alphabetic labels (A-G) to supersede conflicting numeric phases in older docs.
 
-### Phase A: Stabilization
+### Phase A: Stabilization -- DONE
 
 **Goal**: Fix infrastructure issues that block production deployment.
 
-Deliverables:
-- Add `/health` endpoint to arcand server (returns 200 OK with version)
-- Update Dockerfile to build `arcan` binary (not `arcand`)
-- Update release workflow to produce `arcan` binary
-- Create this STATUS.md document
-- Mark `architecture.md` and `roadmap.md` as superseded
-- Update `AGENTS.md` to reflect current 7-crate structure
+Completed:
+- [x] Add `/health` endpoint to arcand server (GET /health returns `{"status":"ok"}`)
+- [x] Update Dockerfile to build `arcan` binary (correct crate names, installs curl)
+- [x] Graceful shutdown via SIGINT/ctrl-c in arcan binary
+- [x] Release workflow already correct (confirmed)
+- [x] STATUS.md created as single source of truth
+- [x] `architecture.md` and `roadmap.md` marked superseded
+- [x] `AGENTS.md` updated for current 7-crate structure
 
-Exit criteria:
-- Docker image builds and passes HEALTHCHECK
-- All docs internally consistent
-
-Dependencies: None
-
-### Phase B: Context and Cancellation
+### Phase B: Context and Cancellation -- PARTIAL
 
 **Goal**: Enable long sessions and safe interruption.
 
-Deliverables:
-- `ContextWindowMiddleware`: tracks cumulative tokens, triggers compaction or sliding window
-- Token counting from AnthropicProvider API responses (prompt_tokens, completion_tokens)
-- `prompt_tokens` and `completion_tokens` fields on `ModelOutput` event
-- `CancellationToken` (tokio) threaded through `Orchestrator::run()`, checked at iteration and tool call boundaries
-- `RunCancelled` event variant
-- Integration tests for `AgentLoop`
+Completed:
+- [x] `TokenUsage` struct with `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`
+- [x] Token usage parsed from Anthropic API responses and populated in `ModelTurn.usage`
+- [x] `usage` field on `ModelOutput` event
+- [x] `total_usage` accumulated in `RunOutput`
+- [x] `Cancelled` variant added to `RunStopReason`
+- [x] `run_cancellable()` with `Arc<AtomicBool>` flag, checked at iteration boundaries
+- [x] Backward-compatible `run()` delegates to `run_cancellable(None, ...)`
 
-Exit criteria:
+Remaining:
+- [ ] `ContextWindowMiddleware`: sliding window or compaction when approaching token limit
+- [ ] Integration tests for `AgentLoop`
+
+Exit criteria remaining:
 - Long sessions (>100 messages) don't exceed provider token limits
-- Running agents can be cancelled mid-stream
 - 5+ integration tests for AgentLoop
 
-Dependencies: None (can run in parallel with Phase A)
+Dependencies: None
 
 ### Phase C: Streaming Protocol Alignment
 
@@ -396,15 +391,15 @@ Dependencies: Phases D, E, F
 
 ## 6. Known Issues
 
-1. **Dockerfile targets wrong binary**: Line 37 builds `arcan-daemon` (old name for `arcand`), but the production binary is `arcan`. The `ENTRYPOINT` and `COPY` lines need updating.
+1. ~~**Dockerfile targets wrong binary**~~ -- **FIXED**: Dockerfile now builds `arcan` binary with correct crate directories.
 
-2. **No `/health` endpoint**: The Dockerfile includes a `HEALTHCHECK` that curls `http://localhost:3000/health`, but no route handles this path. Container orchestrators (Docker Compose, k8s) will report the service as unhealthy.
+2. ~~**No `/health` endpoint**~~ -- **FIXED**: GET `/health` returns `{"status":"ok"}` in arcand server.
 
-3. **MockProvider silent fallback**: If `ANTHROPIC_API_KEY` is not set, the daemon silently falls back to `MockProvider` which returns canned responses. A warning is logged via tracing, but users without log access may be confused.
+3. **MockProvider silent fallback**: If `ANTHROPIC_API_KEY` is not set, the daemon falls back to `MockProvider`. A `tracing::warn!` is logged, but users without log access may be confused.
 
-4. **Command parsing**: `BashTool` passes raw command strings to `/bin/bash -c`. The comment in sandbox.rs notes this should use shlex for proper parsing.
+4. **Command parsing**: `BashTool` passes raw command strings to `/bin/bash -c`. Should use shlex for proper parsing.
 
-5. **No graceful shutdown**: Neither `arcand` nor `arcan` handles SIGTERM beyond tokio's default behavior. Long-running tool executions are not drained.
+5. ~~**No graceful shutdown**~~ -- **FIXED**: `arcan` binary handles ctrl-c with `with_graceful_shutdown()`, drains connections before exit.
 
 ---
 

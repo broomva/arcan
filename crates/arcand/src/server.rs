@@ -3,7 +3,11 @@ use arcan_core::aisdk::to_aisdk_parts;
 use arcan_core::protocol::AgentEvent;
 use axum::{
     extract::{Query, State},
-    response::sse::{Event, Sse},
+    http::StatusCode,
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
@@ -14,7 +18,30 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::CorsLayer;
 
+/// Typed error for Axum handlers with proper HTTP status codes.
+pub enum AppError {
+    BadRequest(String),
+    Internal(String),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Internal(err.to_string())
+    }
+}
+
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatRequest {
     pub session_id: String,
     pub message: String,
@@ -27,8 +54,8 @@ pub struct ChatQuery {
     pub format: Option<String>,
 }
 
-pub struct ServerState {
-    pub agent_loop: Arc<AgentLoop>,
+pub(crate) struct ServerState {
+    pub(crate) agent_loop: Arc<AgentLoop>,
 }
 
 pub async fn create_router(agent_loop: Arc<AgentLoop>) -> Router {

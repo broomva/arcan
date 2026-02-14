@@ -11,9 +11,13 @@ categories.workspace = true
 description = "Tool harness with filesystem, editing, memory, and sandboxing for Arcan agents"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 blake3.workspace = true
+tracing.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -17,6 +17,7 @@ use tokio::runtime::Handle;
 
 /// Configuration for connecting to an MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub transport: McpTransport,

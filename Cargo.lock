@@ -125,6 +125,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "wait-timeout",
  "walkdir",
 ]
@@ -194,6 +195,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower-http",
+ "tracing",
  "uuid",
 ]
 
