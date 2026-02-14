@@ -26,68 +26,72 @@ impl AgentLoop {
         user_message: String,
         event_sender: mpsc::Sender<AgentEvent>,
     ) -> Result<RunOutput> {
-        // 1. Load Session History & Reconstruct State
-        let history = self.session_repo.load_session(session_id)?;
-        let mut state = AppState::default();
-        let mut messages: Vec<ChatMessage> = Vec::new();
-
-        // Replay history to build state and context
-        for record in history {
-            match record.event {
-                AgentEvent::StatePatched { patch, .. } => {
-                    let _ = state.apply_patch(&patch);
-                }
-                AgentEvent::TextDelta { delta, .. } => {
-                    // Aggregate deltas into the last assistant message
-                    if let Some(last) = messages.last_mut() {
-                        if last.role == arcan_core::protocol::Role::Assistant {
-                            last.content.push_str(&delta);
-                        } else {
-                            messages.push(ChatMessage::assistant(delta));
-                        }
-                    } else {
-                        messages.push(ChatMessage::assistant(delta));
-                    }
-                }
-                AgentEvent::ToolCallCompleted { result, .. } => {
-                    let output_str =
-                        serde_json::to_string(&result.output).unwrap_or_else(|_| "{}".to_string());
-                    messages.push(ChatMessage::tool_result(&result.call_id, output_str));
-                }
-                _ => {}
-            }
-        }
-
-        // Append the new user message
-        messages.push(ChatMessage::user(user_message));
-
-        let run_id = Uuid::new_v4().to_string();
-
-        // 2. Prepare Run Input
-        let input = RunInput {
-            run_id,
-            session_id: session_id.to_string(),
-            messages,
-            state,
-        };
-
-        // 3. Run Orchestrator in a blocking task (Provider::complete is synchronous)
         let orchestrator = self.orchestrator.clone();
         let session_repo = self.session_repo.clone();
         let session_id_owned = session_id.to_string();
 
-        let output = tokio::task::spawn_blocking(move || {
-            orchestrator.run(input, |event| {
+        // Run everything in spawn_blocking since SessionRepository is synchronous
+        // and may use block_on internally (e.g. LagoSessionRepository).
+        let output = tokio::task::spawn_blocking(move || -> Result<RunOutput> {
+            // 1. Load Session History & Reconstruct State
+            let history = session_repo.load_session(&session_id_owned)?;
+            let mut state = AppState::default();
+            let mut messages: Vec<ChatMessage> = Vec::new();
+
+            // Replay history to build state and context
+            for record in history {
+                match record.event {
+                    AgentEvent::StatePatched { patch, .. } => {
+                        let _ = state.apply_patch(&patch);
+                    }
+                    AgentEvent::TextDelta { delta, .. } => {
+                        // Aggregate deltas into the last assistant message
+                        if let Some(last) = messages.last_mut() {
+                            if last.role == arcan_core::protocol::Role::Assistant {
+                                last.content.push_str(&delta);
+                            } else {
+                                messages.push(ChatMessage::assistant(delta));
+                            }
+                        } else {
+                            messages.push(ChatMessage::assistant(delta));
+                        }
+                    }
+                    AgentEvent::ToolCallCompleted { result, .. } => {
+                        let output_str = serde_json::to_string(&result.output)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        messages.push(ChatMessage::tool_result(&result.call_id, output_str));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Append the new user message
+            messages.push(ChatMessage::user(user_message));
+
+            let run_id = Uuid::new_v4().to_string();
+
+            // 2. Prepare Run Input
+            let input = RunInput {
+                run_id,
+                session_id: session_id_owned.clone(),
+                messages,
+                state,
+            };
+
+            // 3. Run Orchestrator (Provider::complete is synchronous)
+            let session_repo_inner = session_repo.clone();
+            let sid = session_id_owned.clone();
+            Ok(orchestrator.run(input, |event| {
                 let _ = event_sender.blocking_send(event.clone());
 
-                let _ = session_repo.append(AppendEvent {
-                    session_id: session_id_owned.clone(),
+                let _ = session_repo_inner.append(AppendEvent {
+                    session_id: sid.clone(),
                     event,
                     parent_id: None,
                 });
-            })
+            }))
         })
-        .await?;
+        .await??;
 
         Ok(output)
     }
