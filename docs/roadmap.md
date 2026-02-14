@@ -20,7 +20,7 @@ Dependency chain:
 1. Add one provider adapter (mock/local first).
 2. Implement core tools (`fs.read`, `fs.write`, `fs.glob`, `bash.run`).
 3. Wire store persistence around run execution.
-4. Expose `/v1/runs` with SSE streaming in `agentd`.
+4. Expose `/v1/runs` with SSE streaming in `arcan`.
 5. Build CLI client for end-to-end loop testing.
 
 Exit criteria:
@@ -66,7 +66,7 @@ Dependency chain:
 
 Exit criteria:
 
-- Same `agentd` run protocol works across web and chat transports.
+- Same `arcan` run protocol works across web and chat transports.
 
 ## Phase 5 - Advanced Runtime
 

@@ -2,12 +2,12 @@
 
 Lago is the **persistence and governance layer** for arcan's agent runtime. While arcan handles execution (LLM calls, tool dispatch, sandboxing, streaming), lago provides the durable infrastructure: an ACID event journal, content-addressed blob storage, a rule-based policy engine, session branching, and multi-format SSE output.
 
-The integration lives in the `arcan-lago` bridge crate and the `agentd` unified daemon binary.
+The integration lives in the `arcan-lago` bridge crate and the `arcan` unified daemon binary.
 
 ## Architecture
 
 ```
-                        agentd (unified binary)
+                        arcan (unified binary)
 
   +------------+  +-----------+  +--------------+
   | Provider   |  |   Tool    |  |  Middleware   |
@@ -44,7 +44,7 @@ The integration lives in the `arcan-lago` bridge crate and the `agentd` unified 
 
 ### Design Principle: Bridge Crate, Not Direct Coupling
 
-`arcan-core` has **zero** dependency on lago. Only `arcan-lago` and `agentd` depend on lago crates. This keeps arcan's core traits portable -- any backend (JSONL, SQLite, custom) can implement `SessionRepository` without pulling in lago.
+`arcan-core` has **zero** dependency on lago. Only `arcan-lago` and `arcan` depend on lago crates. This keeps arcan's core traits portable -- any backend (JSONL, SQLite, custom) can implement `SessionRepository` without pulling in lago.
 
 The bridge crate translates between arcan's synchronous, event-sourced domain model and lago's async, ULID-indexed journal infrastructure.
 
@@ -254,9 +254,9 @@ if let Some(done) = bridge.done_frame() {
 
 ---
 
-## Wiring: agentd Binary
+## Wiring: arcan Binary
 
-The `agentd` binary (`crates/agentd/src/main.rs`) wires everything together:
+The `arcan` binary (`crates/arcan/src/main.rs`) wires everything together:
 
 ```
 1. Open RedbJournal (ACID embedded database)
@@ -280,11 +280,11 @@ CLI arguments:
 ## Dependency Graph
 
 ```
-agentd
+arcan
   +-- arcan-core        (traits, protocol, state)
   +-- arcan-harness     (tools, sandbox)
   +-- arcan-provider    (Anthropic, Rig)
-  +-- arcan-daemon      (AgentLoop, server)
+  +-- arcand            (AgentLoop, server)
   +-- arcan-lago        (bridge)
   |     +-- arcan-core
   |     +-- arcan-store
@@ -298,7 +298,7 @@ agentd
   +-- lago-policy       (PolicyEngine)
 ```
 
-`arcan-core` remains lago-free. Only the bridge and daemon depend on lago.
+`arcan-core` remains lago-free. Only the bridge and the `arcan` daemon depend on lago.
 
 ---
 
