@@ -4,7 +4,7 @@ Arcan is a Rust-based agent daemon designed for reliability, streaming, and secu
 
 ## Architecture
 
-The project is structured as a Rust workspace:
+The project is structured as a Rust 2024 Edition workspace (`edition = "2024"`, `rust-version = "1.85"`):
 
 - **`crates/arcan-core`**: Defines the core traits (`Provider`, `Tool`, `Middleware`), protocol types (`AgentEvent`, `ChatMessage`), and state management (`AppState` with JSON Patch).
 - **`crates/arcan-harness`**: Contains the tool harness, including filesystem operations (`fs`), safe editing logic (`edit` / "Hashline"), and sandboxing (`sandbox`).
@@ -68,7 +68,7 @@ For the comprehensive implementation status, scorecard, gap analysis, and roadma
 ## Useful Commands
 
 - **Test**: `cargo test --workspace`
-- **Lint**: `cargo clippy`
+- **Lint**: `cargo clippy --workspace`
 - **Format**: `cargo fmt`
 
 
@@ -79,7 +79,7 @@ For the comprehensive implementation status, scorecard, gap analysis, and roadma
 ### AI Assistant Guidelines
 - **Cursor**: Follow `.cursorrules` for coding standards.
 - **Claude Code**: Refer to `CLAUDE.md` for project commands.
-- **Linter**: Run `cargo clippy` to verify code quality.
+- **Linter**: Run `cargo clippy --workspace` to verify code quality.
 - **Fixes**: Run `cargo fmt` to auto-fix formatting.
 - **Rules**:
   - All new code must have valid tests.
@@ -175,7 +175,7 @@ Additionally run:
 
 4. **Verify linting:**
    ```bash
-   cargo clippy
+   cargo clippy --workspace
    ```
    Ensure code follows best practices.
 
