@@ -77,7 +77,6 @@ For the comprehensive implementation status, scorecard, gap analysis, and roadma
 
 
 ### AI Assistant Guidelines
-### AI Assistant Guidelines
 - **Cursor**: Follow `.cursorrules` for coding standards.
 - **Claude Code**: Refer to `CLAUDE.md` for project commands.
 - **Linter**: Run `cargo clippy` to verify code quality.
@@ -89,6 +88,39 @@ For the comprehensive implementation status, scorecard, gap analysis, and roadma
   - The full project must build successfully via `cargo build --workspace`.
   - When finishing and validating a feature, agents must perform a brief self-learning loop (observe outcomes, reflect on gaps, and capture durable guidance) and update `AGENTS.md` plus the relevant `docs/` structure when new workflow or architecture knowledge is discovered.
   - Commits that fail these checks will be rejected by pre-commit hooks.
+
+### Self-Learning Rules & Guidelines
+
+Agents interacting with the `arcan-rs` codebase must continuously improve their operational knowledge. This avoids repeating mistakes and ensures that "tribal knowledge" becomes documented.
+
+#### 1. Triggers for Documentation Updates
+Update documentation when:
+- **Tool Misuse**: A tool call fails due to invalid arguments or context. (Fix: clarify tool usage in `AGENTS.md`).
+- **Ambiguous Instructions**: User intent is unclear or requires clarifying questions. (Fix: add definitions or context to `AGENTS.md`).
+- **New Patterns**: A new architectural pattern is established (e.g., event handling, testing strategy). (Fix: document in `AGENTS.md` or dedicated `docs/*.md`).
+- **Recurring Bugs**: The same bug is encountered more than once. (Fix: add prevention guidelines to `AGENTS.md`).
+
+#### 2. Update Protocol
+1.  **Identify**: Pinpoint the specific gap in knowledge.
+2.  **Formulate**: Create a concise rule or guideline.
+    - *Bad*: "Sometimes the build fails."
+    - *Good*: "Always run `cargo clean` before building release artifacts to avoid linker errors."
+3.  **Locate**:
+    - **General Behavior**: `AGENTS.md` (this file).
+    - **CLI / Commands**: `CLAUDE.md`.
+    - **Architecture / Design**: `docs/architecture.md` or specific component docs.
+4.  **Verify**: Ensure the new rule doesn't conflict with existing ones.
+
+#### 3. Rule Format
+Use the following format for technical rules:
+- **Context**: When this applies.
+- **Action**: What to do.
+- **Reason**: Why it matters.
+
+*Example*:
+> **Context**: When editing `Cargo.toml`.
+> **Action**: Ensure `workspace.members` are sorted alphabetically.
+> **Reason**: Prevents merge conflicts and maintains readability.
 
 ### Claude Code Configuration
 
