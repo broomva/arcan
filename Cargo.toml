@@ -25,8 +25,10 @@ panic = "abort"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80.0"
 license = "MIT"
 authors = ["Arcan Contributors"]
+repository = "https://github.com/broomva/arcan-rs"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -49,6 +51,7 @@ regex = "1"
 rig-core = "0.30"
 rmcp = { version = "0.15", features = ["client", "transport-child-process"] }
 serde_yaml = "0.9"
+wait-timeout = "0.2"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

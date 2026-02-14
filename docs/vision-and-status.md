@@ -123,7 +123,7 @@ The following matrix tracks the implementation status of each feature against th
 | Policy Middleware | Rule-based tool governance | Done | `LagoPolicyMiddleware` wrapping lago `PolicyEngine` |
 | State Projection | Replay events to rebuild state | Done | `AppStateProjection` implementing lago `Projection` |
 | Multi-Format SSE | OpenAI/Anthropic/Vercel/Lago | Done | `SseBridge` in `arcan-lago/src/sse_bridge.rs` |
-| Sandbox Enforcement | Timeout/memory/network limits | Partial | `SandboxPolicy` fields exist but `LocalCommandRunner` doesn't enforce |
+| Sandbox Enforcement | Timeout/memory/network limits | Mostly Done | Env filtering, cwd validation, timeout, output truncation enforced. Network/process/memory limits need OS isolation (bwrap/Docker). |
 | Subagent Execution | Nested agent loops | Not Done | Not implemented |
 | CLI Client | Terminal chat interface | Not Done | HTTP/SSE only |
 | Session Fork API | Explicit branch/fork semantics | Not Done | `parent_id` exists but no API |

@@ -1,0 +1,25 @@
+# Cargo configuration for arcan-rs workspace
+
+[alias]
+xtask = "run --package xtask --"
+
+# Use lld on Linux for faster linking (if available)
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# Use Apple's default linker on macOS (fast enough with split-debuginfo)
+[target.aarch64-apple-darwin]
+rustflags = []
+
+[target.x86_64-apple-darwin]
+rustflags = []
+
+[build]
+# Incremental compilation for dev builds
+incremental = true
+
+[net]
+retry = 3

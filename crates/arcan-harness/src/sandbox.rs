@@ -2,7 +2,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 use thiserror::Error;
+use wait_timeout::ChildExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -74,11 +76,59 @@ pub enum SandboxError {
     PolicyViolation(String),
     #[error("command runner failed: {0}")]
     Runner(String),
+    #[error("command timed out after {0}ms")]
+    Timeout(u64),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
 
 pub struct LocalCommandRunner;
+
+impl LocalCommandRunner {
+    /// Validate that a cwd path is within the workspace root.
+    fn validate_cwd(
+        policy: &SandboxPolicy,
+        cwd: &std::path::Path,
+    ) -> Result<PathBuf, SandboxError> {
+        let resolved = if cwd.is_absolute() {
+            cwd.to_path_buf()
+        } else {
+            policy.workspace_root.join(cwd)
+        };
+
+        // Canonicalize both to resolve symlinks
+        let canonical = resolved.canonicalize().map_err(SandboxError::Io)?;
+        let root = policy
+            .workspace_root
+            .canonicalize()
+            .map_err(SandboxError::Io)?;
+
+        if canonical.starts_with(&root) {
+            Ok(canonical)
+        } else {
+            Err(SandboxError::PolicyViolation(format!(
+                "cwd '{}' escapes workspace root '{}'",
+                canonical.display(),
+                root.display()
+            )))
+        }
+    }
+
+    /// Truncate a byte vector to the given limit, appending a marker if truncated.
+    fn truncate_output(raw: &[u8], max_bytes: usize) -> String {
+        if raw.len() <= max_bytes {
+            String::from_utf8_lossy(raw).to_string()
+        } else {
+            let truncated = String::from_utf8_lossy(&raw[..max_bytes]).to_string();
+            format!(
+                "{}\n\n... [truncated: {} bytes total, showing first {}]",
+                truncated,
+                raw.len(),
+                max_bytes
+            )
+        }
+    }
+}
 
 impl CommandRunner for LocalCommandRunner {
     fn run(
@@ -90,45 +140,77 @@ impl CommandRunner for LocalCommandRunner {
             return Err(SandboxError::ShellDisabled);
         }
 
-        // 1. Validate Env
-        if let NetworkPolicy::Disabled = policy.network {
-            // In a real sandbox we'd block network, here we just trust the runner for now or use unshare
-        }
-
-        // 2. Prepare Command
+        // 1. Prepare command
         let mut cmd = std::process::Command::new(&request.executable);
         cmd.args(&request.args);
 
+        // 2. Validate and set cwd (enforces workspace boundary)
         if let Some(cwd) = &request.cwd {
-            // Resolve cwd against workspace root? Or just allow it if it is within workspace?
-            // For now assuming the request.cwd is absolute or relative to workspace.
-            // Real implementation would use FsPolicy to resolve.
-            cmd.current_dir(cwd);
+            let validated_cwd = Self::validate_cwd(policy, cwd)?;
+            cmd.current_dir(validated_cwd);
         } else {
             cmd.current_dir(&policy.workspace_root);
         }
 
+        // 3. Environment: clear everything, then allow only explicitly permitted vars.
+        //    An empty allowed_env set means NO request env vars are passed through.
         cmd.env_clear();
         for (k, v) in &request.env {
-            if policy.allowed_env.contains(k) || policy.allowed_env.is_empty() {
-                // simplistic check
+            if policy.allowed_env.contains(k) {
                 cmd.env(k, v);
             }
         }
-
-        // Always pass some basic env
+        // Always provide basic env for shell functionality
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("TERM", "xterm-256color");
 
-        // 3. Execute
-        // note: timeouts and memory limits require OS specific logic (wait4, rlimit) not implemented here for brevity
-        let output = cmd.output().map_err(SandboxError::Io)?;
+        // 4. Spawn child process (not .output() — we need timeout control)
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().map_err(SandboxError::Io)?;
 
-        Ok(CommandResult {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        })
+        // 5. Enforce execution timeout
+        let timeout = Duration::from_millis(policy.max_execution_ms);
+        match child.wait_timeout(timeout) {
+            Ok(Some(status)) => {
+                // Process exited within timeout — read output
+                let stdout_raw = child
+                    .stdout
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).unwrap_or(0);
+                        buf
+                    })
+                    .unwrap_or_default();
+                let stderr_raw = child
+                    .stderr
+                    .take()
+                    .map(|mut r| {
+                        let mut buf = Vec::new();
+                        std::io::Read::read_to_end(&mut r, &mut buf).unwrap_or(0);
+                        buf
+                    })
+                    .unwrap_or_default();
+
+                // 6. Enforce output size limits
+                let stdout = Self::truncate_output(&stdout_raw, policy.max_stdout_bytes);
+                let stderr = Self::truncate_output(&stderr_raw, policy.max_stderr_bytes);
+
+                Ok(CommandResult {
+                    exit_code: status.code().unwrap_or(-1),
+                    stdout,
+                    stderr,
+                })
+            }
+            Ok(None) => {
+                // Timeout expired — kill the process
+                let _ = child.kill();
+                let _ = child.wait(); // reap zombie
+                Err(SandboxError::Timeout(policy.max_execution_ms))
+            }
+            Err(e) => Err(SandboxError::Io(e)),
+        }
     }
 }
 
@@ -220,5 +302,289 @@ impl Tool for BashTool {
             is_error: false,
             state_patch: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_policy(dir: &std::path::Path) -> SandboxPolicy {
+        SandboxPolicy {
+            workspace_root: dir.to_path_buf(),
+            shell_enabled: true,
+            network: NetworkPolicy::Disabled,
+            allowed_env: BTreeSet::new(),
+            max_execution_ms: 5_000,
+            max_stdout_bytes: 1024,
+            max_stderr_bytes: 1024,
+            max_processes: 16,
+            max_memory_mb: 512,
+        }
+    }
+
+    // --- Env var filtering ---
+
+    #[test]
+    fn empty_allowed_env_denies_all_request_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "echo $SECRET".to_string()],
+            cwd: None,
+            env: BTreeMap::from([("SECRET".to_string(), "leaked".to_string())]),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        // SECRET should NOT be passed through — output should be empty (just newline)
+        assert_eq!(result.stdout.trim(), "");
+    }
+
+    #[test]
+    fn allowed_env_permits_listed_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.allowed_env.insert("MY_VAR".to_string());
+
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "echo $MY_VAR".to_string()],
+            cwd: None,
+            env: BTreeMap::from([("MY_VAR".to_string(), "hello".to_string())]),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        assert_eq!(result.stdout.trim(), "hello");
+    }
+
+    #[test]
+    fn allowed_env_filters_unlisted_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.allowed_env.insert("GOOD".to_string());
+
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "echo $BAD".to_string()],
+            cwd: None,
+            env: BTreeMap::from([
+                ("GOOD".to_string(), "ok".to_string()),
+                ("BAD".to_string(), "leaked".to_string()),
+            ]),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        assert_eq!(result.stdout.trim(), "");
+    }
+
+    // --- Cwd validation ---
+
+    #[test]
+    fn cwd_within_workspace_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("sub");
+        std::fs::create_dir(&subdir).unwrap();
+
+        let policy = test_policy(dir.path());
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "pwd".to_string()],
+            cwd: Some(subdir.clone()),
+            env: BTreeMap::new(),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        let canonical_sub = subdir.canonicalize().unwrap();
+        assert_eq!(result.stdout.trim(), canonical_sub.display().to_string());
+    }
+
+    #[test]
+    fn cwd_outside_workspace_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "pwd".to_string()],
+            cwd: Some(PathBuf::from("/tmp")),
+            env: BTreeMap::new(),
+        };
+
+        let err = runner.run(&policy, &request).unwrap_err();
+        assert!(
+            matches!(err, SandboxError::PolicyViolation(_)),
+            "expected PolicyViolation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cwd_relative_resolved_against_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("child");
+        std::fs::create_dir(&subdir).unwrap();
+
+        let policy = test_policy(dir.path());
+        let runner = LocalCommandRunner;
+
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "pwd".to_string()],
+            cwd: Some(PathBuf::from("child")),
+            env: BTreeMap::new(),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        let canonical_sub = subdir.canonicalize().unwrap();
+        assert_eq!(result.stdout.trim(), canonical_sub.display().to_string());
+    }
+
+    // --- Shell disabled ---
+
+    #[test]
+    fn shell_disabled_rejects_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.shell_enabled = false;
+
+        let runner = LocalCommandRunner;
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "echo hi".to_string()],
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+
+        let err = runner.run(&policy, &request).unwrap_err();
+        assert!(matches!(err, SandboxError::ShellDisabled));
+    }
+
+    // --- Timeout ---
+
+    #[test]
+    fn timeout_kills_long_running_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.max_execution_ms = 500; // 500ms timeout
+
+        let runner = LocalCommandRunner;
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "sleep 30".to_string()],
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+
+        let start = std::time::Instant::now();
+        let err = runner.run(&policy, &request).unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(err, SandboxError::Timeout(500)),
+            "expected Timeout, got: {err}"
+        );
+        // Should have returned in roughly 500ms, not 30s
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "took too long: {elapsed:?}"
+        );
+    }
+
+    // --- Output truncation ---
+
+    #[test]
+    fn stdout_truncated_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.max_stdout_bytes = 50;
+
+        let runner = LocalCommandRunner;
+        // Generate ~200 bytes of output
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "python3 -c \"print('A' * 200)\"".to_string(),
+            ],
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        assert!(
+            result.stdout.contains("[truncated:"),
+            "output should be truncated: {}",
+            &result.stdout[..100.min(result.stdout.len())]
+        );
+    }
+
+    #[test]
+    fn stderr_truncated_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.max_stderr_bytes = 50;
+
+        let runner = LocalCommandRunner;
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "python3 -c \"import sys; sys.stderr.write('E' * 200)\" 2>&1 1>/dev/null; python3 -c \"import sys; sys.stderr.write('E' * 200)\"".to_string(),
+            ],
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        assert!(
+            result.stderr.contains("[truncated:"),
+            "stderr should be truncated: {}",
+            &result.stderr[..100.min(result.stderr.len())]
+        );
+    }
+
+    #[test]
+    fn small_output_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+
+        let runner = LocalCommandRunner;
+        let request = CommandRequest {
+            executable: "/bin/bash".to_string(),
+            args: vec!["-c".to_string(), "echo hello".to_string()],
+            cwd: None,
+            env: BTreeMap::new(),
+        };
+
+        let result = runner.run(&policy, &request).unwrap();
+        assert_eq!(result.stdout.trim(), "hello");
+        assert!(!result.stdout.contains("[truncated:"));
+    }
+
+    // --- Truncate helper unit test ---
+
+    #[test]
+    fn truncate_output_within_limit() {
+        let data = b"hello world";
+        let result = LocalCommandRunner::truncate_output(data, 100);
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn truncate_output_exceeds_limit() {
+        let data = b"hello world, this is a longer string";
+        let result = LocalCommandRunner::truncate_output(data, 11);
+        assert!(result.starts_with("hello world"));
+        assert!(result.contains("[truncated:"));
+        assert!(result.contains("showing first 11"));
     }
 }

@@ -198,7 +198,7 @@ pub trait CommandRunner: Send + Sync {
 
 This trait decouples policy from execution mechanism. Implementations:
 
-- **`LocalCommandRunner`** (current): Wraps `std::process::Command`. Clears environment except allowed vars. Sets working directory. No true resource isolation yet.
+- **`LocalCommandRunner`** (current): Enforces env var filtering (empty allowed_env = deny all), cwd workspace boundary validation (canonicalize + starts_with), execution timeout via `wait-timeout` crate (kills process on expiry), and stdout/stderr truncation at policy limits. No OS-level process/network isolation yet.
 - **`BubblewrapRunner`** (future): Linux user namespaces via `bwrap` for process/network/filesystem isolation.
 - **`DockerRunner`** (future): Container-based isolation for maximum security.
 

@@ -17,6 +17,7 @@ regex.workspace = true
 rmcp.workspace = true
 serde_yaml.workspace = true
 tokio.workspace = true
+wait-timeout.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]

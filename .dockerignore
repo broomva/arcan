@@ -1,0 +1,17 @@
+target/
+.git/
+.github/
+.vscode/
+.idea/
+.claude/
+.arcan/sessions/
+brain/
+docs/
+*.md
+!README.md
+.env
+.env.*
+.DS_Store
+*.profraw
+*.profdata
+coverage/
