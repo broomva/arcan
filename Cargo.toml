@@ -5,6 +5,8 @@ members = [
   "crates/arcan-store",
   "crates/arcan-provider",
   "crates/arcan-daemon",
+  "crates/arcan-lago",
+  "crates/agentd",
 ]
 resolver = "2"
 
@@ -48,3 +50,13 @@ rig-core = "0.30"
 rmcp = { version = "0.15", features = ["client", "transport-child-process"] }
 serde_yaml = "0.9"
 walkdir = "2"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Lago persistence layer (crates.io)
+lago-api = "0.1"
+lago-core = "0.1"
+lago-journal = "0.1"
+lago-store = "0.1"
+lago-policy = "0.1"

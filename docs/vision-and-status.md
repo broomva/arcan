@@ -111,14 +111,18 @@ The following matrix tracks the implementation status of each feature against th
 | Middleware Hooks | 5 lifecycle hooks | Done | `before`/`after` model, `pre`/`post` tool, `on_run_finished` |
 | Budget Controls | `max_iterations` | Done | `OrchestratorConfig` |
 | Workspace Sandboxing | `FsPolicy` boundary checks | Done | `FsPolicy` with canonicalization |
-| `glob` tool | Filename pattern search | Not Done | Only `list_dir` exists |
-| `grep` tool | Regex content search | Not Done | Not implemented |
-| Memory tools | `read_memory`/`write_memory` | Not Done | Not implemented |
-| MCP Integration | External tool server bridge | Not Done | No MCP client/server |
-| Skills.sh Support | `SKILL.md` discovery and loading | Not Done | No skill loader |
-| AI SDK v5 Wire Format | Vercel data parts mapping | Not Done | Only ArcanNative SSE |
-| Typed State Schema | Well-known state keys | Not Done | `AppState.data` is opaque `Value` |
-| Tool Annotations | `read_only`, `destructive`, etc. | Not Done | `ToolDefinition` has only 3 fields |
+| `glob` tool | Filename pattern search | Done | `GlobTool` in `arcan-harness/src/fs.rs` |
+| `grep` tool | Regex content search | Done | `GrepTool` in `arcan-harness/src/fs.rs` with regex + glob filter |
+| Memory tools | `read_memory`/`write_memory` | Done | `arcan-harness/src/memory.rs` |
+| MCP Integration | External tool server bridge | Done | `arcan-harness/src/mcp.rs` via `rmcp` crate |
+| Skills.sh Support | `SKILL.md` discovery and loading | Done | `arcan-harness/src/skills.rs` |
+| AI SDK v5 Wire Format | Vercel data parts mapping | Done | `arcan-core/src/aisdk.rs` + lago multi-format SSE |
+| Typed State Schema | Well-known state keys | Done | `AppState::well_known()` with cwd, open_files, budget, etc. |
+| Tool Annotations | `read_only`, `destructive`, etc. | Done | `ToolAnnotations` in `protocol.rs` (5 fields, MCP-aligned) |
+| Lago Persistence | ACID journal backend | Done | `arcan-lago` bridge crate + `RedbJournal` |
+| Policy Middleware | Rule-based tool governance | Done | `LagoPolicyMiddleware` wrapping lago `PolicyEngine` |
+| State Projection | Replay events to rebuild state | Done | `AppStateProjection` implementing lago `Projection` |
+| Multi-Format SSE | OpenAI/Anthropic/Vercel/Lago | Done | `SseBridge` in `arcan-lago/src/sse_bridge.rs` |
 | Sandbox Enforcement | Timeout/memory/network limits | Partial | `SandboxPolicy` fields exist but `LocalCommandRunner` doesn't enforce |
 | Subagent Execution | Nested agent loops | Not Done | Not implemented |
 | CLI Client | Terminal chat interface | Not Done | HTTP/SSE only |
@@ -174,7 +178,9 @@ arcan-rs/
 │   ├── arcan-harness/    # Tool implementations, sandboxing, MCP bridge, skill loader
 │   ├── arcan-store/      # Append-only event persistence, session tree
 │   ├── arcan-provider/   # LLM provider adapters (Anthropic raw, Rig bridge)
-│   └── arcan-daemon/     # agentd binary, Axum HTTP/SSE server, agent loop
+│   ├── arcan-daemon/     # Basic daemon with JSONL storage, Axum HTTP/SSE server
+│   ├── arcan-lago/       # Bridge to Lago persistence and governance layer
+│   └── agentd/           # Production daemon with Lago ACID journal + policy middleware
 ├── docs/                 # Architecture and vision documentation
 ├── Cargo.toml            # Workspace definition
 ├── AGENTS.md             # Project documentation for AI agents
@@ -184,7 +190,15 @@ arcan-rs/
 ### Crate Dependency Graph
 
 ```
-arcan-daemon
+agentd (production daemon)
+├── arcan-core
+├── arcan-harness  → arcan-core
+├── arcan-store    → arcan-core
+├── arcan-provider → arcan-core
+├── arcan-daemon   → arcan-core, arcan-harness, arcan-store
+└── arcan-lago     → arcan-core, arcan-store, lago-*
+
+arcan-daemon (basic daemon)
 ├── arcan-core
 ├── arcan-harness  → arcan-core
 ├── arcan-store    → arcan-core
@@ -195,7 +209,9 @@ arcan-daemon
 - **`arcan-harness`** depends on `arcan-core` and provides all tool implementations plus sandboxing.
 - **`arcan-store`** depends on `arcan-core` and handles persistence of the event log.
 - **`arcan-provider`** depends on `arcan-core` and contains LLM provider adapters (Anthropic, Rig bridge, etc.).
-- **`arcan-daemon`** depends on all crates above and is the final executable that wires everything together.
+- **`arcan-daemon`** depends on core, harness, store, and provider. Basic daemon with JSONL storage.
+- **`arcan-lago`** bridges arcan's sync traits with lago's async persistence and policy engine. Depends on `lago-core`, `lago-journal`, `lago-store`, `lago-policy`, and `lago-api`.
+- **`agentd`** is the production daemon with ACID persistence, policy middleware, and structured logging.
 
 ---
 
@@ -203,42 +219,53 @@ arcan-daemon
 
 The following phases represent the approved plan for evolving Arcan from its current state to the full vision.
 
-### Phase 1: Tool Expansion -- Planned
+### Phase 1: Tool Expansion -- Done
 
-Implement the remaining core tools to match the vision:
+All core tools implemented:
 
 - `glob` tool for filename pattern search (using the `glob` crate).
-- `grep` tool for regex content search (using the `grep-regex` crate).
+- `grep` tool for regex content search (using `regex` + `walkdir`).
 - `read_memory` / `write_memory` tools for persistent agent memory.
-- Tool annotations (`read_only`, `destructive`, `idempotent`) on `ToolDefinition`.
+- Tool annotations (`read_only`, `destructive`, `idempotent`, `open_world`, `requires_confirmation`) on `ToolDefinition`.
 
-### Phase 2: MCP Integration -- Planned
+### Phase 2: MCP Integration -- Done
 
-Bridge external tool servers into the unified `ToolRegistry`:
+External tool servers bridged into the unified `ToolRegistry`:
 
-- Implement MCP client using the `rmcp` crate.
-- Support stdio and HTTP transports for `tools/list` and `tools/call`.
-- Wrap remote tools in `McpTool` adapters implementing the `Tool` trait.
-- Add configuration for MCP server endpoints.
+- MCP client implemented using the `rmcp` crate.
+- Stdio transport for `tools/list` and `tools/call`.
+- Remote tools wrapped in `McpTool` adapters implementing the `Tool` trait.
+- MCP annotations mapped to arcan `ToolAnnotations`.
 
-### Phase 3: Skill Loader -- Planned
+### Phase 3: Skill Loader -- Done
 
-Enable discovery and loading of `SKILL.md` files:
+`SKILL.md` discovery and loading:
 
-- Directory scanner for skill files.
+- Directory scanner for skill files via `walkdir`.
 - YAML frontmatter parser for skill metadata.
 - System prompt injection for skill context.
-- Runtime skill registration and deregistration.
+- `allowed_tools` filtering for sandboxed skill execution.
 
-### Phase 4: AI SDK v5 Wire Format -- Planned
+### Phase 4: AI SDK v5 Wire Format -- Done
 
-Map Arcan's native SSE events to Vercel AI SDK v5 data parts:
+Arcan events mapped to Vercel AI SDK v5 data parts:
 
-- Define the mapping between `AgentEvent` variants and AI SDK data part types.
-- Implement a secondary SSE endpoint that emits AI SDK-compatible events.
-- Ensure compatibility with the Vercel AI SDK frontend hooks (`useChat`, `useCompletion`).
+- `AiSdkPart` enum with all standard part types in `arcan-core/src/aisdk.rs`.
+- Multi-format SSE via lago bridge: OpenAI, Anthropic, Vercel, Lago native.
+- Server supports `?format=aisdk_v5` query parameter.
 
-### Phase 5: Advanced Session Management -- Planned
+### Phase 5: Lago Integration -- Done
+
+Arcan bridged to Lago persistence and governance platform:
+
+- `arcan-lago` bridge crate with event mapping, journal repository, policy middleware, state projection, SSE bridge.
+- `agentd` production daemon with ACID persistence via `RedbJournal`.
+- `LagoPolicyMiddleware` for rule-based tool governance with risk assessment.
+- `AppStateProjection` implementing lago `Projection` trait.
+- Multi-format SSE via `SseBridge` (OpenAI, Anthropic, Vercel, Lago).
+- See `docs/lago-integration.md` for details.
+
+### Phase 6: Advanced Session Management -- Planned
 
 Build out the full session tree capabilities:
 
@@ -247,7 +274,7 @@ Build out the full session tree capabilities:
 - Approval workflow (pause before destructive operations, await user confirmation).
 - Sliding window context management for long sessions.
 
-### Phase 6: Sandbox Hardening -- Planned
+### Phase 7: Sandbox Hardening -- Planned
 
 Enforce the full sandbox policy:
 
@@ -257,11 +284,10 @@ Enforce the full sandbox policy:
 - Bubblewrap or Docker-based isolation backends.
 - Subagent execution with restricted toolsets and budgets.
 
-### Phase 7: Client Interfaces -- Planned
+### Phase 8: Client Interfaces -- Planned
 
 Build client interfaces beyond the HTTP/SSE API:
 
 - CLI client (`arcan` binary) with terminal chat interface.
 - Web client consuming the SSE stream.
-- Typed state schema with well-known keys for structured UI rendering.
 - Multi-frontend adapters (Telegram, Discord, Slack).
