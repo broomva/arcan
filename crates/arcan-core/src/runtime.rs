@@ -570,6 +570,12 @@ mod tests {
                     "properties": { "value": { "type": "string" } },
                     "required": ["value"]
                 }),
+                title: None,
+                output_schema: None,
+                annotations: None,
+                category: None,
+                tags: Vec::new(),
+                timeout_secs: None,
             }
         }
 
@@ -583,6 +589,8 @@ mod tests {
                 call_id: call.call_id.clone(),
                 tool_name: call.tool_name.clone(),
                 output: json!({ "echo": value.clone() }),
+                content: None,
+                is_error: false,
                 state_patch: Some(StatePatch {
                     format: StatePatchFormat::MergePatch,
                     patch: json!({ "last_echo": value }),

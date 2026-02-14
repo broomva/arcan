@@ -1,7 +1,8 @@
 use arcan_core::runtime::{Orchestrator, OrchestratorConfig, Provider, ToolRegistry};
 use arcan_daemon::{mock::MockProvider, r#loop::AgentLoop, server::create_router};
 use arcan_harness::edit::EditFileTool;
-use arcan_harness::fs::{FsPolicy, ListDirTool, ReadFileTool, WriteFileTool};
+use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
+use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcan_store::session::JsonlSessionRepository;
@@ -41,8 +42,16 @@ async fn main() -> anyhow::Result<()> {
     registry.register(ListDirTool::new(fs_policy.clone()));
     registry.register(EditFileTool::new(fs_policy.clone()));
 
+    registry.register(GlobTool::new(fs_policy.clone()));
+    registry.register(GrepTool::new(fs_policy));
+
     let runner = Box::new(LocalCommandRunner);
     registry.register(BashTool::new(sandbox_policy, runner));
+
+    // Memory tools
+    let memory_dir = workspace_root.join(".arcan/memory");
+    registry.register(ReadMemoryTool::new(memory_dir.clone()));
+    registry.register(WriteMemoryTool::new(memory_dir));
 
     // 4. Initialize Provider — use Anthropic if API key is set, otherwise MockProvider
     let provider: Arc<dyn Provider> = match AnthropicConfig::from_env() {

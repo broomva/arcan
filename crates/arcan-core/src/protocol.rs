@@ -62,11 +62,62 @@ impl ChatMessage {
     }
 }
 
+/// MCP-compatible behavioral annotations for tools.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct ToolAnnotations {
+    /// Tool does not modify its environment.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Tool may perform destructive updates.
+    #[serde(default)]
+    pub destructive: bool,
+    /// Repeated calls with same args produce same result.
+    #[serde(default)]
+    pub idempotent: bool,
+    /// Tool interacts with external entities (network, APIs).
+    #[serde(default)]
+    pub open_world: bool,
+    /// Tool requires user confirmation before execution.
+    #[serde(default)]
+    pub requires_confirmation: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+
+    // ── MCP-aligned fields (all optional, backward-compatible) ──
+    /// Human-readable display name (MCP: title).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// JSON Schema for structured output (MCP: outputSchema).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    /// Behavioral hints (MCP: annotations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+
+    // ── Arcan extensions ──
+    /// Tool category for grouping ("filesystem", "code", "shell", "mcp").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Tags for filtering and matching (skills.sh compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Maximum execution timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u32>,
+}
+
+/// Typed content block in a tool result (MCP-compatible).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolContent {
+    Text { text: String },
+    Image { data: String, mime_type: String },
+    Json { value: Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -83,6 +134,12 @@ pub struct ToolResult {
     pub tool_name: String,
     #[serde(default)]
     pub output: Value,
+    /// MCP-style typed content blocks (optional, alongside output for compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<ToolContent>>,
+    /// Whether this result represents an error (MCP: isError).
+    #[serde(default)]
+    pub is_error: bool,
     pub state_patch: Option<StatePatch>,
 }
 

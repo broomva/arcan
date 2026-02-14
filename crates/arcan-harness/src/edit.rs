@@ -238,7 +238,7 @@ mod tests {
 
 use crate::fs::FsPolicy;
 use arcan_core::error::CoreError;
-use arcan_core::protocol::{ToolCall, ToolDefinition, ToolResult};
+use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolDefinition, ToolResult};
 use arcan_core::runtime::{Tool, ToolContext};
 use serde_json::json;
 use std::fs;
@@ -277,6 +277,15 @@ impl Tool for EditFileTool {
                 },
                 "required": ["path", "ops"]
             }),
+            title: Some("Edit File".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                destructive: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "edit".to_string()],
+            timeout_secs: Some(30),
         }
     }
 
@@ -338,6 +347,8 @@ impl Tool for EditFileTool {
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
             output: json!({ "success": true, "content": hashed_content, "path": path }),
+            content: None,
+            is_error: false,
             state_patch: None,
         })
     }

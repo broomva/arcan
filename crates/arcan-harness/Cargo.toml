@@ -12,3 +12,12 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+glob.workspace = true
+regex.workspace = true
+rmcp.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

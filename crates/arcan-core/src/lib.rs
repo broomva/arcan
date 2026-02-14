@@ -1,3 +1,4 @@
+pub mod aisdk;
 pub mod error;
 pub mod protocol;
 pub mod runtime;

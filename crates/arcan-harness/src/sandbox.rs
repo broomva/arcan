@@ -133,7 +133,7 @@ impl CommandRunner for LocalCommandRunner {
 }
 
 use arcan_core::error::CoreError;
-use arcan_core::protocol::{ToolCall, ToolDefinition, ToolResult};
+use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolDefinition, ToolResult};
 use arcan_core::runtime::{Tool, ToolContext};
 use serde_json::json;
 
@@ -161,6 +161,17 @@ impl Tool for BashTool {
                 },
                 "required": ["command"]
             }),
+            title: Some("Bash Command".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                destructive: true,
+                open_world: true,
+                requires_confirmation: true,
+                ..Default::default()
+            }),
+            category: Some("shell".to_string()),
+            tags: vec!["shell".to_string(), "exec".to_string()],
+            timeout_secs: Some(60),
         }
     }
 
@@ -205,6 +216,8 @@ impl Tool for BashTool {
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }),
+            content: None,
+            is_error: false,
             state_patch: None,
         })
     }

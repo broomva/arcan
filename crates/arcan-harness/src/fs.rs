@@ -1,9 +1,11 @@
 use crate::edit::render_hashed_content;
 use arcan_core::error::CoreError;
-use arcan_core::protocol::{ToolCall, ToolDefinition, ToolResult};
+use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolDefinition, ToolResult};
 use arcan_core::runtime::{Tool, ToolContext};
+use regex::Regex;
 use serde_json::json;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -114,6 +116,16 @@ impl Tool for ReadFileTool {
                 },
                 "required": ["path"]
             }),
+            title: Some("Read File".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "read".to_string()],
+            timeout_secs: Some(30),
         }
     }
 
@@ -146,6 +158,8 @@ impl Tool for ReadFileTool {
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
             output: json!({ "content": hashed_content, "path": path }),
+            content: None,
+            is_error: false,
             state_patch: None,
         })
     }
@@ -174,6 +188,15 @@ impl Tool for WriteFileTool {
                 },
                 "required": ["path", "content"]
             }),
+            title: Some("Write File".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                destructive: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "write".to_string()],
+            timeout_secs: Some(30),
         }
     }
 
@@ -212,6 +235,8 @@ impl Tool for WriteFileTool {
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
             output: json!({ "success": true, "path": path }),
+            content: None,
+            is_error: false,
             state_patch: None,
         })
     }
@@ -239,6 +264,16 @@ impl Tool for ListDirTool {
                 },
                 "required": ["path"]
             }),
+            title: Some("List Directory".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "list".to_string()],
+            timeout_secs: Some(30),
         }
     }
 
@@ -278,6 +313,258 @@ impl Tool for ListDirTool {
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
             output: json!({ "entries": entries, "path": path }),
+            content: None,
+            is_error: false,
+            state_patch: None,
+        })
+    }
+}
+
+pub struct GlobTool {
+    policy: FsPolicy,
+}
+
+impl GlobTool {
+    pub fn new(policy: FsPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl Tool for GlobTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "glob".to_string(),
+            description: "Search for files matching a glob pattern within the workspace."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern (e.g. **/*.rs)" },
+                    "path": { "type": "string", "description": "Base directory (optional, defaults to workspace root)" }
+                },
+                "required": ["pattern"]
+            }),
+            title: Some("Glob Search".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "search".to_string()],
+            timeout_secs: Some(30),
+        }
+    }
+
+    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+        let pattern = call
+            .input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
+                tool_name: "glob".to_string(),
+                message: "Missing or invalid 'pattern' argument".to_string(),
+            })?;
+
+        let base_dir = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.policy.workspace_root.clone());
+
+        // Resolve base_dir within workspace
+        let base_dir = self
+            .policy
+            .resolve_existing(Path::new(&base_dir))
+            .map_err(|e| CoreError::ToolExecution {
+                tool_name: "glob".to_string(),
+                message: e.to_string(),
+            })?;
+
+        let full_pattern = base_dir.join(pattern).display().to_string();
+
+        let matches: Vec<String> = glob::glob(&full_pattern)
+            .map_err(|e| CoreError::ToolExecution {
+                tool_name: "glob".to_string(),
+                message: format!("Invalid glob pattern: {}", e),
+            })?
+            .filter_map(|entry| entry.ok())
+            .filter(|path| {
+                // Only include paths within the workspace
+                self.policy.resolve_existing(path).is_ok()
+            })
+            .map(|path| {
+                // Return paths relative to workspace root
+                path.strip_prefix(&self.policy.workspace_root)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| path.display().to_string())
+            })
+            .collect();
+
+        let count = matches.len();
+
+        Ok(ToolResult {
+            call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            output: json!({ "matches": matches, "count": count }),
+            content: None,
+            is_error: false,
+            state_patch: None,
+        })
+    }
+}
+
+pub struct GrepTool {
+    policy: FsPolicy,
+}
+
+impl GrepTool {
+    pub fn new(policy: FsPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl Tool for GrepTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "grep".to_string(),
+            description: "Search file contents for a regex pattern within the workspace."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Regex pattern to search for" },
+                    "path": { "type": "string", "description": "Directory to search (optional, defaults to workspace root)" },
+                    "glob": { "type": "string", "description": "File glob filter (e.g. *.rs)" },
+                    "max_matches": { "type": "integer", "description": "Maximum number of matches to return (default 100)" }
+                },
+                "required": ["pattern"]
+            }),
+            title: Some("Grep Search".to_string()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("filesystem".to_string()),
+            tags: vec!["fs".to_string(), "search".to_string()],
+            timeout_secs: Some(60),
+        }
+    }
+
+    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+        let pattern_str = call
+            .input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CoreError::ToolExecution {
+                tool_name: "grep".to_string(),
+                message: "Missing or invalid 'pattern' argument".to_string(),
+            })?;
+
+        let regex = Regex::new(pattern_str).map_err(|e| CoreError::ToolExecution {
+            tool_name: "grep".to_string(),
+            message: format!("Invalid regex pattern: {}", e),
+        })?;
+
+        let base_dir = call
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.policy.workspace_root.clone());
+
+        let base_dir = self
+            .policy
+            .resolve_existing(Path::new(&base_dir))
+            .map_err(|e| CoreError::ToolExecution {
+                tool_name: "grep".to_string(),
+                message: e.to_string(),
+            })?;
+
+        let glob_filter = call.input.get("glob").and_then(|v| v.as_str());
+
+        let max_matches = call
+            .input
+            .get("max_matches")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(100) as usize;
+
+        let mut matches = Vec::new();
+
+        for entry in walkdir::WalkDir::new(&base_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let path = entry.path();
+
+            // Apply glob filter if specified
+            if let Some(glob_pat) = glob_filter {
+                let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+                let glob_pattern =
+                    glob::Pattern::new(glob_pat).map_err(|e| CoreError::ToolExecution {
+                        tool_name: "grep".to_string(),
+                        message: format!("Invalid glob filter: {}", e),
+                    })?;
+                if !glob_pattern.matches(&file_name) {
+                    continue;
+                }
+            }
+
+            // Skip binary files and large files
+            if let Ok(metadata) = path.metadata() {
+                if metadata.len() > 10 * 1024 * 1024 {
+                    continue; // Skip files > 10MB
+                }
+            }
+
+            let file = match fs::File::open(path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+
+            let reader = BufReader::new(file);
+            for (line_no, line) in reader.lines().enumerate() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue, // Skip binary/unreadable lines
+                };
+
+                if regex.is_match(&line) {
+                    let rel_path = path
+                        .strip_prefix(&self.policy.workspace_root)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| path.display().to_string());
+
+                    matches.push(json!({
+                        "file": rel_path,
+                        "line": line_no + 1,
+                        "text": line
+                    }));
+
+                    if matches.len() >= max_matches {
+                        break;
+                    }
+                }
+            }
+
+            if matches.len() >= max_matches {
+                break;
+            }
+        }
+
+        let count = matches.len();
+
+        Ok(ToolResult {
+            call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            output: json!({ "matches": matches, "count": count }),
+            content: None,
+            is_error: false,
             state_patch: None,
         })
     }
