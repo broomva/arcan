@@ -78,7 +78,7 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "arcan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arcan-core",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "json-patch",
  "schemars 0.8.22",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arcan-core",
  "blake3",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-lago"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arcan-core",
  "arcan-store",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arcan-core",
  "reqwest",
@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arcan-core",
  "chrono",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "arcand"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arcan-core",
@@ -1149,7 +1149,9 @@ dependencies = [
 
 [[package]]
 name = "lago-api"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0cfee89d9a5afd129adb3b896c8f6a530be13001d948409a94bc98be232a9d4"
 dependencies = [
  "axum",
  "futures",
@@ -1171,7 +1173,9 @@ dependencies = [
 
 [[package]]
 name = "lago-core"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "610524b266013f2f6069a1795ab9e2273175b701ef2ce48652561a682fb484e1"
 dependencies = [
  "futures",
  "serde",
@@ -1184,7 +1188,9 @@ dependencies = [
 
 [[package]]
 name = "lago-fs"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5548f96c0f60e33f5675418baa8aaecc563587a219ee3791d624faf52d979a00"
 dependencies = [
  "lago-core",
  "lago-store",
@@ -1196,7 +1202,9 @@ dependencies = [
 
 [[package]]
 name = "lago-journal"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce4b1a496695d56394dfa37cc5c58d37f0ecc76ea21cc1e80a1eda31e418827"
 dependencies = [
  "futures",
  "lago-core",
@@ -1211,7 +1219,9 @@ dependencies = [
 
 [[package]]
 name = "lago-policy"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ed2f031e67c040f07000d56d8e2943fb00fbfa07e3d29b9165df26ed14753af"
 dependencies = [
  "lago-core",
  "serde",
@@ -1223,7 +1233,9 @@ dependencies = [
 
 [[package]]
 name = "lago-store"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e535456b18ed0b66b79d68a6b872904003459228c7994e35f3ca7481f5b535c3"
 dependencies = [
  "lago-core",
  "serde",

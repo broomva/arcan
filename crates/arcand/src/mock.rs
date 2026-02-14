@@ -40,6 +40,7 @@ impl Provider for MockProvider {
                     },
                 ],
                 stop_reason: ModelStopReason::ToolUse,
+                usage: None,
             })
         } else {
             Ok(ModelTurn {
@@ -47,6 +48,7 @@ impl Provider for MockProvider {
                     delta: format!("Echo: {}", last_msg),
                 }],
                 stop_reason: ModelStopReason::EndTurn,
+                usage: None,
             })
         }
     }

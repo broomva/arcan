@@ -12,7 +12,7 @@ description = "Append-only JSONL session persistence for Arcan agent events"
 readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.1.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -12,7 +12,7 @@ description = "Tool harness with filesystem, editing, memory, and sandboxing for
 readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.1.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
 blake3.workspace = true
 schemars.workspace = true
 serde.workspace = true

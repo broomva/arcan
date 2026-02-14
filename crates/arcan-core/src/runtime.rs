@@ -1,10 +1,11 @@
 use crate::error::CoreError;
 use crate::protocol::{
-    AgentEvent, ChatMessage, ModelDirective, ModelStopReason, ModelTurn, RunStopReason, ToolCall,
-    ToolDefinition, ToolResult, ToolResultSummary,
+    AgentEvent, ChatMessage, ModelDirective, ModelStopReason, ModelTurn, RunStopReason, TokenUsage,
+    ToolCall, ToolDefinition, ToolResult, ToolResultSummary,
 };
 use crate::state::AppState;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,8 @@ pub struct RunOutput {
     pub state: AppState,
     pub reason: RunStopReason,
     pub final_answer: Option<String>,
+    /// Accumulated token usage across all iterations.
+    pub total_usage: TokenUsage,
 }
 
 pub struct Orchestrator {
@@ -136,13 +139,27 @@ impl Orchestrator {
         }
     }
 
-    pub fn run(&self, input: RunInput, mut event_handler: impl FnMut(AgentEvent)) -> RunOutput {
+    pub fn run(&self, input: RunInput, event_handler: impl FnMut(AgentEvent)) -> RunOutput {
+        self.run_cancellable(input, None, event_handler)
+    }
+
+    /// Run the orchestrator loop with an optional cancellation flag.
+    ///
+    /// If `cancel` is provided and set to `true` during execution,
+    /// the loop will stop at the next iteration boundary.
+    pub fn run_cancellable(
+        &self,
+        input: RunInput,
+        cancel: Option<Arc<AtomicBool>>,
+        mut event_handler: impl FnMut(AgentEvent),
+    ) -> RunOutput {
         let mut events = Vec::new();
         let mut messages = input.messages;
         let mut state = input.state;
         let mut final_answer: Option<String> = None;
         let mut stop_reason = RunStopReason::BudgetExceeded;
         let mut total_iterations = 0;
+        let mut total_usage = TokenUsage::default();
 
         let start_event = AgentEvent::RunStarted {
             run_id: input.run_id.clone(),
@@ -154,6 +171,21 @@ impl Orchestrator {
         events.push(start_event);
 
         for iteration in 1..=self.config.max_iterations {
+            // Check cancellation at each iteration boundary
+            if let Some(ref flag) = cancel {
+                if flag.load(Ordering::Relaxed) {
+                    stop_reason = RunStopReason::Cancelled;
+                    let err_event = AgentEvent::RunErrored {
+                        run_id: input.run_id.clone(),
+                        session_id: input.session_id.clone(),
+                        error: "run cancelled".to_string(),
+                    };
+                    event_handler(err_event.clone());
+                    events.push(err_event);
+                    break;
+                }
+            }
+
             total_iterations = iteration;
             let iter_event = AgentEvent::IterationStarted {
                 run_id: input.run_id.clone(),
@@ -211,12 +243,18 @@ impl Orchestrator {
                 break;
             }
 
+            // Accumulate token usage if reported
+            if let Some(ref usage) = model_turn.usage {
+                total_usage.accumulate(usage);
+            }
+
             let output_event = AgentEvent::ModelOutput {
                 run_id: input.run_id.clone(),
                 session_id: input.session_id.clone(),
                 iteration,
                 stop_reason: model_turn.stop_reason,
                 directive_count: model_turn.directives.len(),
+                usage: model_turn.usage,
             };
             event_handler(output_event.clone());
             events.push(output_event);
@@ -407,7 +445,7 @@ impl Orchestrator {
 
             if matches!(
                 stop_reason,
-                RunStopReason::Error | RunStopReason::BlockedByPolicy
+                RunStopReason::Error | RunStopReason::BlockedByPolicy | RunStopReason::Cancelled
             ) {
                 break;
             }
@@ -486,6 +524,7 @@ impl Orchestrator {
             state,
             reason: stop_reason,
             final_answer,
+            total_usage,
         };
 
         let _ = self
@@ -613,12 +652,14 @@ mod tests {
                         },
                     }],
                     stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
                 },
                 ModelTurn {
                     directives: vec![ModelDirective::FinalAnswer {
                         text: "done".to_string(),
                     }],
                     stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
                 },
             ],
             cursor: Mutex::new(0),
@@ -710,6 +751,7 @@ mod tests {
                     },
                 }],
                 stop_reason: ModelStopReason::ToolUse,
+                usage: None,
             }],
             cursor: Mutex::new(0),
         };
@@ -753,6 +795,7 @@ mod tests {
                     delta: "hi".to_string(),
                 }],
                 stop_reason: ModelStopReason::EndTurn,
+                usage: None,
             }],
             cursor: Mutex::new(0),
         };
@@ -793,6 +836,7 @@ mod tests {
                         },
                     }],
                     stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
                 },
                 ModelTurn {
                     directives: vec![ModelDirective::ToolCall {
@@ -803,6 +847,7 @@ mod tests {
                         },
                     }],
                     stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
                 },
                 // Only 2 turns, but max_iterations = 2, so it exhausts budget
                 // 3rd iteration will fail because no more scripted turns
@@ -841,6 +886,7 @@ mod tests {
                     delta: "Hello, world!".to_string(),
                 }],
                 stop_reason: ModelStopReason::EndTurn,
+                usage: None,
             }],
             cursor: Mutex::new(0),
         };
@@ -874,6 +920,7 @@ mod tests {
                     text: "done".to_string(),
                 }],
                 stop_reason: ModelStopReason::EndTurn,
+                usage: None,
             }],
             cursor: Mutex::new(0),
         };
@@ -922,12 +969,14 @@ mod tests {
                         },
                     }],
                     stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
                 },
                 ModelTurn {
                     directives: vec![ModelDirective::FinalAnswer {
                         text: "ok".to_string(),
                     }],
                     stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
                 },
             ],
             cursor: Mutex::new(0),
@@ -960,5 +1009,134 @@ mod tests {
             .find(|m| m.role == crate::protocol::Role::Tool)
             .expect("should have tool message");
         assert_eq!(tool_msg.tool_call_id.as_deref(), Some("my-call-id"));
+    }
+
+    #[test]
+    fn cancellation_stops_run() {
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "c1".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({"value": "1"}),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "should not reach".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
+                },
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            tools,
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 10 },
+        );
+
+        // Set cancellation flag before the second iteration
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let call_count = Arc::new(Mutex::new(0u32));
+        let call_count_clone = call_count.clone();
+
+        let output = orchestrator.run_cancellable(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            Some(cancel_clone),
+            move |event| {
+                // Cancel after first iteration completes
+                if matches!(event, AgentEvent::ToolCallCompleted { .. }) {
+                    let mut count = call_count_clone.lock().unwrap();
+                    *count += 1;
+                    if *count >= 1 {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            },
+        );
+
+        assert_eq!(output.reason, RunStopReason::Cancelled);
+        // Should not have a final answer since we cancelled
+        assert!(output.final_answer.is_none());
+    }
+
+    #[test]
+    fn token_usage_accumulated() {
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "c1".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({"value": "hi"}),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                    usage: Some(TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 50,
+                        cache_read_tokens: 0,
+                        cache_creation_tokens: 0,
+                    }),
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "done".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                    usage: Some(TokenUsage {
+                        input_tokens: 200,
+                        output_tokens: 30,
+                        cache_read_tokens: 0,
+                        cache_creation_tokens: 0,
+                    }),
+                },
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            tools,
+            Vec::new(),
+            OrchestratorConfig { max_iterations: 4 },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Completed);
+        assert_eq!(output.total_usage.input_tokens, 300);
+        assert_eq!(output.total_usage.output_tokens, 80);
+        assert_eq!(output.total_usage.total(), 380);
     }
 }

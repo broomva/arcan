@@ -12,7 +12,7 @@ description = "LLM provider implementations (Anthropic Claude) for the Arcan age
 readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.1.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
 reqwest.workspace = true
 rig-core.workspace = true
 serde.workspace = true

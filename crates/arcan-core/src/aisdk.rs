@@ -371,6 +371,7 @@ mod tests {
             iteration: 1,
             stop_reason: ModelStopReason::EndTurn,
             directive_count: 0,
+            usage: None,
         };
         assert!(to_aisdk_parts(&event1).is_empty());
         assert!(to_aisdk_parts(&event2).is_empty());

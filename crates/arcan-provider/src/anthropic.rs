@@ -1,6 +1,7 @@
 use arcan_core::error::CoreError;
 use arcan_core::protocol::{
-    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, ToolCall, ToolDefinition,
+    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
+    ToolDefinition,
 };
 use arcan_core::runtime::{Provider, ProviderRequest};
 use serde::{Deserialize, Serialize};
@@ -133,9 +134,17 @@ impl AnthropicProvider {
             _ => ModelStopReason::Unknown,
         };
 
+        let usage = response.usage.map(|u| TokenUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cache_read_tokens: u.cache_read_input_tokens,
+            cache_creation_tokens: u.cache_creation_input_tokens,
+        });
+
         Ok(ModelTurn {
             directives,
             stop_reason,
+            usage,
         })
     }
 }
@@ -226,9 +235,23 @@ struct ApiTool {
 }
 
 #[derive(Debug, Deserialize)]
+struct ApiUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct ApiResponse {
     content: Vec<ResponseBlock>,
     stop_reason: Option<String>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,6 +307,7 @@ mod tests {
                 text: "Hello!".to_string(),
             }],
             stop_reason: Some("end_turn".to_string()),
+            usage: None,
         };
 
         let turn = provider.parse_response(response).unwrap();
@@ -314,6 +338,12 @@ mod tests {
                 },
             ],
             stop_reason: Some("tool_use".to_string()),
+            usage: Some(ApiUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            }),
         };
 
         let turn = provider.parse_response(response).unwrap();
@@ -322,5 +352,9 @@ mod tests {
         assert!(
             matches!(&turn.directives[1], ModelDirective::ToolCall { call } if call.tool_name == "read_file")
         );
+        // Verify usage is parsed
+        let usage = turn.usage.unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
     }
 }

@@ -29,7 +29,7 @@ arcan-rs/
 
 | Crate | Purpose | Tests | Key Exports |
 |---|---|---|---|
-| `arcan-core` | Foundation: traits, protocol, state, AI SDK | 33 | `Orchestrator`, `Provider`, `Tool`, `Middleware`, `AppState`, `AgentEvent` |
+| `arcan-core` | Foundation: traits, protocol, state, AI SDK | 35 | `Orchestrator`, `Provider`, `Tool`, `Middleware`, `AppState`, `AgentEvent`, `TokenUsage` |
 | `arcan-harness` | Tools, sandbox, MCP bridge, skills | 39 | 9 tool impls, `FsPolicy`, `SandboxPolicy`, `SkillRegistry`, `McpTool` |
 | `arcan-store` | Persistence backends | 7 | `SessionRepository`, `InMemorySessionRepository`, `JsonlSessionRepository` |
 | `arcan-provider` | LLM adapters | 9 | `AnthropicProvider`, `RigProvider`, `anthropic_rig_provider()` |
@@ -37,7 +37,7 @@ arcan-rs/
 | `arcan-lago` | Lago persistence bridge | 33 | `LagoSessionRepository`, `LagoPolicyMiddleware`, `AppStateProjection`, `SseBridge` |
 | `arcan` | Production daemon binary | 0 | CLI entry point with Lago + policy |
 
-**Total: 121 tests, all passing, clippy clean.**
+**Total: 118 tests, all passing, clippy clean.**
 
 ### Dependency Graph
 
@@ -72,10 +72,10 @@ arcan (production binary)
 | ToolRegistry | Done | `arcan-core/src/runtime.rs` | - | BTreeMap-based, register/get/definitions |
 | ToolAnnotations (MCP-aligned) | Done | `arcan-core/src/protocol.rs` | - | read_only, destructive, idempotent, open_world, requires_confirmation |
 | Budget control (max_iterations) | Done | `arcan-core/src/runtime.rs` | 1 | Configurable, default 24 |
-| RunStopReason (5 variants) | Done | `arcan-core/src/protocol.rs` | - | Completed, NeedsUser, BlockedByPolicy, BudgetExceeded, Error |
-| Run cancellation | Not Done | - | - | No CancellationToken in orchestrator |
+| RunStopReason (6 variants) | Done | `arcan-core/src/protocol.rs` | - | Completed, NeedsUser, BlockedByPolicy, BudgetExceeded, Cancelled, Error |
+| Run cancellation (AtomicBool) | Done | `arcan-core/src/runtime.rs` | 1 | `run_cancellable()` checks flag at iteration boundaries |
+| Token usage tracking | Done | `arcan-core/src/protocol.rs` | 1 | `TokenUsage` struct, accumulated in `RunOutput.total_usage` |
 | Parallel tool execution | Not Done | - | - | Tools execute sequentially |
-| Token usage tracking | Not Done | - | - | No prompt_tokens/completion_tokens fields |
 
 ### 2.2 Protocol Types
 
@@ -138,7 +138,7 @@ arcan (production binary)
 | Provider | Status | Location | Streaming | Tests |
 |---|---|---|---|---|
 | MockProvider | Done | `arcand/src/mock.rs` | No | 0 |
-| AnthropicProvider | Done | `arcan-provider/src/anthropic.rs` | Full + tool use | 9 |
+| AnthropicProvider | Done | `arcan-provider/src/anthropic.rs` | Full + tool use + usage tracking | 9 |
 | RigProvider bridge | Done | `arcan-provider/src/rig_bridge.rs` | Via rig-core | 0 |
 | OpenAI Provider | Not Done | - | - | - |
 
@@ -146,7 +146,7 @@ arcan (production binary)
 
 | Feature | Status | Location | Notes |
 |---|---|---|---|
-| Native AgentEvent SSE | Done | `arcand/src/server.rs` | 10 variants as JSON |
+| Native AgentEvent SSE | Done | `arcand/src/server.rs` | 10 variants as JSON, `/health` endpoint |
 | AiSdkPart mapping (v5) | Done | `arcan-core/src/aisdk.rs` | 8 part types |
 | Lago multi-format SSE | Done | `arcan-lago/src/sse_bridge.rs` | OpenAI, Anthropic, Vercel, Lago |
 | Format query param | Done | `arcand/src/server.rs` | `?format=aisdk_v5` |
@@ -202,7 +202,7 @@ arcan (production binary)
 | Pre-commit hooks | Done | `.claude/settings.local.json` | cargo fmt --check + cargo check |
 | MSRV pinned | Done | `Cargo.toml` | 1.80.0 |
 | cargo-deny | Done | `deny.toml` | License and advisory checks |
-| Dockerfile | Partial | `Dockerfile` | Targets wrong binary, assumes /health |
+| Dockerfile | Done | `Dockerfile` | Builds `arcan` binary, installs curl, HEALTHCHECK works |
 | Release workflow | Done | `.github/workflows/release.yml` | Cross-platform builds |
 
 ---
@@ -213,7 +213,7 @@ arcan (production binary)
 |---|---|---|
 | **Edit reliability** | 9/10 | BLAKE3 hashline with positional uniqueness. Can.ac benchmark winner. Missing: multiline blocks, transactional batches |
 | **Filesystem tools** | 9/10 | All 9 tools with workspace sandboxing. Missing: patch_file for large files |
-| **Agent loop** | 8/10 | Deterministic orchestrator, 5 middleware hooks, budget control. Missing: cancellation, parallel tools, token tracking |
+| **Agent loop** | 9/10 | Deterministic orchestrator, 5 middleware hooks, budget control, cancellation, token tracking. Missing: parallel tools |
 | **Persistence** | 10/10 | ACID via Lago + JSONL + InMemory. Content-addressed blobs. Exceeds industry standard |
 | **MCP integration** | 8/10 | Full rmcp bridge with annotation mapping. Missing: HTTP transport |
 | **Skills/knowledge** | 8/10 | SKILL.md discovery + frontmatter + prompt injection. Missing: skill versioning |

@@ -12,10 +12,10 @@ description = "Agent loop, SSE server, and HTTP routing for the Arcan daemon"
 readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.1.0" }
-arcan-harness = { path = "../arcan-harness", version = "0.1.0" }
-arcan-provider = { path = "../arcan-provider", version = "0.1.0" }
-arcan-store = { path = "../arcan-store", version = "0.1.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
+arcan-harness = { path = "../arcan-harness", version = "0.2.0" }
+arcan-provider = { path = "../arcan-provider", version = "0.2.0" }
+arcan-store = { path = "../arcan-store", version = "0.2.0" }
 anyhow.workspace = true
 axum.workspace = true
 serde.workspace = true

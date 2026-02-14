@@ -1,5 +1,5 @@
 use arcan_core::protocol::{AgentEvent, RunStopReason, ToolCall, ToolResultSummary};
-use lago_core::event::{SpanStatus, TokenUsage};
+use lago_core::event::SpanStatus;
 use lago_core::{BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
 use std::collections::HashMap;
 
@@ -76,7 +76,9 @@ pub fn arcan_to_lago(
             max_iterations: *max_iterations,
         },
 
-        AgentEvent::IterationStarted { iteration, .. } => EventPayload::StepStarted { index: *iteration },
+        AgentEvent::IterationStarted { iteration, .. } => {
+            EventPayload::StepStarted { index: *iteration }
+        }
 
         AgentEvent::ModelOutput {
             iteration,
@@ -221,6 +223,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             iteration: *index,
             stop_reason: parse_model_stop_reason(stop_reason),
             directive_count: *directive_count,
+            usage: None, // Token usage not preserved in Lago StepFinished payload
         }),
 
         EventPayload::StatePatched {
@@ -264,6 +267,7 @@ fn parse_run_stop_reason(s: &str) -> RunStopReason {
         "NeedsUser" => RunStopReason::NeedsUser,
         "BlockedByPolicy" => RunStopReason::BlockedByPolicy,
         "BudgetExceeded" => RunStopReason::BudgetExceeded,
+        "Cancelled" => RunStopReason::Cancelled,
         "Error" => RunStopReason::Error,
         _ => RunStopReason::Completed, // Default fallback
     }
@@ -325,7 +329,7 @@ mod tests {
             max_iterations: 24,
         };
         let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-5");
-        
+
         // Assert native payload
         if let EventPayload::RunStarted { provider, .. } = &envelope.payload {
             assert_eq!(provider, "anthropic");
@@ -359,48 +363,52 @@ mod tests {
         let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-6");
 
         if let EventPayload::RunFinished { reason, .. } = &envelope.payload {
-             assert_eq!(reason, "Completed");
+            assert_eq!(reason, "Completed");
         } else {
-             panic!("expected RunFinished payload");
+            panic!("expected RunFinished payload");
         }
 
         let back = lago_to_arcan(&envelope).expect("should map back");
         match back {
-             AgentEvent::RunFinished { reason, final_answer, .. } => {
-                 assert_eq!(reason, RunStopReason::Completed);
-                 assert_eq!(final_answer.as_deref(), Some("42"));
-             }
-             _ => panic!("expected RunFinished"),
+            AgentEvent::RunFinished {
+                reason,
+                final_answer,
+                ..
+            } => {
+                assert_eq!(reason, RunStopReason::Completed);
+                assert_eq!(final_answer.as_deref(), Some("42"));
+            }
+            _ => panic!("expected RunFinished"),
         }
     }
 
     #[test]
     fn state_patched_round_trips() {
-         let event = AgentEvent::StatePatched {
-             run_id: "r1".into(),
-             session_id: "s1".into(),
-             iteration: 2,
-             patch: StatePatch {
-                 format: StatePatchFormat::MergePatch,
-                 patch: serde_json::json!({"key": "value"}),
-                 source: StatePatchSource::Tool,
-             },
-             revision: 5,
-         };
-         let envelope = arcan_to_lago(&test_session(), &test_branch(), 5, "r1", &event, "uuid-7");
-         
-         if let EventPayload::StatePatched { revision, .. } = &envelope.payload {
-             assert_eq!(*revision, 5);
-         } else {
-             panic!("expected StatePatched payload");
-         }
+        let event = AgentEvent::StatePatched {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            iteration: 2,
+            patch: StatePatch {
+                format: StatePatchFormat::MergePatch,
+                patch: serde_json::json!({"key": "value"}),
+                source: StatePatchSource::Tool,
+            },
+            revision: 5,
+        };
+        let envelope = arcan_to_lago(&test_session(), &test_branch(), 5, "r1", &event, "uuid-7");
 
-         let back = lago_to_arcan(&envelope).expect("should map back");
-         match back {
-             AgentEvent::StatePatched { revision, .. } => {
-                 assert_eq!(revision, 5);
-             }
-             _ => panic!("expected StatePatched"),
-         }
+        if let EventPayload::StatePatched { revision, .. } = &envelope.payload {
+            assert_eq!(*revision, 5);
+        } else {
+            panic!("expected StatePatched payload");
+        }
+
+        let back = lago_to_arcan(&envelope).expect("should map back");
+        match back {
+            AgentEvent::StatePatched { revision, .. } => {
+                assert_eq!(revision, 5);
+            }
+            _ => panic!("expected StatePatched"),
+        }
     }
 }

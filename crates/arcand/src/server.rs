@@ -4,7 +4,7 @@ use arcan_core::protocol::AgentEvent;
 use axum::{
     extract::{Query, State},
     response::sse::{Event, Sse},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -35,9 +35,14 @@ pub async fn create_router(agent_loop: Arc<AgentLoop>) -> Router {
     let state = Arc::new(ServerState { agent_loop });
 
     Router::new()
+        .route("/health", get(health_handler))
         .route("/chat", post(chat_handler))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+async fn health_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
 async fn chat_handler(

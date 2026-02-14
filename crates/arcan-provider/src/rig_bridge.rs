@@ -161,6 +161,7 @@ fn parse_rig_response<T>(
     Ok(ModelTurn {
         directives,
         stop_reason,
+        usage: None, // TODO: map rig usage when rig exposes it in CompletionResponse
     })
 }
 

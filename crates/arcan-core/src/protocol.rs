@@ -208,6 +208,40 @@ pub enum ModelDirective {
 pub struct ModelTurn {
     pub directives: Vec<ModelDirective>,
     pub stop_reason: ModelStopReason,
+    /// Token usage for this turn (if reported by the provider).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct TokenUsage {
+    /// Tokens in the input/prompt.
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Tokens in the output/completion.
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Tokens from cache reads (Anthropic-specific).
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Tokens written to cache (Anthropic-specific).
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+}
+
+impl TokenUsage {
+    /// Accumulate another usage into this one.
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
+    }
+
+    pub fn total(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -217,6 +251,7 @@ pub enum RunStopReason {
     NeedsUser,
     BlockedByPolicy,
     BudgetExceeded,
+    Cancelled,
     Error,
 }
 
@@ -240,6 +275,8 @@ pub enum AgentEvent {
         iteration: u32,
         stop_reason: ModelStopReason,
         directive_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TokenUsage>,
     },
     TextDelta {
         run_id: String,

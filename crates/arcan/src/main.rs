@@ -33,6 +33,13 @@ struct Cli {
     max_iterations: u32,
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    ctrl_c.await.ok();
+    tracing::info!("Received shutdown signal, draining connections...");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Structured logging
@@ -132,7 +139,10 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
 
     tracing::info!(%addr, "Listening");
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    tracing::info!("Server shut down gracefully");
     Ok(())
 }

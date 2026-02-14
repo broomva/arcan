@@ -12,8 +12,8 @@ description = "Bridge between Arcan agent runtime and Lago event-sourced persist
 readme = "../../README.md"
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.1.0" }
-arcan-store = { path = "../arcan-store", version = "0.1.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
+arcan-store = { path = "../arcan-store", version = "0.2.0" }
 lago-core.workspace = true
 lago-journal.workspace = true
 lago-store.workspace = true
