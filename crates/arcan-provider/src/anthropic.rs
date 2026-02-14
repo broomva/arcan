@@ -5,7 +5,7 @@ use arcan_core::protocol::{
 };
 use arcan_core::runtime::{Provider, ProviderRequest};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Configuration for the Anthropic provider.
 #[derive(Debug, Clone)]

@@ -5,8 +5,8 @@ use crate::protocol::{
 };
 use crate::state::AppState;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
@@ -690,10 +690,12 @@ mod tests {
         assert_eq!(output.state.revision, 1);
         assert_eq!(output.state.data["last_echo"], "hello");
 
-        assert!(output
-            .events
-            .iter()
-            .any(|event| matches!(event, AgentEvent::ToolCallCompleted { .. })));
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ToolCallCompleted { .. }))
+        );
         assert!(output.events.iter().any(|event| matches!(
             event,
             AgentEvent::RunFinished {
@@ -733,10 +735,12 @@ mod tests {
         );
 
         assert_eq!(output.reason, RunStopReason::Error);
-        assert!(output
-            .events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::RunErrored { .. })));
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::RunErrored { .. }))
+        );
     }
 
     #[test]
@@ -774,10 +778,12 @@ mod tests {
         );
 
         assert_eq!(output.reason, RunStopReason::Error);
-        assert!(output
-            .events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ToolCallFailed { .. })));
+        assert!(
+            output
+                .events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallFailed { .. }))
+        );
     }
 
     #[test]

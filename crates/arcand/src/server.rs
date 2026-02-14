@@ -2,14 +2,14 @@ use crate::r#loop::AgentLoop;
 use arcan_core::aisdk::to_aisdk_parts;
 use arcan_core::protocol::AgentEvent;
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::StatusCode,
     response::{
-        sse::{Event, Sse},
         IntoResponse, Response,
+        sse::{Event, Sse},
     },
     routing::{get, post},
-    Json, Router,
 };
 use serde::Deserialize;
 use std::{convert::Infallible, sync::Arc, time::Duration};

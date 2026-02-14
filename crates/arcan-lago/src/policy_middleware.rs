@@ -1,9 +1,9 @@
 use arcan_core::error::CoreError;
 use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolResult};
 use arcan_core::runtime::{Middleware, ToolContext};
+use lago_core::PolicyContext;
 use lago_core::event::PolicyDecisionKind;
 use lago_core::event::RiskLevel;
-use lago_core::PolicyContext;
 use lago_policy::engine::PolicyEngine;
 use std::collections::HashMap;
 

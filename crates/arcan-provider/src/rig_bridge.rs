@@ -3,9 +3,9 @@ use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, ToolCall,
 };
 use arcan_core::runtime::{Provider, ProviderRequest};
+use rig::OneOrMany;
 use rig::completion::{CompletionModel, CompletionRequest};
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
-use rig::OneOrMany;
 use tokio::runtime::Handle;
 
 /// A provider adapter that uses `rig-core` as the HTTP layer.

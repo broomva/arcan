@@ -3,12 +3,12 @@ use arcan_core::protocol::{
     ToolAnnotations as ArcanAnnotations, ToolCall, ToolContent, ToolDefinition, ToolResult,
 };
 use arcan_core::runtime::{Tool, ToolContext};
+use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent, Tool as McpToolDef};
 use rmcp::service::{Peer, RoleClient};
 use rmcp::transport::TokioChildProcess;
-use rmcp::ServiceExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::sync::Arc;
 use thiserror::Error;

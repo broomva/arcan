@@ -5,7 +5,7 @@ use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
 use arcan_lago::{LagoPolicyMiddleware, LagoSessionRepository};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcand::{mock::MockProvider, r#loop::AgentLoop, server::create_router};
+use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router};
 use clap::Parser;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;

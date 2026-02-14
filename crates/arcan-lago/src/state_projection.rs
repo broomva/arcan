@@ -1,8 +1,8 @@
 use arcan_core::protocol::{AgentEvent, ChatMessage, Role};
 use arcan_core::state::AppState;
+use lago_core::Projection;
 use lago_core::error::LagoResult;
 use lago_core::event::EventEnvelope;
-use lago_core::Projection;
 
 use crate::event_map;
 

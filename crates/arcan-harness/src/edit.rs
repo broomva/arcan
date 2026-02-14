@@ -235,7 +235,7 @@ impl Tool for EditFileTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_tagged_edits, hash_lines, TaggedEditOp};
+    use super::{TaggedEditOp, apply_tagged_edits, hash_lines};
 
     #[test]
     fn replaces_line_by_tag() {
