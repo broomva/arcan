@@ -1,3 +1,5 @@
+> For the latest implementation status, scorecard, and roadmap, see [STATUS.md](./STATUS.md).
+
 # Arcan Vision and Implementation Status
 
 ## 1. Arcan Vision
@@ -76,10 +78,13 @@ The protocol is compatible with **Vercel AI SDK data parts** and distinguishes b
 
 The workspace is organized into focused crates:
 
-- **`arcan-core`**: Traits (`Runtime`, `Tool`, `Middleware`, `SessionStore`), data types, and the LLM provider interface.
-- **`arcan-harness`**: Tool implementations and sandboxing infrastructure.
-- **`arcan-store`**: Persistence layer for append-only event logs.
-- **`arcand`**: The `arcan` binary, HTTP/SSE server, and agent loop orchestration.
+- **`arcan-core`**: Traits (`Provider`, `Tool`, `Middleware`), protocol types, state management, AI SDK mapping.
+- **`arcan-harness`**: Tool implementations (9 tools), sandboxing, MCP bridge, skills system.
+- **`arcan-store`**: Persistence layer for append-only event logs (InMemory, JSONL).
+- **`arcan-provider`**: LLM provider adapters (Anthropic, Rig bridge).
+- **`arcand`**: Agent loop library, Axum HTTP/SSE server, mock provider.
+- **`arcan-lago`**: Bridge to Lago ACID persistence, policy middleware, state projection, multi-format SSE.
+- **`arcan`**: Production binary with Lago journal, structured logging, and CLI.
 
 ### 1.9 Extensibility
 
@@ -217,6 +222,9 @@ arcand (basic daemon)
 
 ## 5. Implementation Roadmap
 
+> **Note**: See [STATUS.md](./STATUS.md) Phases A-G for the current forward-looking roadmap.
+> The phases below document completed work.
+
 The following phases represent the approved plan for evolving Arcan from its current state to the full vision.
 
 ### Phase 1: Tool Expansion -- Done
@@ -274,15 +282,18 @@ Build out the full session tree capabilities:
 - Approval workflow (pause before destructive operations, await user confirmation).
 - Sliding window context management for long sessions.
 
-### Phase 7: Sandbox Hardening -- Planned
+### Phase 7: Sandbox Hardening -- Partial
 
-Enforce the full sandbox policy:
+Process-level enforcement done (P0 security fixes):
 
-- Timeout enforcement on tool execution.
-- Memory limits for spawned processes.
-- Network policy (allow/deny lists for outbound connections).
-- Bubblewrap or Docker-based isolation backends.
-- Subagent execution with restricted toolsets and budgets.
+- Timeout enforcement on tool execution -- Done (wait-timeout crate).
+- Environment variable filtering (empty = deny all) -- Done.
+- CWD workspace validation -- Done.
+- Output size truncation -- Done.
+- Memory limits for spawned processes -- Not Done (needs OS isolation).
+- Network policy (allow/deny lists for outbound connections) -- Not Done.
+- Bubblewrap or Docker-based isolation backends -- Not Done.
+- Subagent execution with restricted toolsets and budgets -- Not Done.
 
 ### Phase 8: Client Interfaces -- Planned
 

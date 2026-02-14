@@ -1,3 +1,6 @@
+> **SUPERSEDED**: This document predates arcan-provider, arcan-lago, and the crate restructuring.
+> See [STATUS.md](./STATUS.md) for the current architecture and roadmap.
+
 # Arcan Architecture (Grounding)
 
 This document defines the initial architecture for Arcan as a Rust-first agent runtime and daemon (`arcan`).

@@ -61,35 +61,9 @@ curl -N -X POST http://localhost:3000/chat \
   -d '{"session_id": "test-1", "message": "Hello, what can you do?"}'
 ```
 
-## Evolution Guide
+## Project Status
 
-Here is how to continue evolving Arcan:
-
-### 1. Implement Real LLM Providers — DONE
-`AnthropicProvider` implemented in `arcan-provider` crate. Supports the Claude Messages API with tool use.
-- Set `ANTHROPIC_API_KEY` to use real LLM; falls back to `MockProvider` otherwise.
-- Configurable via `ANTHROPIC_MODEL`, `ANTHROPIC_MAX_TOKENS`, `ANTHROPIC_BASE_URL` env vars.
-- **Next Step**: Add `OpenAIProvider`, streaming support, retry/backoff logic.
-
-### 2. Enhance Sandboxing
-The current `LocalCommandRunner` is a baseline.
-- **Next Step**: Implement a `BubblewrapRunner` or `DockerRunner` in `arcan-harness`.
-- **Task**: Use Linux namespaces or containers to strictly isolate tool execution.
-
-### 3. Improve Context Management — DONE (Phase 1)
-Session replay now properly reconstructs messages from events (TextDelta aggregation, ToolCallCompleted with call_id mapping).
-- `ChatMessage` now carries optional `tool_call_id` for proper tool result attribution.
-- **Next Step**: Implement sliding window / context truncation for large sessions. Add state snapshots to `arcan-store`.
-
-### 4. Helper Client
-Developing a CLI or Web Client to consume the SSE stream.
-- **Next Step**: Build a frontend.
-- **Task**: Use `eventsource` in browser or `reqwest` in Rust CLI to connect to `/chat` and render events.
-
-### 5. Async Provider Interface
-The current `Provider` trait is synchronous (blocking). For streaming support and better performance:
-- **Next Step**: Add an async `AsyncProvider` trait or make `Provider` async.
-- **Task**: Support Server-Sent Events from the LLM directly (true streaming).
+For the comprehensive implementation status, scorecard, gap analysis, and roadmap, see **[`docs/STATUS.md`](docs/STATUS.md)** -- the single source of truth for project status.
 
 ## Useful Commands
 

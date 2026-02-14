@@ -1,3 +1,6 @@
+> **SUPERSEDED**: The phase numbering in this document conflicts with later plans.
+> See [STATUS.md](./STATUS.md) for the current roadmap.
+
 # Arcan Implementation Roadmap
 
 ## Phase 0 - Foundations (Now)
