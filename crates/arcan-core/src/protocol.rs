@@ -311,6 +311,14 @@ pub enum AgentEvent {
         patch: StatePatch,
         revision: u64,
     },
+    ContextCompacted {
+        run_id: String,
+        session_id: String,
+        iteration: u32,
+        dropped_count: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+    },
     RunErrored {
         run_id: String,
         session_id: String,

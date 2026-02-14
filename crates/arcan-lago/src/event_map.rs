@@ -102,6 +102,22 @@ pub fn arcan_to_lago(
             revision: *revision,
         },
 
+        AgentEvent::ContextCompacted {
+            iteration,
+            dropped_count,
+            tokens_before,
+            tokens_after,
+            ..
+        } => EventPayload::Custom {
+            event_type: "context_compacted".to_string(),
+            data: serde_json::json!({
+                "iteration": iteration,
+                "dropped_count": dropped_count,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+            }),
+        },
+
         AgentEvent::RunErrored { error, .. } => EventPayload::Error {
             error: error.clone(),
         },
@@ -244,6 +260,30 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             run_id,
             session_id,
             error: error.clone(),
+        }),
+
+        // Context compaction events stored as Custom
+        EventPayload::Custom {
+            event_type, data, ..
+        } if event_type == "context_compacted" => Some(AgentEvent::ContextCompacted {
+            run_id,
+            session_id,
+            iteration: data
+                .get("iteration")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32,
+            dropped_count: data
+                .get("dropped_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize,
+            tokens_before: data
+                .get("tokens_before")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize,
+            tokens_after: data
+                .get("tokens_after")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize,
         }),
 
         // Backward compatibility / Replay logic:

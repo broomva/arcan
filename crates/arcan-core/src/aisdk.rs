@@ -137,8 +137,10 @@ pub fn to_aisdk_parts(event: &AgentEvent) -> Vec<AiSdkPart> {
             parts
         }
 
-        // IterationStarted and ModelOutput have no direct AI SDK equivalent
-        AgentEvent::IterationStarted { .. } | AgentEvent::ModelOutput { .. } => {
+        // IterationStarted, ModelOutput, and ContextCompacted have no direct AI SDK equivalent
+        AgentEvent::IterationStarted { .. }
+        | AgentEvent::ModelOutput { .. }
+        | AgentEvent::ContextCompacted { .. } => {
             vec![]
         }
     }

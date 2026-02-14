@@ -1,3 +1,4 @@
+use crate::context::{ContextConfig, compact_messages};
 use crate::error::CoreError;
 use crate::protocol::{
     AgentEvent, ChatMessage, ModelDirective, ModelStopReason, ModelTurn, RunStopReason, TokenUsage,
@@ -88,11 +89,17 @@ impl ToolRegistry {
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
     pub max_iterations: u32,
+    /// Context window management configuration.
+    /// When set, messages are compacted before each provider call to stay within limits.
+    pub context: Option<ContextConfig>,
 }
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
-        Self { max_iterations: 24 }
+        Self {
+            max_iterations: 24,
+            context: Some(ContextConfig::default()),
+        }
     }
 }
 
@@ -194,6 +201,23 @@ impl Orchestrator {
             };
             event_handler(iter_event.clone());
             events.push(iter_event);
+
+            // Context window compaction: trim messages before sending to provider
+            if let Some(ref ctx_config) = self.config.context {
+                if let Some(result) = compact_messages(&messages, ctx_config) {
+                    let compact_event = AgentEvent::ContextCompacted {
+                        run_id: input.run_id.clone(),
+                        session_id: input.session_id.clone(),
+                        iteration,
+                        dropped_count: result.dropped_count,
+                        tokens_before: result.tokens_before,
+                        tokens_after: result.tokens_after,
+                    };
+                    event_handler(compact_event.clone());
+                    events.push(compact_event);
+                    messages = result.messages;
+                }
+            }
 
             let provider_request = ProviderRequest {
                 run_id: input.run_id.clone(),
@@ -672,7 +696,10 @@ mod tests {
             Arc::new(provider),
             tools,
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -721,7 +748,10 @@ mod tests {
             Arc::new(FailProvider),
             ToolRegistry::default(),
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -764,7 +794,10 @@ mod tests {
             Arc::new(provider),
             ToolRegistry::default(),
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -810,7 +843,10 @@ mod tests {
             Arc::new(provider),
             ToolRegistry::default(),
             vec![Arc::new(BlockMiddleware)],
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -868,7 +904,10 @@ mod tests {
             Arc::new(provider),
             tools,
             Vec::new(),
-            OrchestratorConfig { max_iterations: 2 },
+            OrchestratorConfig {
+                max_iterations: 2,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -901,7 +940,10 @@ mod tests {
             Arc::new(provider),
             ToolRegistry::default(),
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -935,7 +977,10 @@ mod tests {
             Arc::new(provider),
             ToolRegistry::default(),
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -995,7 +1040,10 @@ mod tests {
             Arc::new(provider),
             tools,
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(
@@ -1050,7 +1098,10 @@ mod tests {
             Arc::new(provider),
             tools,
             Vec::new(),
-            OrchestratorConfig { max_iterations: 10 },
+            OrchestratorConfig {
+                max_iterations: 10,
+                context: None,
+            },
         );
 
         // Set cancellation flag before the second iteration
@@ -1127,7 +1178,10 @@ mod tests {
             Arc::new(provider),
             tools,
             Vec::new(),
-            OrchestratorConfig { max_iterations: 4 },
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+            },
         );
 
         let output = orchestrator.run(

@@ -89,30 +89,40 @@ For the comprehensive implementation status, scorecard, gap analysis, and roadma
   - When finishing and validating a feature, agents must perform a brief self-learning loop (observe outcomes, reflect on gaps, and capture durable guidance) and update `AGENTS.md` plus the relevant `docs/` structure when new workflow or architecture knowledge is discovered.
   - Commits that fail these checks will be rejected by pre-commit hooks.
 
-### Self-Learning Rules & Guidelines
+### Self-Learning Rules & Status Evolution
 
-Agents interacting with the `arcan-rs` codebase must continuously improve their operational knowledge. This avoids repeating mistakes and ensures that "tribal knowledge" becomes documented.
+Agents working on Arcan must continuously improve documentation and track progress. Knowledge discovered during development becomes durable guidance that prevents repeated mistakes and keeps the project status accurate.
 
-#### 1. Triggers for Documentation Updates
-Update documentation when:
-- **Tool Misuse**: A tool call fails due to invalid arguments or context. (Fix: clarify tool usage in `AGENTS.md`).
-- **Ambiguous Instructions**: User intent is unclear or requires clarifying questions. (Fix: add definitions or context to `AGENTS.md`).
-- **New Patterns**: A new architectural pattern is established (e.g., event handling, testing strategy). (Fix: document in `AGENTS.md` or dedicated `docs/*.md`).
-- **Recurring Bugs**: The same bug is encountered more than once. (Fix: add prevention guidelines to `AGENTS.md`).
+#### When to Update Documentation
 
-#### 2. Update Protocol
-1.  **Identify**: Pinpoint the specific gap in knowledge.
-2.  **Formulate**: Create a concise rule or guideline.
-    - *Bad*: "Sometimes the build fails."
-    - *Good*: "Always run `cargo clean` before building release artifacts to avoid linker errors."
-3.  **Locate**:
-    - **General Behavior**: `AGENTS.md` (this file).
-    - **CLI / Commands**: `CLAUDE.md`.
-    - **Architecture / Design**: `docs/architecture.md` or specific component docs.
-4.  **Verify**: Ensure the new rule doesn't conflict with existing ones.
+| Trigger | What to update | Where |
+|---------|---------------|-------|
+| New tests added | Test counts per crate | `../docs/STATUS.md` (Arcan section) |
+| Gap closed (feature implemented) | Check off gap, move to "complete" | `../docs/STATUS.md` Known Gaps |
+| New gap discovered | Add to appropriate priority tier | `../docs/STATUS.md` Known Gaps |
+| Architecture changed | Update diagrams and data flow | `../docs/ARCHITECTURE.md` |
+| Roadmap milestone completed | Mark complete, note date | `../docs/ROADMAP.md` |
+| New test strategy or pattern | Add to testing plan | `../docs/TESTING.md` |
+| Tricky error fixed | Add troubleshooting entry | This file (Troubleshooting section) |
+| New code pattern established | Document pattern | This file or `.claude/rules/` |
+| Tool misuse / confusing API | Clarify usage | `AGENTS.md` |
+| Recurring bug fixed | Add prevention guideline | `AGENTS.md` |
 
-#### 3. Rule Format
-Use the following format for technical rules:
+#### Update Protocol
+1. **Identify**: Pinpoint the specific gap in knowledge or the status change.
+2. **Formulate**: Create a concise, actionable update.
+   - *Bad*: "Sometimes the build fails."
+   - *Good*: "Always run `cargo clean` before building release artifacts to avoid linker errors."
+3. **Locate**: Choose the right file:
+   - **Project status, test counts, gaps**: `../docs/STATUS.md`
+   - **Roadmap progress**: `../docs/ROADMAP.md`
+   - **General agent behavior**: `AGENTS.md`
+   - **Critical patterns for Arcan**: This file (CLAUDE.md)
+   - **Code conventions**: `.claude/rules/`
+   - **Architecture decisions**: `../docs/ARCHITECTURE.md`
+4. **Verify**: Ensure the update doesn't contradict existing rules.
+
+#### Rule Format for Technical Rules
 - **Context**: When this applies.
 - **Action**: What to do.
 - **Reason**: Why it matters.
@@ -121,6 +131,17 @@ Use the following format for technical rules:
 > **Context**: When editing `Cargo.toml`.
 > **Action**: Ensure `workspace.members` are sorted alphabetically.
 > **Reason**: Prevents merge conflicts and maintains readability.
+
+#### After Completing Any Feature or Fix
+
+Run the validation and update status:
+```bash
+cargo fmt && cargo clippy --workspace && cargo test --workspace
+```
+Then update `../docs/STATUS.md` with:
+- New test count for affected crate(s)
+- Any gaps that were closed
+- Any new gaps discovered during implementation
 
 ### Claude Code Configuration
 
@@ -198,3 +219,7 @@ git commit -m "feat: description"
 ```
 
 **Note**: The pre-commit hook will automatically run `cargo fmt --check` and `cargo check`. If you've already run these manually and fixed all issues, the commit will succeed immediately.
+
+## Troubleshooting
+
+*(Add entries here when fixing confusing errors. Format: Error → Cause → Fix)*

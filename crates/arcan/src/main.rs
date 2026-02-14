@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
     // --- Orchestrator ---
     let config = OrchestratorConfig {
         max_iterations: cli.max_iterations,
+        context: Some(arcan_core::context::ContextConfig::default()),
     };
     let orchestrator = Arc::new(Orchestrator::new(provider, registry, middlewares, config));
 

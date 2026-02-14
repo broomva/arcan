@@ -30,3 +30,8 @@ tower-http.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", features = ["json"] }
+tokio-stream.workspace = true
