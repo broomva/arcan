@@ -132,14 +132,59 @@ async fn main() -> anyhow::Result<()> {
     registry.register(MemoryCommitTool::new(journal.clone()));
 
     // --- Provider ---
-    let provider: Arc<dyn Provider> = match AnthropicConfig::from_env() {
-        Ok(config) => {
-            tracing::info!(model = %config.model, "Provider: Anthropic");
-            Arc::new(AnthropicProvider::new(config))
-        }
-        Err(_) => {
-            tracing::warn!("Provider: MockProvider (set ANTHROPIC_API_KEY for real LLM)");
-            Arc::new(MockProvider)
+    // Selection order: ARCAN_PROVIDER env var > auto-detect from API keys > MockProvider
+    let provider_name = std::env::var("ARCAN_PROVIDER").unwrap_or_default();
+    let provider: Arc<dyn Provider> = match provider_name.as_str() {
+        "openai" => match arcan_provider::openai::OpenAiConfig::openai_from_env() {
+            Ok(config) => {
+                tracing::info!(model = %config.model, "Provider: OpenAI");
+                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
+                    config,
+                ))
+            }
+            Err(e) => {
+                tracing::error!("ARCAN_PROVIDER=openai but config failed: {e}");
+                return Err(e.into());
+            }
+        },
+        "ollama" => match arcan_provider::openai::OpenAiConfig::ollama_from_env() {
+            Ok(config) => {
+                tracing::info!(model = %config.model, base_url = %config.base_url, "Provider: Ollama");
+                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
+                    config,
+                ))
+            }
+            Err(e) => {
+                tracing::error!("ARCAN_PROVIDER=ollama but config failed: {e}");
+                return Err(e.into());
+            }
+        },
+        "anthropic" => match AnthropicConfig::from_env() {
+            Ok(config) => {
+                tracing::info!(model = %config.model, "Provider: Anthropic");
+                Arc::new(AnthropicProvider::new(config))
+            }
+            Err(e) => {
+                tracing::error!("ARCAN_PROVIDER=anthropic but config failed: {e}");
+                return Err(e.into());
+            }
+        },
+        // Auto-detect: try providers in order
+        _ => {
+            if let Ok(config) = AnthropicConfig::from_env() {
+                tracing::info!(model = %config.model, "Provider: Anthropic (auto-detected)");
+                Arc::new(AnthropicProvider::new(config))
+            } else if let Ok(config) = arcan_provider::openai::OpenAiConfig::openai_from_env() {
+                tracing::info!(model = %config.model, "Provider: OpenAI (auto-detected)");
+                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
+                    config,
+                ))
+            } else {
+                tracing::warn!(
+                    "Provider: MockProvider (set ARCAN_PROVIDER or API key env vars for real LLM)"
+                );
+                Arc::new(MockProvider)
+            }
         }
     };
 
