@@ -142,7 +142,7 @@ pub struct RunOutput {
 }
 
 pub struct Orchestrator {
-    provider: Arc<dyn Provider>,
+    provider: Arc<std::sync::RwLock<Arc<dyn Provider>>>,
     tools: ToolRegistry,
     middlewares: Vec<Arc<dyn Middleware>>,
     config: OrchestratorConfig,
@@ -156,11 +156,25 @@ impl Orchestrator {
         config: OrchestratorConfig,
     ) -> Self {
         Self {
-            provider,
+            provider: Arc::new(std::sync::RwLock::new(provider)),
             tools,
             middlewares,
             config,
         }
+    }
+
+    /// Swap the active provider at runtime. Returns the name of the new provider.
+    pub fn swap_provider(&self, new_provider: Arc<dyn Provider>) -> String {
+        let name = new_provider.name().to_string();
+        let mut guard = self.provider.write().expect("provider lock poisoned");
+        *guard = new_provider;
+        name
+    }
+
+    /// Get the current provider name.
+    pub fn provider_name(&self) -> String {
+        let guard = self.provider.read().expect("provider lock poisoned");
+        guard.name().to_string()
     }
 
     pub fn run(&self, input: RunInput, event_handler: impl FnMut(AgentEvent)) -> RunOutput {
@@ -185,10 +199,17 @@ impl Orchestrator {
         let mut total_iterations = 0;
         let mut total_usage = TokenUsage::default();
 
+        // Acquire provider reference for this run
+        let provider = self
+            .provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone();
+
         let start_event = AgentEvent::RunStarted {
             run_id: input.run_id.clone(),
             session_id: input.session_id.clone(),
-            provider: self.provider.name().to_string(),
+            provider: provider.name().to_string(),
             max_iterations: self.config.max_iterations,
         };
         event_handler(start_event.clone());
@@ -257,7 +278,7 @@ impl Orchestrator {
                 break;
             }
 
-            let model_turn = match self.provider.complete(&provider_request) {
+            let model_turn = match provider.complete(&provider_request) {
                 Ok(turn) => turn,
                 Err(err) => {
                     stop_reason = RunStopReason::Error;

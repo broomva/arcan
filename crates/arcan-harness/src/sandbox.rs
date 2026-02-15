@@ -479,7 +479,9 @@ mod tests {
         let runner = LocalCommandRunner;
         let request = CommandRequest {
             executable: "/bin/bash".to_string(),
-            args: vec!["-c".to_string(), "sleep 30".to_string()],
+            // Use a busy-wait loop instead of `sleep` since the sandbox strips PATH
+            // and `sleep` may not be found as an external command.
+            args: vec!["-c".to_string(), "while true; do :; done".to_string()],
             cwd: None,
             env: BTreeMap::new(),
         };

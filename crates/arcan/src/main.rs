@@ -8,7 +8,7 @@ use arcan_lago::{
     MemoryProposeTool, MemoryQueryTool,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router_with_approvals};
+use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router_full};
 use clap::Parser;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
@@ -213,13 +213,13 @@ async fn main() -> anyhow::Result<()> {
     // --- Agent Loop ---
     let agent_loop = Arc::new(AgentLoop::with_approval_gate(
         session_repo,
-        orchestrator,
+        orchestrator.clone(),
         approval_gate.clone(),
     ));
 
     // --- HTTP Server ---
     let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
-    let router = create_router_with_approvals(agent_loop, Some(resolver)).await;
+    let router = create_router_full(agent_loop, orchestrator, Some(resolver)).await;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = TcpListener::bind(addr).await?;
 

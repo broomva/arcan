@@ -1,7 +1,8 @@
+use crate::commands::{self, CommandResult};
 use crate::r#loop::AgentLoop;
 use arcan_core::aisdk::{UiStreamPart, to_ui_stream_parts};
 use arcan_core::protocol::AgentEvent;
-use arcan_core::runtime::ApprovalResolver;
+use arcan_core::runtime::{ApprovalResolver, Orchestrator};
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -59,25 +60,58 @@ pub struct ChatQuery {
 
 pub(crate) struct ServerState {
     pub(crate) agent_loop: Arc<AgentLoop>,
+    pub(crate) orchestrator: Arc<Orchestrator>,
     pub(crate) approval_resolver: Option<Arc<dyn ApprovalResolver>>,
 }
 
 pub async fn create_router(agent_loop: Arc<AgentLoop>) -> Router {
-    create_router_with_approvals(agent_loop, None).await
+    // Create a dummy orchestrator for backward compat (tests)
+    let orchestrator = Arc::new(Orchestrator::new(
+        Arc::new(crate::mock::MockProvider),
+        arcan_core::runtime::ToolRegistry::default(),
+        Vec::new(),
+        arcan_core::runtime::OrchestratorConfig {
+            max_iterations: 10,
+            context: None,
+            context_compiler: None,
+        },
+    ));
+    create_router_full(agent_loop, orchestrator, None).await
 }
 
 pub async fn create_router_with_approvals(
     agent_loop: Arc<AgentLoop>,
     approval_resolver: Option<Arc<dyn ApprovalResolver>>,
 ) -> Router {
+    let orchestrator = Arc::new(Orchestrator::new(
+        Arc::new(crate::mock::MockProvider),
+        arcan_core::runtime::ToolRegistry::default(),
+        Vec::new(),
+        arcan_core::runtime::OrchestratorConfig {
+            max_iterations: 10,
+            context: None,
+            context_compiler: None,
+        },
+    ));
+    create_router_full(agent_loop, orchestrator, approval_resolver).await
+}
+
+pub async fn create_router_full(
+    agent_loop: Arc<AgentLoop>,
+    orchestrator: Arc<Orchestrator>,
+    approval_resolver: Option<Arc<dyn ApprovalResolver>>,
+) -> Router {
     let state = Arc::new(ServerState {
         agent_loop,
+        orchestrator,
         approval_resolver,
     });
 
     Router::new()
         .route("/health", get(health_handler))
         .route("/chat", post(chat_handler))
+        .route("/model", get(get_model_handler))
+        .route("/model", post(set_model_handler))
         .route("/approve", post(approve_handler))
         .route("/approvals", get(list_approvals_handler))
         .layer(CorsLayer::permissive())
@@ -93,6 +127,20 @@ async fn chat_handler(
     Query(query): Query<ChatQuery>,
     Json(request): Json<ChatRequest>,
 ) -> Response {
+    // Handle `/` commands (e.g., /model, /help) without sending to LLM
+    if request.message.trim().starts_with('/') {
+        match commands::handle_command(&request.message, &state.orchestrator) {
+            CommandResult::Response(text) => {
+                return Json(serde_json::json!({
+                    "command": true,
+                    "response": text,
+                }))
+                .into_response();
+            }
+            CommandResult::NotACommand => {} // fall through to normal chat
+        }
+    }
+
     let (tx, rx) = mpsc::channel(100);
 
     let agent_loop = state.agent_loop.clone();
@@ -284,4 +332,34 @@ async fn list_approvals_handler(
         .map(|r| r.pending_approval_ids())
         .unwrap_or_default();
     Json(ListApprovalsResponse { pending })
+}
+
+// ─── Model management endpoints ─────────────────────────────────
+
+async fn get_model_handler(State(state): State<Arc<ServerState>>) -> Json<serde_json::Value> {
+    let name = state.orchestrator.provider_name();
+    Json(serde_json::json!({ "model": name }))
+}
+
+#[derive(Deserialize)]
+pub struct SetModelRequest {
+    /// Provider name: "anthropic", "openai", "ollama", "mock"
+    pub provider: String,
+    /// Optional model override (e.g., "gpt-4-turbo", "qwen2.5")
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+async fn set_model_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<SetModelRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let new_provider = commands::create_provider(&request.provider, request.model.as_deref())
+        .map_err(AppError::BadRequest)?;
+
+    let name = state.orchestrator.swap_provider(new_provider);
+    Ok(Json(serde_json::json!({
+        "model": name,
+        "switched": true,
+    })))
 }

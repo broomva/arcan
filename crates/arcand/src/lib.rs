@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod heartbeat;
 pub mod r#loop;
 pub mod mock;
