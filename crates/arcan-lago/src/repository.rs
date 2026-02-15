@@ -188,6 +188,8 @@ fn extract_run_id(event: &AgentEvent) -> String {
         | AgentEvent::ToolCallFailed { run_id, .. }
         | AgentEvent::StatePatched { run_id, .. }
         | AgentEvent::ContextCompacted { run_id, .. }
+        | AgentEvent::ApprovalRequested { run_id, .. }
+        | AgentEvent::ApprovalResolved { run_id, .. }
         | AgentEvent::RunErrored { run_id, .. }
         | AgentEvent::RunFinished { run_id, .. } => run_id.clone(),
     }

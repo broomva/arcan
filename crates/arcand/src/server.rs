@@ -1,6 +1,7 @@
 use crate::r#loop::AgentLoop;
 use arcan_core::aisdk::to_aisdk_parts;
 use arcan_core::protocol::AgentEvent;
+use arcan_core::runtime::ApprovalResolver;
 use axum::{
     Json, Router,
     extract::{Query, State},
@@ -11,7 +12,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,6 +22,7 @@ use tower_http::cors::CorsLayer;
 /// Typed error for Axum handlers with proper HTTP status codes.
 pub enum AppError {
     BadRequest(String),
+    NotFound(String),
     Internal(String),
 }
 
@@ -28,6 +30,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -56,14 +59,27 @@ pub struct ChatQuery {
 
 pub(crate) struct ServerState {
     pub(crate) agent_loop: Arc<AgentLoop>,
+    pub(crate) approval_resolver: Option<Arc<dyn ApprovalResolver>>,
 }
 
 pub async fn create_router(agent_loop: Arc<AgentLoop>) -> Router {
-    let state = Arc::new(ServerState { agent_loop });
+    create_router_with_approvals(agent_loop, None).await
+}
+
+pub async fn create_router_with_approvals(
+    agent_loop: Arc<AgentLoop>,
+    approval_resolver: Option<Arc<dyn ApprovalResolver>>,
+) -> Router {
+    let state = Arc::new(ServerState {
+        agent_loop,
+        approval_resolver,
+    });
 
     Router::new()
         .route("/health", get(health_handler))
         .route("/chat", post(chat_handler))
+        .route("/approve", post(approve_handler))
+        .route("/approvals", get(list_approvals_handler))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -129,4 +145,67 @@ async fn chat_handler(
 
     Sse::new(out_stream)
         .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+#[derive(Deserialize)]
+pub struct ApproveRequest {
+    pub approval_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ApproveResponse {
+    pub resolved: bool,
+}
+
+async fn approve_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(request): Json<ApproveRequest>,
+) -> Result<Json<ApproveResponse>, AppError> {
+    // Validate decision
+    match request.decision.as_str() {
+        "approved" | "denied" => {}
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "invalid decision '{}': must be 'approved' or 'denied'",
+                other
+            )));
+        }
+    }
+
+    let Some(resolver) = &state.approval_resolver else {
+        return Err(AppError::BadRequest(
+            "approval workflow not configured".to_string(),
+        ));
+    };
+
+    let resolved =
+        resolver.resolve_approval(&request.approval_id, &request.decision, request.reason);
+
+    if resolved {
+        Ok(Json(ApproveResponse { resolved: true }))
+    } else {
+        Err(AppError::NotFound(format!(
+            "approval '{}' not found or already resolved",
+            request.approval_id
+        )))
+    }
+}
+
+#[derive(Serialize)]
+pub struct ListApprovalsResponse {
+    pub pending: Vec<String>,
+}
+
+async fn list_approvals_handler(
+    State(state): State<Arc<ServerState>>,
+) -> Json<ListApprovalsResponse> {
+    let pending = state
+        .approval_resolver
+        .as_ref()
+        .map(|r| r.pending_approval_ids())
+        .unwrap_or_default();
+    Json(ListApprovalsResponse { pending })
 }

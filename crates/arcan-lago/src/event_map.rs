@@ -1,6 +1,6 @@
 use arcan_core::protocol::{AgentEvent, RunStopReason, ToolCall, ToolResultSummary};
-use lago_core::event::SpanStatus;
-use lago_core::{BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
+use lago_core::event::{ApprovalDecision, RiskLevel, SpanStatus};
+use lago_core::{ApprovalId, BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
 use std::collections::HashMap;
 
 /// Convert an Arcan `AgentEvent` into a Lago `EventEnvelope`.
@@ -116,6 +116,32 @@ pub fn arcan_to_lago(
                 "tokens_before": tokens_before,
                 "tokens_after": tokens_after,
             }),
+        },
+
+        AgentEvent::ApprovalRequested {
+            approval_id,
+            call_id,
+            tool_name,
+            arguments,
+            risk,
+            ..
+        } => EventPayload::ApprovalRequested {
+            approval_id: ApprovalId::from_string(approval_id.clone()),
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            risk: parse_risk_level(risk),
+        },
+
+        AgentEvent::ApprovalResolved {
+            approval_id,
+            decision,
+            reason,
+            ..
+        } => EventPayload::ApprovalResolved {
+            approval_id: ApprovalId::from_string(approval_id.clone()),
+            decision: parse_approval_decision(decision),
+            reason: reason.clone(),
         },
 
         AgentEvent::RunErrored { error, .. } => EventPayload::Error {
@@ -257,6 +283,34 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
                 revision: *revision,
             }),
 
+        EventPayload::ApprovalRequested {
+            approval_id,
+            call_id,
+            tool_name,
+            arguments,
+            risk,
+        } => Some(AgentEvent::ApprovalRequested {
+            run_id,
+            session_id,
+            approval_id: approval_id.to_string(),
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            risk: risk_level_to_str(*risk).to_string(),
+        }),
+
+        EventPayload::ApprovalResolved {
+            approval_id,
+            decision,
+            reason,
+        } => Some(AgentEvent::ApprovalResolved {
+            run_id,
+            session_id,
+            approval_id: approval_id.to_string(),
+            decision: approval_decision_to_str(*decision).to_string(),
+            reason: reason.clone(),
+        }),
+
         EventPayload::Error { error } => Some(AgentEvent::RunErrored {
             run_id,
             session_id,
@@ -347,6 +401,42 @@ fn parse_model_stop_reason(s: &str) -> arcan_core::protocol::ModelStopReason {
         "Safety" => ModelStopReason::Safety,
         "Unknown" => ModelStopReason::Unknown,
         _ => ModelStopReason::Unknown,
+    }
+}
+
+fn parse_risk_level(s: &str) -> RiskLevel {
+    match s {
+        "low" => RiskLevel::Low,
+        "medium" => RiskLevel::Medium,
+        "high" => RiskLevel::High,
+        "critical" => RiskLevel::Critical,
+        _ => RiskLevel::Low,
+    }
+}
+
+fn risk_level_to_str(r: RiskLevel) -> &'static str {
+    match r {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+        RiskLevel::Critical => "critical",
+    }
+}
+
+fn parse_approval_decision(s: &str) -> ApprovalDecision {
+    match s {
+        "approved" => ApprovalDecision::Approved,
+        "denied" => ApprovalDecision::Denied,
+        "timeout" => ApprovalDecision::Timeout,
+        _ => ApprovalDecision::Denied,
+    }
+}
+
+fn approval_decision_to_str(d: ApprovalDecision) -> &'static str {
+    match d {
+        ApprovalDecision::Approved => "approved",
+        ApprovalDecision::Denied => "denied",
+        ApprovalDecision::Timeout => "timeout",
     }
 }
 
@@ -443,6 +533,82 @@ mod tests {
                 assert_eq!(final_answer.as_deref(), Some("42"));
             }
             _ => panic!("expected RunFinished"),
+        }
+    }
+
+    #[test]
+    fn approval_requested_round_trips() {
+        let event = AgentEvent::ApprovalRequested {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            approval_id: "appr-1".into(),
+            call_id: "c1".into(),
+            tool_name: "bash".into(),
+            arguments: serde_json::json!({"command": "rm -rf /"}),
+            risk: "high".into(),
+        };
+        let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-a1");
+
+        if let EventPayload::ApprovalRequested {
+            tool_name, risk, ..
+        } = &envelope.payload
+        {
+            assert_eq!(tool_name, "bash");
+            assert_eq!(*risk, lago_core::event::RiskLevel::High);
+        } else {
+            panic!("expected ApprovalRequested payload");
+        }
+
+        let back = lago_to_arcan(&envelope).expect("should map back");
+        match back {
+            AgentEvent::ApprovalRequested {
+                approval_id,
+                tool_name,
+                risk,
+                ..
+            } => {
+                assert_eq!(approval_id, "appr-1");
+                assert_eq!(tool_name, "bash");
+                assert_eq!(risk, "high");
+            }
+            _ => panic!("expected ApprovalRequested"),
+        }
+    }
+
+    #[test]
+    fn approval_resolved_round_trips() {
+        let event = AgentEvent::ApprovalResolved {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            approval_id: "appr-2".into(),
+            decision: "denied".into(),
+            reason: Some("too dangerous".into()),
+        };
+        let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-a2");
+
+        if let EventPayload::ApprovalResolved {
+            decision, reason, ..
+        } = &envelope.payload
+        {
+            assert_eq!(*decision, lago_core::event::ApprovalDecision::Denied);
+            assert_eq!(reason.as_deref(), Some("too dangerous"));
+        } else {
+            panic!("expected ApprovalResolved payload");
+        }
+
+        let back = lago_to_arcan(&envelope).expect("should map back");
+        match back {
+            AgentEvent::ApprovalResolved {
+                approval_id,
+                decision,
+                reason,
+                ..
+            } => {
+                assert_eq!(approval_id, "appr-2");
+                assert_eq!(decision, "denied");
+                assert_eq!(reason.as_deref(), Some("too dangerous"));
+            }
+            _ => panic!("expected ApprovalResolved"),
         }
     }
 

@@ -1,21 +1,26 @@
+use crate::approval_gate::{ApprovalGate, ApprovalOutcome};
 use arcan_core::error::CoreError;
-use arcan_core::protocol::{ToolAnnotations, ToolCall, ToolResult};
+use arcan_core::protocol::{AgentEvent, ToolAnnotations, ToolCall, ToolResult};
 use arcan_core::runtime::{Middleware, ToolContext};
 use lago_core::PolicyContext;
-use lago_core::event::PolicyDecisionKind;
-use lago_core::event::RiskLevel;
+use lago_core::event::{ApprovalDecision, PolicyDecisionKind, RiskLevel};
 use lago_policy::engine::PolicyEngine;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Arcan [`Middleware`] backed by lago's [`PolicyEngine`].
 ///
 /// On every tool call, builds a [`PolicyContext`], evaluates the policy rules,
 /// and returns `Err(CoreError::Middleware)` when the decision is `Deny`.
-/// `RequireApproval` is currently treated as `Deny` (no interactive approval yet).
+/// When `RequireApproval` is returned and a gate is configured, the middleware
+/// blocks until the approval is resolved (approved, denied, or timed out).
+/// Without a gate, `RequireApproval` falls back to `Deny`.
 pub struct LagoPolicyMiddleware {
     engine: PolicyEngine,
     /// Cached annotations per tool name, used to derive risk levels.
     tool_annotations: HashMap<String, ToolAnnotations>,
+    /// Optional approval gate for interactive approval flow.
+    gate: Option<Arc<ApprovalGate>>,
 }
 
 impl LagoPolicyMiddleware {
@@ -23,6 +28,19 @@ impl LagoPolicyMiddleware {
         Self {
             engine,
             tool_annotations,
+            gate: None,
+        }
+    }
+
+    pub fn with_gate(
+        engine: PolicyEngine,
+        tool_annotations: HashMap<String, ToolAnnotations>,
+        gate: Arc<ApprovalGate>,
+    ) -> Self {
+        Self {
+            engine,
+            tool_annotations,
+            gate: Some(gate),
         }
     }
 
@@ -33,6 +51,15 @@ impl LagoPolicyMiddleware {
             Some(ann) if ann.destructive => RiskLevel::Medium,
             Some(ann) if ann.read_only => RiskLevel::Low,
             _ => RiskLevel::Low,
+        }
+    }
+
+    fn risk_level_str(&self, tool_name: &str) -> &'static str {
+        match self.risk_level(tool_name) {
+            RiskLevel::Low => "low",
+            RiskLevel::Medium => "medium",
+            RiskLevel::High => "high",
+            RiskLevel::Critical => "critical",
         }
     }
 
@@ -73,11 +100,61 @@ impl Middleware for LagoPolicyMiddleware {
                 )))
             }
             PolicyDecisionKind::RequireApproval => {
-                let rule = decision.rule_id.unwrap_or_else(|| "unknown".to_string());
-                Err(CoreError::Middleware(format!(
-                    "tool '{}' requires approval (rule: {})",
-                    call.tool_name, rule
-                )))
+                let Some(gate) = &self.gate else {
+                    // No gate configured: fall back to deny (backward compat)
+                    let rule = decision.rule_id.unwrap_or_else(|| "unknown".to_string());
+                    return Err(CoreError::Middleware(format!(
+                        "tool '{}' requires approval (rule: {}) but no approval gate configured",
+                        call.tool_name, rule
+                    )));
+                };
+
+                let approval_id = lago_core::ApprovalId::new().to_string();
+                let risk = self.risk_level_str(&call.tool_name);
+
+                // Emit ApprovalRequested event
+                gate.emit_event(AgentEvent::ApprovalRequested {
+                    run_id: context.run_id.clone(),
+                    session_id: context.session_id.clone(),
+                    approval_id: approval_id.clone(),
+                    call_id: call.call_id.clone(),
+                    tool_name: call.tool_name.clone(),
+                    arguments: call.input.clone(),
+                    risk: risk.to_string(),
+                });
+
+                // Register and block on oneshot
+                let rx = gate.request_approval(&approval_id);
+                let outcome = tokio::runtime::Handle::current().block_on(async {
+                    rx.await.unwrap_or(ApprovalOutcome {
+                        decision: ApprovalDecision::Timeout,
+                        reason: None,
+                    })
+                });
+
+                // Emit ApprovalResolved event
+                let decision_str = match outcome.decision {
+                    ApprovalDecision::Approved => "approved",
+                    ApprovalDecision::Denied => "denied",
+                    ApprovalDecision::Timeout => "timeout",
+                };
+                gate.emit_event(AgentEvent::ApprovalResolved {
+                    run_id: context.run_id.clone(),
+                    session_id: context.session_id.clone(),
+                    approval_id,
+                    decision: decision_str.to_string(),
+                    reason: outcome.reason.clone(),
+                });
+
+                match outcome.decision {
+                    ApprovalDecision::Approved => Ok(()),
+                    _ => Err(CoreError::Middleware(format!(
+                        "tool '{}' approval {}: {}",
+                        call.tool_name,
+                        decision_str,
+                        outcome.reason.unwrap_or_default()
+                    ))),
+                }
             }
         }
     }
@@ -195,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn require_approval_treated_as_error() {
+    fn no_gate_falls_back_to_deny() {
         let mut engine = PolicyEngine::new();
         engine.add_rule(Rule {
             id: "approve-write".into(),
@@ -211,7 +288,10 @@ mod tests {
         let result = mw.pre_tool_call(&tool_context(), &tool_call("write_file"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("requires approval"), "got: {err}");
+        assert!(
+            err.contains("requires approval") && err.contains("no approval gate"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -246,5 +326,86 @@ mod tests {
         // read_file has Low risk — should be allowed
         let result = mw.pre_tool_call(&tool_context(), &tool_call("read_file"));
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn approval_approved_allows_tool() {
+        let mut engine = PolicyEngine::new();
+        engine.add_rule(Rule {
+            id: "approve-write".into(),
+            name: "Approve writes".into(),
+            priority: 100,
+            condition: MatchCondition::ToolName("write_file".into()),
+            decision: PolicyDecisionKind::RequireApproval,
+            explanation: None,
+            required_sandbox: None,
+        });
+        let gate = Arc::new(ApprovalGate::new(std::time::Duration::from_secs(300)));
+        let mw = LagoPolicyMiddleware::with_gate(engine, default_annotations(), gate.clone());
+
+        // Spawn a task that resolves approval after a brief delay
+        let gate_clone = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Find the pending approval and resolve it
+            let ids = gate_clone.pending_ids();
+            if let Some(id) = ids.first() {
+                gate_clone.resolve(
+                    id,
+                    ApprovalOutcome {
+                        decision: ApprovalDecision::Approved,
+                        reason: None,
+                    },
+                );
+            }
+        });
+
+        // This blocks until the approval resolves
+        let result = tokio::task::spawn_blocking(move || {
+            mw.pre_tool_call(&tool_context(), &tool_call("write_file"))
+        })
+        .await
+        .unwrap();
+        assert!(result.is_ok(), "approved tool should pass: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn approval_denied_blocks_tool() {
+        let mut engine = PolicyEngine::new();
+        engine.add_rule(Rule {
+            id: "approve-write".into(),
+            name: "Approve writes".into(),
+            priority: 100,
+            condition: MatchCondition::ToolName("write_file".into()),
+            decision: PolicyDecisionKind::RequireApproval,
+            explanation: None,
+            required_sandbox: None,
+        });
+        let gate = Arc::new(ApprovalGate::new(std::time::Duration::from_secs(300)));
+        let mw = LagoPolicyMiddleware::with_gate(engine, default_annotations(), gate.clone());
+
+        let gate_clone = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let ids = gate_clone.pending_ids();
+            if let Some(id) = ids.first() {
+                gate_clone.resolve(
+                    id,
+                    ApprovalOutcome {
+                        decision: ApprovalDecision::Denied,
+                        reason: Some("not allowed".into()),
+                    },
+                );
+            }
+        });
+
+        let result = tokio::task::spawn_blocking(move || {
+            mw.pre_tool_call(&tool_context(), &tool_call("write_file"))
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("denied"), "got: {err}");
     }
 }

@@ -4,16 +4,17 @@ use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool,
 use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
 use arcan_lago::{
-    LagoPolicyMiddleware, LagoSessionRepository, MemoryCommitTool, MemoryProjection,
+    ApprovalGate, LagoPolicyMiddleware, LagoSessionRepository, MemoryCommitTool, MemoryProjection,
     MemoryProposeTool, MemoryQueryTool,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router};
+use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router_with_approvals};
 use clap::Parser;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -34,6 +35,10 @@ struct Cli {
     /// Maximum orchestrator iterations per run
     #[arg(long, default_value_t = 10)]
     max_iterations: u32,
+
+    /// Approval timeout in seconds (default 300 = 5 minutes)
+    #[arg(long, default_value_t = 300)]
+    approval_timeout: u64,
 }
 
 async fn shutdown_signal() {
@@ -138,6 +143,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // --- Approval gate ---
+    let approval_gate = Arc::new(ApprovalGate::new(Duration::from_secs(cli.approval_timeout)));
+
     // --- Policy middleware ---
     let tool_annotations: std::collections::HashMap<String, _> = registry
         .definitions()
@@ -145,7 +153,8 @@ async fn main() -> anyhow::Result<()> {
         .filter_map(|def| def.annotations.map(|ann| (def.name, ann)))
         .collect();
     let policy_engine = lago_policy::PolicyEngine::new();
-    let policy_mw = LagoPolicyMiddleware::new(policy_engine, tool_annotations);
+    let policy_mw =
+        LagoPolicyMiddleware::with_gate(policy_engine, tool_annotations, approval_gate.clone());
     let middlewares: Vec<Arc<dyn arcan_core::runtime::Middleware>> = vec![Arc::new(policy_mw)];
 
     // --- Orchestrator ---
@@ -157,10 +166,15 @@ async fn main() -> anyhow::Result<()> {
     let orchestrator = Arc::new(Orchestrator::new(provider, registry, middlewares, config));
 
     // --- Agent Loop ---
-    let agent_loop = Arc::new(AgentLoop::new(session_repo, orchestrator));
+    let agent_loop = Arc::new(AgentLoop::with_approval_gate(
+        session_repo,
+        orchestrator,
+        approval_gate.clone(),
+    ));
 
     // --- HTTP Server ---
-    let router = create_router(agent_loop).await;
+    let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
+    let router = create_router_with_approvals(agent_loop, Some(resolver)).await;
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = TcpListener::bind(addr).await?;
 

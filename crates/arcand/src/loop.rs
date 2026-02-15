@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcan_core::protocol::{AgentEvent, ChatMessage};
-use arcan_core::runtime::{Orchestrator, RunInput, RunOutput};
+use arcan_core::runtime::{ApprovalGateHook, Orchestrator, RunInput, RunOutput};
 use arcan_core::state::AppState;
 use arcan_store::session::{AppendEvent, SessionRepository};
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct AgentLoop {
     pub session_repo: Arc<dyn SessionRepository>,
     pub orchestrator: Arc<Orchestrator>,
+    pub approval_gate: Option<Arc<dyn ApprovalGateHook>>,
 }
 
 impl AgentLoop {
@@ -17,6 +18,19 @@ impl AgentLoop {
         Self {
             session_repo,
             orchestrator,
+            approval_gate: None,
+        }
+    }
+
+    pub fn with_approval_gate(
+        session_repo: Arc<dyn SessionRepository>,
+        orchestrator: Arc<Orchestrator>,
+        gate: Arc<dyn ApprovalGateHook>,
+    ) -> Self {
+        Self {
+            session_repo,
+            orchestrator,
+            approval_gate: Some(gate),
         }
     }
 
@@ -29,6 +43,7 @@ impl AgentLoop {
         let orchestrator = self.orchestrator.clone();
         let session_repo = self.session_repo.clone();
         let session_id_owned = session_id.to_string();
+        let approval_gate = self.approval_gate.clone();
 
         // Run everything in spawn_blocking since SessionRepository is synchronous
         // and may use block_on internally (e.g. LagoSessionRepository).
@@ -70,7 +85,22 @@ impl AgentLoop {
 
             let run_id = Uuid::new_v4().to_string();
 
-            // 2. Prepare Run Input
+            // 2. Wire approval gate event handler
+            if let Some(ref gate) = approval_gate {
+                let sender = event_sender.clone();
+                let repo = session_repo.clone();
+                let sid = session_id_owned.clone();
+                gate.set_event_handler(Arc::new(move |event| {
+                    let _ = sender.blocking_send(event.clone());
+                    let _ = repo.append(AppendEvent {
+                        session_id: sid.clone(),
+                        event,
+                        parent_id: None,
+                    });
+                }));
+            }
+
+            // 3. Prepare Run Input
             let input = RunInput {
                 run_id,
                 session_id: session_id_owned.clone(),
@@ -78,10 +108,10 @@ impl AgentLoop {
                 state,
             };
 
-            // 3. Run Orchestrator (Provider::complete is synchronous)
+            // 4. Run Orchestrator (Provider::complete is synchronous)
             let session_repo_inner = session_repo.clone();
             let sid = session_id_owned.clone();
-            Ok(orchestrator.run(input, |event| {
+            let result = orchestrator.run(input, |event| {
                 let _ = event_sender.blocking_send(event.clone());
 
                 let _ = session_repo_inner.append(AppendEvent {
@@ -89,7 +119,14 @@ impl AgentLoop {
                     event,
                     parent_id: None,
                 });
-            }))
+            });
+
+            // 5. Clear approval gate handler
+            if let Some(ref gate) = approval_gate {
+                gate.clear_event_handler();
+            }
+
+            Ok(result)
         })
         .await??;
 

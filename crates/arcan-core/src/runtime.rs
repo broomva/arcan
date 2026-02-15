@@ -9,6 +9,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Hook trait for approval gates, allowing the agent loop to wire event handlers
+/// into the gate without depending on the concrete `ApprovalGate` type.
+pub trait ApprovalGateHook: Send + Sync {
+    fn set_event_handler(&self, handler: Arc<dyn Fn(AgentEvent) + Send + Sync>);
+    fn clear_event_handler(&self);
+}
+
+/// Trait for resolving pending approvals from HTTP endpoints.
+pub trait ApprovalResolver: Send + Sync {
+    fn resolve_approval(&self, approval_id: &str, decision: &str, reason: Option<String>) -> bool;
+    fn pending_approval_ids(&self) -> Vec<String>;
+}
+
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
     pub run_id: String,

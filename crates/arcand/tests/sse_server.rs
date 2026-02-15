@@ -5,7 +5,7 @@ use arcan_core::runtime::{
 };
 use arcan_store::session::InMemorySessionRepository;
 use arcand::r#loop::AgentLoop;
-use arcand::server::create_router;
+use arcand::server::{create_router, create_router_with_approvals};
 use std::sync::Arc;
 
 struct EchoProvider;
@@ -214,4 +214,130 @@ async fn invalid_request_returns_error() {
         "Malformed JSON should return client error, got: {}",
         resp.status()
     );
+}
+
+// --- Approval endpoint tests ---
+
+use arcan_core::runtime::ApprovalResolver;
+
+/// Mock approval resolver for testing the HTTP endpoints.
+struct MockApprovalResolver {
+    pending: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl MockApprovalResolver {
+    fn new() -> Self {
+        Self {
+            pending: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn add_pending(&self, id: &str) {
+        self.pending
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), "pending".to_string());
+    }
+}
+
+impl ApprovalResolver for MockApprovalResolver {
+    fn resolve_approval(&self, approval_id: &str, decision: &str, _reason: Option<String>) -> bool {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.remove(approval_id).is_some() {
+            let _ = decision; // consume
+            true
+        } else {
+            false
+        }
+    }
+
+    fn pending_approval_ids(&self) -> Vec<String> {
+        self.pending.lock().unwrap().keys().cloned().collect()
+    }
+}
+
+async fn start_test_server_with_resolver(resolver: Arc<dyn ApprovalResolver>) -> String {
+    let repo = Arc::new(InMemorySessionRepository::default());
+    let orchestrator = Arc::new(Orchestrator::new(
+        Arc::new(EchoProvider),
+        ToolRegistry::default(),
+        Vec::new(),
+        OrchestratorConfig {
+            max_iterations: 10,
+            context: None,
+            context_compiler: None,
+        },
+    ));
+    let agent_loop = Arc::new(AgentLoop::new(repo, orchestrator));
+    let router = create_router_with_approvals(agent_loop, Some(resolver)).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    url
+}
+
+#[tokio::test]
+async fn approve_resolves_pending() {
+    let resolver = Arc::new(MockApprovalResolver::new());
+    resolver.add_pending("appr-1");
+
+    let url = start_test_server_with_resolver(resolver).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/approve"))
+        .json(&serde_json::json!({
+            "approval_id": "appr-1",
+            "decision": "approved"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["resolved"], true);
+}
+
+#[tokio::test]
+async fn approve_unknown_returns_not_found() {
+    let resolver = Arc::new(MockApprovalResolver::new());
+    let url = start_test_server_with_resolver(resolver).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/approve"))
+        .json(&serde_json::json!({
+            "approval_id": "nonexistent",
+            "decision": "approved"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn list_approvals_returns_pending() {
+    let resolver = Arc::new(MockApprovalResolver::new());
+    resolver.add_pending("appr-a");
+    resolver.add_pending("appr-b");
+
+    let url = start_test_server_with_resolver(resolver).await;
+    let client = reqwest::Client::new();
+
+    let resp = client.get(format!("{url}/approvals")).send().await.unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let pending = body["pending"].as_array().unwrap();
+    assert_eq!(pending.len(), 2);
 }

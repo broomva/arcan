@@ -319,6 +319,24 @@ pub enum AgentEvent {
         tokens_before: usize,
         tokens_after: usize,
     },
+    ApprovalRequested {
+        run_id: String,
+        session_id: String,
+        approval_id: String,
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        /// Risk level as string ("low"/"medium"/"high"/"critical") to keep arcan-core lago-free.
+        risk: String,
+    },
+    ApprovalResolved {
+        run_id: String,
+        session_id: String,
+        approval_id: String,
+        /// Decision as string ("approved"/"denied"/"timeout").
+        decision: String,
+        reason: Option<String>,
+    },
     RunErrored {
         run_id: String,
         session_id: String,
