@@ -341,3 +341,158 @@ async fn list_approvals_returns_pending() {
     let pending = body["pending"].as_array().unwrap();
     assert_eq!(pending.len(), 2);
 }
+
+// --- AI SDK v6 protocol tests ---
+
+#[tokio::test]
+async fn sse_v6_includes_protocol_header() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/chat?format=aisdk_v6"))
+        .json(&serde_json::json!({
+            "session_id": "v6-header-test",
+            "message": "Hello v6"
+        }))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(resp.status(), 200);
+
+    let header = resp
+        .headers()
+        .get("x-vercel-ai-ui-message-stream")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(
+        header,
+        Some("v1"),
+        "Should include x-vercel-ai-ui-message-stream: v1 header"
+    );
+}
+
+#[tokio::test]
+async fn sse_v6_events_have_monotonic_ids() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/chat?format=aisdk_v6"))
+        .json(&serde_json::json!({
+            "session_id": "v6-id-test",
+            "message": "Hello IDs"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+
+    // Parse SSE id: fields — they should be monotonically increasing
+    let ids: Vec<u64> = body
+        .lines()
+        .filter(|line| line.starts_with("id:"))
+        .filter_map(|line| line[3..].trim().parse().ok())
+        .collect();
+
+    assert!(
+        !ids.is_empty(),
+        "v6 stream should have SSE event IDs, body: {}",
+        &body[..body.len().min(500)]
+    );
+
+    // Verify monotonic
+    for window in ids.windows(2) {
+        assert!(
+            window[1] > window[0],
+            "IDs should be monotonically increasing: {} > {}",
+            window[1],
+            window[0]
+        );
+    }
+}
+
+#[tokio::test]
+async fn sse_v6_stream_terminates_with_done() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/chat?format=aisdk_v6"))
+        .json(&serde_json::json!({
+            "session_id": "v6-done-test",
+            "message": "Hello DONE"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        body.contains("[DONE]"),
+        "v6 stream should terminate with [DONE], body tail: {}",
+        &body[body.len().saturating_sub(200)..]
+    );
+}
+
+#[tokio::test]
+async fn sse_v6_has_text_boundaries() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/chat?format=aisdk_v6"))
+        .json(&serde_json::json!({
+            "session_id": "v6-boundary-test",
+            "message": "Hello boundaries"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+
+    // Should have text-start before text-delta and text-end after
+    assert!(
+        body.contains("text-start"),
+        "v6 stream should contain text-start boundary, body: {}",
+        &body[..body.len().min(500)]
+    );
+    assert!(
+        body.contains("text-end"),
+        "v6 stream should contain text-end boundary"
+    );
+    assert!(
+        body.contains("text-delta"),
+        "v6 stream should contain text-delta"
+    );
+}
+
+#[tokio::test]
+async fn sse_v6_has_step_boundaries() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/chat?format=aisdk_v6"))
+        .json(&serde_json::json!({
+            "session_id": "v6-step-test",
+            "message": "Hello steps"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        body.contains("start-step"),
+        "v6 stream should contain start-step"
+    );
+    assert!(
+        body.contains("finish-step"),
+        "v6 stream should contain finish-step"
+    );
+}

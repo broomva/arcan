@@ -2,156 +2,241 @@ use crate::protocol::AgentEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Vercel AI SDK v5 "UI Message Stream Protocol" data part.
+// ─── AI SDK v6 UI Message Stream Protocol ───────────────────────
+//
+// Spec: https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol
+// Header: x-vercel-ai-ui-message-stream: v1
+// Transport: SSE, data: {json}\n\n
+// Termination: data: [DONE]
+
+/// Vercel AI SDK v6 "UI Message Stream Protocol" part.
 ///
-/// Maps Arcan's native `AgentEvent` to AI SDK compatible wire format
-/// for consumption by `useChat` / `useCompletion` hooks.
+/// Each variant maps to a v6 stream part type. Custom Arcan extensions
+/// use the `data-*` namespace per spec.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum AiSdkPart {
-    /// Signal that a new message is starting.
-    Start { message_id: String },
-    /// Incremental text content from the model.
-    TextDelta { text_delta: String },
-    /// A tool call is beginning.
-    ToolCallBegin {
+pub enum UiStreamPart {
+    // ── Control ──
+    Start {
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
+    Finish {},
+    StartStep {},
+    FinishStep {},
+    Abort {
+        reason: String,
+    },
+
+    // ── Text ──
+    TextStart {
+        id: String,
+    },
+    TextDelta {
+        id: String,
+        delta: String,
+    },
+    TextEnd {
+        id: String,
+    },
+
+    // ── Reasoning ──
+    ReasoningStart {
+        id: String,
+    },
+    ReasoningDelta {
+        id: String,
+        delta: String,
+    },
+    ReasoningEnd {
+        id: String,
+    },
+
+    // ── Tool ──
+    ToolInputStart {
+        #[serde(rename = "toolCallId")]
         tool_call_id: String,
+        #[serde(rename = "toolName")]
         tool_name: String,
     },
-    /// Incremental arguments for an in-progress tool call.
-    ToolCallDelta {
+    ToolInputDelta {
+        #[serde(rename = "toolCallId")]
         tool_call_id: String,
-        args_text_delta: String,
+        #[serde(rename = "inputTextDelta")]
+        input_text_delta: String,
     },
-    /// A tool has returned a result.
-    ToolResult {
+    ToolInputAvailable {
+        #[serde(rename = "toolCallId")]
         tool_call_id: String,
+        #[serde(rename = "toolName")]
         tool_name: String,
-        result: Value,
+        input: Value,
     },
-    /// The stream is finishing.
-    Finish {
-        finish_reason: String,
-        usage: Option<AiSdkUsage>,
+    ToolOutputAvailable {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        output: Value,
     },
-    /// An error occurred.
-    Error { error: String },
-    /// Arcan extension: state patch event.
-    ArcanStatePatch { patch: Value, revision: u64 },
+
+    // ── Error ──
+    Error {
+        #[serde(rename = "errorText")]
+        error_text: String,
+    },
+
+    // ── Arcan Extensions (data-* namespace) ──
+    #[serde(rename = "data-state-patch")]
+    DataStatePatch {
+        data: Value,
+    },
+    #[serde(rename = "data-approval-request")]
+    DataApprovalRequest {
+        data: Value,
+    },
 }
 
-/// Token usage statistics compatible with AI SDK.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AiSdkUsage {
-    pub prompt_tokens: Option<u64>,
-    pub completion_tokens: Option<u64>,
-}
-
-/// Convert an `AgentEvent` into zero or more `AiSdkPart`s.
+/// Convert an `AgentEvent` into zero or more `UiStreamPart`s (v6 protocol).
 ///
-/// Some events map 1:1, others produce multiple parts, and some
-/// (like `IterationStarted`) are omitted as they have no AI SDK equivalent.
-pub fn to_aisdk_parts(event: &AgentEvent) -> Vec<AiSdkPart> {
+/// This is a stateless mapping. Text boundary tracking (TextStart/TextEnd)
+/// is handled by the SSE bridge in server.rs, which wraps consecutive
+/// TextDelta events with boundary signals.
+pub fn to_ui_stream_parts(event: &AgentEvent) -> Vec<UiStreamPart> {
     match event {
         AgentEvent::RunStarted { run_id, .. } => {
-            vec![AiSdkPart::Start {
+            vec![UiStreamPart::Start {
                 message_id: run_id.clone(),
             }]
         }
 
-        AgentEvent::TextDelta { delta, .. } => {
-            vec![AiSdkPart::TextDelta {
-                text_delta: delta.clone(),
+        AgentEvent::IterationStarted { .. } => {
+            vec![UiStreamPart::StartStep {}]
+        }
+
+        AgentEvent::ModelOutput { .. } => {
+            vec![UiStreamPart::FinishStep {}]
+        }
+
+        AgentEvent::TextDelta { run_id, delta, .. } => {
+            vec![UiStreamPart::TextDelta {
+                id: format!("{run_id}-text"),
+                delta: delta.clone(),
             }]
         }
 
         AgentEvent::ToolCallRequested { call, .. } => {
             let args_json = serde_json::to_string(&call.input).unwrap_or_default();
             vec![
-                AiSdkPart::ToolCallBegin {
+                UiStreamPart::ToolInputStart {
                     tool_call_id: call.call_id.clone(),
                     tool_name: call.tool_name.clone(),
                 },
-                AiSdkPart::ToolCallDelta {
+                UiStreamPart::ToolInputDelta {
                     tool_call_id: call.call_id.clone(),
-                    args_text_delta: args_json,
+                    input_text_delta: args_json,
+                },
+                UiStreamPart::ToolInputAvailable {
+                    tool_call_id: call.call_id.clone(),
+                    tool_name: call.tool_name.clone(),
+                    input: call.input.clone(),
                 },
             ]
         }
 
         AgentEvent::ToolCallCompleted { result, .. } => {
-            vec![AiSdkPart::ToolResult {
+            vec![UiStreamPart::ToolOutputAvailable {
                 tool_call_id: result.call_id.clone(),
-                tool_name: result.tool_name.clone(),
-                result: result.output.clone(),
+                output: result.output.clone(),
             }]
         }
 
-        AgentEvent::ToolCallFailed {
-            call_id,
-            tool_name,
-            error,
-            ..
-        } => {
-            vec![AiSdkPart::ToolResult {
+        AgentEvent::ToolCallFailed { call_id, error, .. } => {
+            vec![UiStreamPart::ToolOutputAvailable {
                 tool_call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                result: serde_json::json!({ "error": error }),
+                output: serde_json::json!({ "error": error }),
             }]
         }
 
         AgentEvent::StatePatched {
             patch, revision, ..
         } => {
-            vec![AiSdkPart::ArcanStatePatch {
-                patch: patch.patch.clone(),
-                revision: *revision,
+            vec![UiStreamPart::DataStatePatch {
+                data: serde_json::json!({
+                    "patch": patch.patch,
+                    "revision": revision,
+                }),
             }]
         }
 
         AgentEvent::RunErrored { error, .. } => {
-            vec![AiSdkPart::Error {
-                error: error.clone(),
+            vec![UiStreamPart::Error {
+                error_text: error.clone(),
             }]
         }
 
         AgentEvent::RunFinished {
-            reason,
+            run_id,
             final_answer,
             ..
         } => {
             let mut parts = Vec::new();
-            // If there's a final answer, emit it as a text delta
             if let Some(answer) = final_answer {
                 if !answer.is_empty() {
-                    parts.push(AiSdkPart::TextDelta {
-                        text_delta: answer.clone(),
+                    let text_id = format!("{run_id}-text");
+                    parts.push(UiStreamPart::TextDelta {
+                        id: text_id.clone(),
+                        delta: answer.clone(),
                     });
                 }
             }
-            parts.push(AiSdkPart::Finish {
-                finish_reason: format!("{:?}", reason),
-                usage: None,
-            });
+            parts.push(UiStreamPart::Finish {});
             parts
         }
 
-        // IterationStarted, ModelOutput, ContextCompacted, and Approval events have no direct AI SDK equivalent
-        AgentEvent::IterationStarted { .. }
-        | AgentEvent::ModelOutput { .. }
-        | AgentEvent::ContextCompacted { .. }
-        | AgentEvent::ApprovalRequested { .. }
-        | AgentEvent::ApprovalResolved { .. } => {
+        AgentEvent::ApprovalRequested {
+            approval_id,
+            call_id,
+            tool_name,
+            arguments,
+            risk,
+            ..
+        } => {
+            vec![UiStreamPart::DataApprovalRequest {
+                data: serde_json::json!({
+                    "approvalId": approval_id,
+                    "toolCallId": call_id,
+                    "toolName": tool_name,
+                    "arguments": arguments,
+                    "risk": risk,
+                }),
+            }]
+        }
+
+        // Events with no UI representation
+        AgentEvent::ContextCompacted { .. } | AgentEvent::ApprovalResolved { .. } => {
             vec![]
         }
     }
 }
 
-/// Serialize an `AiSdkPart` to the SSE wire format (newline-delimited JSON).
-pub fn aisdk_part_to_sse(part: &AiSdkPart) -> Result<String, serde_json::Error> {
+/// Serialize a `UiStreamPart` to the SSE wire format.
+pub fn ui_stream_part_to_sse(part: &UiStreamPart) -> Result<String, serde_json::Error> {
     let json = serde_json::to_string(part)?;
     Ok(format!("data: {json}\n\n"))
+}
+
+// ─── Deprecated v5 aliases (will be removed) ────────────────────
+
+/// Deprecated: use `UiStreamPart` instead.
+pub type AiSdkPart = UiStreamPart;
+
+/// Deprecated: use `to_ui_stream_parts` instead.
+pub fn to_aisdk_parts(event: &AgentEvent) -> Vec<UiStreamPart> {
+    to_ui_stream_parts(event)
+}
+
+/// Deprecated: use `ui_stream_part_to_sse` instead.
+pub fn aisdk_part_to_sse(part: &UiStreamPart) -> Result<String, serde_json::Error> {
+    ui_stream_part_to_sse(part)
 }
 
 #[cfg(test)]
@@ -171,36 +256,64 @@ mod tests {
             provider: "anthropic".to_string(),
             max_iterations: 10,
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::Start {
+            UiStreamPart::Start {
                 message_id: "r1".to_string()
             }
         );
     }
 
     #[test]
-    fn text_delta_maps_directly() {
+    fn iteration_started_maps_to_start_step() {
+        let event = AgentEvent::IterationStarted {
+            run_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            iteration: 1,
+        };
+        let parts = to_ui_stream_parts(&event);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], UiStreamPart::StartStep {});
+    }
+
+    #[test]
+    fn model_output_maps_to_finish_step() {
+        let event = AgentEvent::ModelOutput {
+            run_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            iteration: 1,
+            stop_reason: ModelStopReason::EndTurn,
+            directive_count: 0,
+            usage: None,
+        };
+        let parts = to_ui_stream_parts(&event);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], UiStreamPart::FinishStep {});
+    }
+
+    #[test]
+    fn text_delta_includes_id() {
         let event = AgentEvent::TextDelta {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
             iteration: 1,
             delta: "Hello ".to_string(),
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::TextDelta {
-                text_delta: "Hello ".to_string()
+            UiStreamPart::TextDelta {
+                id: "r1-text".to_string(),
+                delta: "Hello ".to_string(),
             }
         );
     }
 
     #[test]
-    fn tool_call_requested_produces_begin_and_delta() {
+    fn tool_call_produces_input_start_delta_available() {
         let event = AgentEvent::ToolCallRequested {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
@@ -211,29 +324,38 @@ mod tests {
                 input: json!({"path": "/tmp/test.rs"}),
             },
         };
-        let parts = to_aisdk_parts(&event);
-        assert_eq!(parts.len(), 2);
+        let parts = to_ui_stream_parts(&event);
+        assert_eq!(parts.len(), 3);
+
         assert_eq!(
             parts[0],
-            AiSdkPart::ToolCallBegin {
+            UiStreamPart::ToolInputStart {
                 tool_call_id: "c1".to_string(),
                 tool_name: "read_file".to_string(),
             }
         );
         match &parts[1] {
-            AiSdkPart::ToolCallDelta {
+            UiStreamPart::ToolInputDelta {
                 tool_call_id,
-                args_text_delta,
+                input_text_delta,
             } => {
                 assert_eq!(tool_call_id, "c1");
-                assert!(args_text_delta.contains("path"));
+                assert!(input_text_delta.contains("path"));
             }
-            other => panic!("Expected ToolCallDelta, got {:?}", other),
+            other => panic!("Expected ToolInputDelta, got {:?}", other),
         }
+        assert_eq!(
+            parts[2],
+            UiStreamPart::ToolInputAvailable {
+                tool_call_id: "c1".to_string(),
+                tool_name: "read_file".to_string(),
+                input: json!({"path": "/tmp/test.rs"}),
+            }
+        );
     }
 
     #[test]
-    fn tool_call_completed_maps_to_result() {
+    fn tool_completed_maps_to_output_available() {
         let event = AgentEvent::ToolCallCompleted {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
@@ -244,20 +366,19 @@ mod tests {
                 output: json!({"content": "file contents here"}),
             },
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::ToolResult {
+            UiStreamPart::ToolOutputAvailable {
                 tool_call_id: "c1".to_string(),
-                tool_name: "read_file".to_string(),
-                result: json!({"content": "file contents here"}),
+                output: json!({"content": "file contents here"}),
             }
         );
     }
 
     #[test]
-    fn tool_call_failed_maps_to_error_result() {
+    fn tool_failed_maps_to_output_with_error() {
         let event = AgentEvent::ToolCallFailed {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
@@ -266,20 +387,19 @@ mod tests {
             tool_name: "bash".to_string(),
             error: "command not found".to_string(),
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::ToolResult {
+            UiStreamPart::ToolOutputAvailable {
                 tool_call_id: "c1".to_string(),
-                tool_name: "bash".to_string(),
-                result: json!({"error": "command not found"}),
+                output: json!({"error": "command not found"}),
             }
         );
     }
 
     #[test]
-    fn state_patched_maps_to_extension() {
+    fn state_patched_maps_to_data_extension() {
         let event = AgentEvent::StatePatched {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
@@ -291,13 +411,12 @@ mod tests {
             },
             revision: 5,
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::ArcanStatePatch {
-                patch: json!({"cwd": "/new"}),
-                revision: 5,
+            UiStreamPart::DataStatePatch {
+                data: json!({"patch": {"cwd": "/new"}, "revision": 5}),
             }
         );
     }
@@ -309,12 +428,12 @@ mod tests {
             session_id: "s1".to_string(),
             error: "provider timeout".to_string(),
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0],
-            AiSdkPart::Error {
-                error: "provider timeout".to_string()
+            UiStreamPart::Error {
+                error_text: "provider timeout".to_string()
             }
         );
     }
@@ -328,18 +447,9 @@ mod tests {
             total_iterations: 3,
             final_answer: None,
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
-        match &parts[0] {
-            AiSdkPart::Finish {
-                finish_reason,
-                usage,
-            } => {
-                assert!(finish_reason.contains("Completed"));
-                assert!(usage.is_none());
-            }
-            other => panic!("Expected Finish, got {:?}", other),
-        }
+        assert_eq!(parts[0], UiStreamPart::Finish {});
     }
 
     #[test]
@@ -351,42 +461,103 @@ mod tests {
             total_iterations: 1,
             final_answer: Some("Done!".to_string()),
         };
-        let parts = to_aisdk_parts(&event);
+        let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 2);
         assert_eq!(
             parts[0],
-            AiSdkPart::TextDelta {
-                text_delta: "Done!".to_string()
+            UiStreamPart::TextDelta {
+                id: "r1-text".to_string(),
+                delta: "Done!".to_string(),
             }
         );
-        assert!(matches!(parts[1], AiSdkPart::Finish { .. }));
+        assert_eq!(parts[1], UiStreamPart::Finish {});
     }
 
     #[test]
-    fn iteration_started_and_model_output_produce_empty() {
-        let event1 = AgentEvent::IterationStarted {
+    fn context_compacted_produces_empty() {
+        let event = AgentEvent::ContextCompacted {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
             iteration: 1,
+            dropped_count: 5,
+            tokens_before: 1000,
+            tokens_after: 500,
         };
-        let event2 = AgentEvent::ModelOutput {
+        assert!(to_ui_stream_parts(&event).is_empty());
+    }
+
+    #[test]
+    fn approval_requested_maps_to_data_approval() {
+        let event = AgentEvent::ApprovalRequested {
             run_id: "r1".to_string(),
             session_id: "s1".to_string(),
-            iteration: 1,
-            stop_reason: ModelStopReason::EndTurn,
-            directive_count: 0,
-            usage: None,
+            approval_id: "appr-1".to_string(),
+            call_id: "c1".to_string(),
+            tool_name: "bash".to_string(),
+            arguments: json!({"command": "rm -rf /"}),
+            risk: "high".to_string(),
         };
-        assert!(to_aisdk_parts(&event1).is_empty());
-        assert!(to_aisdk_parts(&event2).is_empty());
+        let parts = to_ui_stream_parts(&event);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            UiStreamPart::DataApprovalRequest { data } => {
+                assert_eq!(data["approvalId"], "appr-1");
+                assert_eq!(data["toolCallId"], "c1");
+                assert_eq!(data["toolName"], "bash");
+                assert_eq!(data["risk"], "high");
+            }
+            other => panic!("Expected DataApprovalRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v6_wire_format_serialization() {
+        // Verify exact JSON shapes match v6 spec
+        let start = UiStreamPart::Start {
+            message_id: "m1".to_string(),
+        };
+        let json = serde_json::to_string(&start).unwrap();
+        assert!(json.contains(r#""type":"start""#));
+        assert!(json.contains(r#""messageId":"m1""#));
+
+        let text = UiStreamPart::TextDelta {
+            id: "t1".to_string(),
+            delta: "hi".to_string(),
+        };
+        let json = serde_json::to_string(&text).unwrap();
+        assert!(json.contains(r#""type":"text-delta""#));
+        assert!(json.contains(r#""delta":"hi""#));
+
+        let tool = UiStreamPart::ToolInputStart {
+            tool_call_id: "c1".to_string(),
+            tool_name: "bash".to_string(),
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains(r#""type":"tool-input-start""#));
+        assert!(json.contains(r#""toolCallId":"c1""#));
+        assert!(json.contains(r#""toolName":"bash""#));
+
+        let error = UiStreamPart::Error {
+            error_text: "boom".to_string(),
+        };
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains(r#""type":"error""#));
+        assert!(json.contains(r#""errorText":"boom""#));
+
+        let ext = UiStreamPart::DataStatePatch {
+            data: json!({"patch": {}}),
+        };
+        let json = serde_json::to_string(&ext).unwrap();
+        assert!(json.contains(r#""type":"data-state-patch""#));
     }
 
     #[test]
     fn sse_wire_format() {
-        let part = AiSdkPart::TextDelta {
-            text_delta: "hello".to_string(),
+        let part = UiStreamPart::TextDelta {
+            id: "t1".to_string(),
+            delta: "hello".to_string(),
         };
-        let sse = aisdk_part_to_sse(&part).unwrap();
+        let sse = ui_stream_part_to_sse(&part).unwrap();
         assert!(sse.starts_with("data: "));
         assert!(sse.ends_with("\n\n"));
         assert!(sse.contains("text-delta"));
@@ -396,25 +567,42 @@ mod tests {
     #[test]
     fn round_trip_serialization() {
         let parts = vec![
-            AiSdkPart::Start {
+            UiStreamPart::Start {
                 message_id: "m1".to_string(),
             },
-            AiSdkPart::TextDelta {
-                text_delta: "hi".to_string(),
+            UiStreamPart::TextDelta {
+                id: "t1".to_string(),
+                delta: "hi".to_string(),
             },
-            AiSdkPart::Finish {
-                finish_reason: "end_turn".to_string(),
-                usage: Some(AiSdkUsage {
-                    prompt_tokens: Some(100),
-                    completion_tokens: Some(50),
-                }),
+            UiStreamPart::Finish {},
+            UiStreamPart::ToolInputAvailable {
+                tool_call_id: "c1".to_string(),
+                tool_name: "bash".to_string(),
+                input: json!({"cmd": "ls"}),
+            },
+            UiStreamPart::Error {
+                error_text: "oops".to_string(),
             },
         ];
 
         for part in &parts {
             let json = serde_json::to_string(part).unwrap();
-            let decoded: AiSdkPart = serde_json::from_str(&json).unwrap();
+            let decoded: UiStreamPart = serde_json::from_str(&json).unwrap();
             assert_eq!(*part, decoded);
         }
+    }
+
+    // ── Deprecated alias tests ──
+
+    #[test]
+    fn deprecated_to_aisdk_parts_still_works() {
+        let event = AgentEvent::TextDelta {
+            run_id: "r1".to_string(),
+            session_id: "s1".to_string(),
+            iteration: 1,
+            delta: "test".to_string(),
+        };
+        let parts = to_aisdk_parts(&event);
+        assert_eq!(parts.len(), 1);
     }
 }
