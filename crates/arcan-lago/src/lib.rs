@@ -1,4 +1,5 @@
 pub mod event_map;
+pub mod learning;
 pub mod memory_projection;
 pub mod memory_scope;
 pub mod memory_tools;
@@ -8,6 +9,7 @@ pub mod repository;
 pub mod sse_bridge;
 pub mod state_projection;
 
+pub use learning::{LearningEntry, LearningMiddleware};
 pub use memory_projection::MemoryProjection;
 pub use memory_scope::{MemoryEntry, MemoryScopeConfig};
 pub use memory_tools::{MemoryCommitTool, MemoryProposeTool, MemoryQueryTool};
