@@ -133,6 +133,7 @@ pub fn arcan_to_lago(
         parent_id: None,
         payload,
         metadata,
+        schema_version: 1,
     }
 }
 

@@ -41,6 +41,7 @@ async fn start_test_server() -> String {
         OrchestratorConfig {
             max_iterations: 10,
             context: None,
+            context_compiler: None,
         },
     ));
     let agent_loop = Arc::new(AgentLoop::new(repo, orchestrator));

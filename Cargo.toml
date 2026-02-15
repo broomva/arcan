@@ -80,9 +80,9 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Lago persistence layer
-lago-api = "0.2.0"
-lago-core = "0.2.0"
-lago-journal = "0.2.0"
-lago-store = "0.2.0"
-lago-policy = "0.2.0"
+# Lago persistence layer (path deps for local development)
+lago-api = { path = "../lago/crates/lago-api", version = "0.2.0" }
+lago-core = { path = "../lago/crates/lago-core", version = "0.2.0" }
+lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.0" }
+lago-store = { path = "../lago/crates/lago-store", version = "0.2.0" }
+lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.0" }

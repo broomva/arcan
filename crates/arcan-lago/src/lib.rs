@@ -1,9 +1,17 @@
 pub mod event_map;
+pub mod memory_projection;
+pub mod memory_scope;
+pub mod memory_tools;
+pub mod observation;
 pub mod policy_middleware;
 pub mod repository;
 pub mod sse_bridge;
 pub mod state_projection;
 
+pub use memory_projection::MemoryProjection;
+pub use memory_scope::{MemoryEntry, MemoryScopeConfig};
+pub use memory_tools::{MemoryCommitTool, MemoryProposeTool, MemoryQueryTool};
+pub use observation::{Observation, Observer, Reflector};
 pub use policy_middleware::LagoPolicyMiddleware;
 pub use repository::LagoSessionRepository;
 pub use sse_bridge::{SseBridge, select_format};

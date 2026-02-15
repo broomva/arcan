@@ -3,14 +3,17 @@ use arcan_harness::edit::EditFileTool;
 use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
-use arcan_lago::{LagoPolicyMiddleware, LagoSessionRepository};
+use arcan_lago::{
+    LagoPolicyMiddleware, LagoSessionRepository, MemoryCommitTool, MemoryProjection,
+    MemoryProposeTool, MemoryQueryTool,
+};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router};
 use clap::Parser;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -83,7 +86,8 @@ async fn main() -> anyhow::Result<()> {
 
     let journal = RedbJournal::open(&journal_path)?;
     let _blob_store = lago_store::BlobStore::open(&blobs_path)?;
-    let session_repo = Arc::new(LagoSessionRepository::new(Arc::new(journal)));
+    let journal: Arc<dyn lago_core::Journal> = Arc::new(journal);
+    let session_repo = Arc::new(LagoSessionRepository::new(journal.clone()));
 
     // --- Policies ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
@@ -116,6 +120,12 @@ async fn main() -> anyhow::Result<()> {
     registry.register(ReadMemoryTool::new(memory_dir.clone()));
     registry.register(WriteMemoryTool::new(memory_dir));
 
+    // --- Governed memory tools (event-sourced via Lago) ---
+    let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
+    registry.register(MemoryQueryTool::new(memory_projection));
+    registry.register(MemoryProposeTool::new(journal.clone()));
+    registry.register(MemoryCommitTool::new(journal.clone()));
+
     // --- Provider ---
     let provider: Arc<dyn Provider> = match AnthropicConfig::from_env() {
         Ok(config) => {
@@ -142,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
     let config = OrchestratorConfig {
         max_iterations: cli.max_iterations,
         context: Some(arcan_core::context::ContextConfig::default()),
+        context_compiler: None,
     };
     let orchestrator = Arc::new(Orchestrator::new(provider, registry, middlewares, config));
 

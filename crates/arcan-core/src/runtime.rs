@@ -92,6 +92,9 @@ pub struct OrchestratorConfig {
     /// Context window management configuration.
     /// When set, messages are compacted before each provider call to stay within limits.
     pub context: Option<ContextConfig>,
+    /// Context compiler configuration for assembling system prompts from typed blocks.
+    /// When set, context blocks are compiled into system messages with budget enforcement.
+    pub context_compiler: Option<crate::context_compiler::ContextCompilerConfig>,
 }
 
 impl Default for OrchestratorConfig {
@@ -99,6 +102,7 @@ impl Default for OrchestratorConfig {
         Self {
             max_iterations: 24,
             context: Some(ContextConfig::default()),
+            context_compiler: None,
         }
     }
 }
@@ -699,6 +703,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -751,6 +756,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -797,6 +803,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -846,6 +853,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -907,6 +915,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 2,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -943,6 +952,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -980,6 +990,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -1043,6 +1054,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -1101,6 +1113,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 10,
                 context: None,
+                context_compiler: None,
             },
         );
 
@@ -1181,6 +1194,7 @@ mod tests {
             OrchestratorConfig {
                 max_iterations: 4,
                 context: None,
+                context_compiler: None,
             },
         );
 

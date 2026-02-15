@@ -24,6 +24,7 @@ arcan-harness = { path = "../arcan-harness", version = "0.2.0" }
 arcan-provider = { path = "../arcan-provider", version = "0.2.0" }
 arcand = { path = "../arcand", version = "0.2.0" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.0" }
+lago-core.workspace = true
 lago-journal.workspace = true
 lago-policy.workspace = true
 lago-store.workspace = true

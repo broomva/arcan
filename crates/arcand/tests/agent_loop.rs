@@ -89,6 +89,7 @@ fn build_agent_loop(provider: impl Provider + 'static) -> AgentLoop {
         OrchestratorConfig {
             max_iterations: 10,
             context: None,
+            context_compiler: None,
         },
     ));
     AgentLoop::new(repo, orchestrator)
@@ -161,6 +162,7 @@ async fn agent_loop_persists_events_to_repo() {
         OrchestratorConfig {
             max_iterations: 10,
             context: None,
+            context_compiler: None,
         },
     ));
     let agent_loop = AgentLoop::new(repo.clone(), orchestrator);
@@ -196,6 +198,7 @@ async fn agent_loop_continues_from_existing_session() {
         OrchestratorConfig {
             max_iterations: 10,
             context: None,
+            context_compiler: None,
         },
     ));
     let agent_loop = AgentLoop::new(repo.clone(), orchestrator);
