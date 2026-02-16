@@ -12,6 +12,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aios-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -103,6 +115,7 @@ dependencies = [
 name = "arcan-core"
 version = "0.2.0"
 dependencies = [
+ "aios-protocol",
  "json-patch",
  "schemars 0.8.22",
  "serde",
@@ -1079,6 +1092,8 @@ checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1177,6 +1192,7 @@ dependencies = [
 name = "lago-core"
 version = "0.2.0"
 dependencies = [
+ "aios-protocol",
  "futures",
  "serde",
  "serde_json",

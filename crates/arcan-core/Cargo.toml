@@ -15,6 +15,7 @@ readme = "../../README.md"
 workspace = true
 
 [dependencies]
+aios-protocol.workspace = true
 json-patch.workspace = true
 schemars.workspace = true
 serde.workspace = true

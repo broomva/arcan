@@ -80,6 +80,9 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Agent OS protocol (canonical contract)
+aios-protocol = { path = "../aiOS/crates/aios-protocol", version = "0.1.0" }
+
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.0" }
 lago-core = { path = "../lago/crates/lago-core", version = "0.2.0" }
