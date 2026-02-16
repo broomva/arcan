@@ -72,14 +72,12 @@ impl Observer {
                     .unwrap_or_default();
                 Some(format!("{role}{model_info}: {content}"))
             }
-            EventPayload::MessageDelta { role, delta, .. } => {
-                Some(format!("{role} delta: {delta}"))
-            }
-            EventPayload::ToolResult {
+            EventPayload::TextDelta { delta, .. } => Some(format!("assistant delta: {delta}")),
+            EventPayload::ToolCallCompleted {
                 tool_name, status, ..
             } => Some(format!("tool:{tool_name} → {status:?}")),
             EventPayload::StatePatched { patch, .. } => Some(format!("state patched: {patch}")),
-            EventPayload::Error { error } => Some(format!("error: {error}")),
+            EventPayload::ErrorRaised { message } => Some(format!("error: {message}")),
             EventPayload::RunFinished {
                 reason,
                 total_iterations,
@@ -184,8 +182,9 @@ mod tests {
         let mut obs = Observer::new(MemoryScope::Session, 10);
         let env = make_envelope(
             2,
-            EventPayload::ToolResult {
-                call_id: "c1".to_string(),
+            EventPayload::ToolCallCompleted {
+                tool_run_id: aios_protocol::ToolRunId::default(),
+                call_id: Some("c1".to_string()),
                 tool_name: "read_file".to_string(),
                 result: serde_json::json!({"content": "data"}),
                 duration_ms: 42,
@@ -202,8 +201,8 @@ mod tests {
         let mut obs = Observer::new(MemoryScope::Session, 10);
         let env = make_envelope(
             3,
-            EventPayload::Error {
-                error: "connection refused".to_string(),
+            EventPayload::ErrorRaised {
+                message: "connection refused".to_string(),
             },
         );
         obs.on_event(&env).unwrap();
@@ -217,7 +216,7 @@ mod tests {
         let env = make_envelope(
             4,
             EventPayload::StatePatched {
-                index: 1,
+                index: Some(1),
                 patch: serde_json::json!({"cwd": "/home"}),
                 revision: 1,
             },
@@ -250,7 +249,7 @@ mod tests {
         obs.on_event(&make_envelope(
             3,
             EventPayload::BranchCreated {
-                new_branch_id: BranchId::from_string("feature"),
+                new_branch_id: BranchId::from_string("feature").into(),
                 fork_point_seq: 0,
                 name: "feature".to_string(),
             },
@@ -275,8 +274,8 @@ mod tests {
         let mut obs = Observer::new(MemoryScope::Session, 10);
         obs.on_event(&make_envelope(
             42,
-            EventPayload::Error {
-                error: "boom".to_string(),
+            EventPayload::ErrorRaised {
+                message: "boom".to_string(),
             },
         ))
         .unwrap();
@@ -289,8 +288,8 @@ mod tests {
         for i in 1..=3 {
             obs.on_event(&make_envelope(
                 i,
-                EventPayload::Error {
-                    error: format!("err-{i}"),
+                EventPayload::ErrorRaised {
+                    message: format!("err-{i}"),
                 },
             ))
             .unwrap();
@@ -303,8 +302,8 @@ mod tests {
         let mut obs = Observer::new(MemoryScope::Session, 10);
         obs.on_event(&make_envelope(
             1,
-            EventPayload::Error {
-                error: "boom".to_string(),
+            EventPayload::ErrorRaised {
+                message: "boom".to_string(),
             },
         ))
         .unwrap();

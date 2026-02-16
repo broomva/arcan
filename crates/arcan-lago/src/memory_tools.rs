@@ -242,8 +242,8 @@ impl Tool for MemoryProposeTool {
             parent_id: None,
             payload: EventPayload::MemoryProposed {
                 scope,
-                proposal_id: proposal_id.clone(),
-                entries_ref,
+                proposal_id: proposal_id.clone().into(),
+                entries_ref: entries_ref.into(),
                 source_run_id: Some(ctx.run_id.clone()),
             },
             metadata: std::collections::HashMap::new(),
@@ -366,9 +366,9 @@ impl Tool for MemoryCommitTool {
             parent_id: None,
             payload: EventPayload::MemoryCommitted {
                 scope: MemoryScope::Session, // Default scope for commit
-                memory_id: memory_id.clone(),
-                committed_ref,
-                supersedes,
+                memory_id: memory_id.clone().into(),
+                committed_ref: committed_ref.into(),
+                supersedes: supersedes.map(Into::into),
             },
             metadata: std::collections::HashMap::new(),
             schema_version: 1,
@@ -442,7 +442,7 @@ mod tests {
                 parent_id: None,
                 payload: EventPayload::ObservationAppended {
                     scope: MemoryScope::Session,
-                    observation_ref: BlobHash::from_hex("obs1"),
+                    observation_ref: BlobHash::from_hex("obs1").into(),
                     source_run_id: None,
                 },
                 metadata: std::collections::HashMap::new(),

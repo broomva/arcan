@@ -161,7 +161,7 @@ mod tests {
             1,
             EventPayload::ObservationAppended {
                 scope: MemoryScope::Session,
-                observation_ref: BlobHash::from_hex("obs1"),
+                observation_ref: BlobHash::from_hex("obs1").into(),
                 source_run_id: None,
             },
         ))
@@ -170,7 +170,7 @@ mod tests {
             2,
             EventPayload::ObservationAppended {
                 scope: MemoryScope::User,
-                observation_ref: BlobHash::from_hex("obs2"),
+                observation_ref: BlobHash::from_hex("obs2").into(),
                 source_run_id: None,
             },
         ))
@@ -179,7 +179,7 @@ mod tests {
             3,
             EventPayload::ObservationAppended {
                 scope: MemoryScope::Session,
-                observation_ref: BlobHash::from_hex("obs3"),
+                observation_ref: BlobHash::from_hex("obs3").into(),
                 source_run_id: None,
             },
         ))
@@ -197,7 +197,7 @@ mod tests {
             1,
             EventPayload::ReflectionCompacted {
                 scope: MemoryScope::Session,
-                summary_ref: BlobHash::from_hex("summary1"),
+                summary_ref: BlobHash::from_hex("summary1").into(),
                 covers_through_seq: 10,
             },
         ))
@@ -214,7 +214,7 @@ mod tests {
             2,
             EventPayload::ReflectionCompacted {
                 scope: MemoryScope::Session,
-                summary_ref: BlobHash::from_hex("summary2"),
+                summary_ref: BlobHash::from_hex("summary2").into(),
                 covers_through_seq: 20,
             },
         ))
@@ -233,8 +233,8 @@ mod tests {
             1,
             EventPayload::MemoryCommitted {
                 scope: MemoryScope::User,
-                memory_id: MemoryId::from_string("MEM001"),
-                committed_ref: BlobHash::from_hex("ref1"),
+                memory_id: MemoryId::from_string("MEM001").into(),
+                committed_ref: BlobHash::from_hex("ref1").into(),
                 supersedes: None,
             },
         ))
@@ -254,8 +254,8 @@ mod tests {
             1,
             EventPayload::MemoryCommitted {
                 scope: MemoryScope::User,
-                memory_id: MemoryId::from_string("MEM001"),
-                committed_ref: BlobHash::from_hex("ref1"),
+                memory_id: MemoryId::from_string("MEM001").into(),
+                committed_ref: BlobHash::from_hex("ref1").into(),
                 supersedes: None,
             },
         ))
@@ -266,7 +266,7 @@ mod tests {
             2,
             EventPayload::MemoryTombstoned {
                 scope: MemoryScope::User,
-                memory_id: MemoryId::from_string("MEM001"),
+                memory_id: MemoryId::from_string("MEM001").into(),
                 reason: "outdated".to_string(),
             },
         ))
@@ -288,8 +288,8 @@ mod tests {
             1,
             EventPayload::MemoryCommitted {
                 scope: MemoryScope::User,
-                memory_id: MemoryId::from_string("MEM001"),
-                committed_ref: BlobHash::from_hex("ref1"),
+                memory_id: MemoryId::from_string("MEM001").into(),
+                committed_ref: BlobHash::from_hex("ref1").into(),
                 supersedes: None,
             },
         ))
@@ -300,9 +300,9 @@ mod tests {
             2,
             EventPayload::MemoryCommitted {
                 scope: MemoryScope::User,
-                memory_id: MemoryId::from_string("MEM002"),
-                committed_ref: BlobHash::from_hex("ref2"),
-                supersedes: Some(MemoryId::from_string("MEM001")),
+                memory_id: MemoryId::from_string("MEM002").into(),
+                committed_ref: BlobHash::from_hex("ref2").into(),
+                supersedes: Some(MemoryId::from_string("MEM001").into()),
             },
         ))
         .unwrap();
@@ -322,7 +322,7 @@ mod tests {
             1,
             EventPayload::ObservationAppended {
                 scope: MemoryScope::Session,
-                observation_ref: BlobHash::from_hex("obs1"),
+                observation_ref: BlobHash::from_hex("obs1").into(),
                 source_run_id: Some("run-1".to_string()),
             },
         ))
@@ -333,7 +333,7 @@ mod tests {
             2,
             EventPayload::ReflectionCompacted {
                 scope: MemoryScope::Session,
-                summary_ref: BlobHash::from_hex("sum1"),
+                summary_ref: BlobHash::from_hex("sum1").into(),
                 covers_through_seq: 1,
             },
         ))
@@ -344,8 +344,8 @@ mod tests {
             3,
             EventPayload::MemoryCommitted {
                 scope: MemoryScope::Session,
-                memory_id: MemoryId::from_string("MEM001"),
-                committed_ref: BlobHash::from_hex("ref1"),
+                memory_id: MemoryId::from_string("MEM001").into(),
+                committed_ref: BlobHash::from_hex("ref1").into(),
                 supersedes: None,
             },
         ))

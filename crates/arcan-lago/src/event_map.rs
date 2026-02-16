@@ -1,6 +1,7 @@
+use aios_protocol::{ApprovalId, ToolRunId};
 use arcan_core::protocol::{AgentEvent, RunStopReason, ToolCall, ToolResultSummary};
 use lago_core::event::{ApprovalDecision, RiskLevel, SpanStatus};
-use lago_core::{ApprovalId, BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
+use lago_core::{BranchId, EventEnvelope, EventId, EventPayload, SeqNo, SessionId};
 use std::collections::HashMap;
 
 /// Convert an Arcan `AgentEvent` into a Lago `EventEnvelope`.
@@ -18,21 +19,21 @@ pub fn arcan_to_lago(
     let payload = match event {
         AgentEvent::TextDelta {
             delta, iteration, ..
-        } => EventPayload::MessageDelta {
-            role: "assistant".to_string(),
+        } => EventPayload::TextDelta {
             delta: delta.clone(),
-            index: *iteration,
+            index: Some(*iteration),
         },
 
-        AgentEvent::ToolCallRequested { call, .. } => EventPayload::ToolInvoke {
+        AgentEvent::ToolCallRequested { call, .. } => EventPayload::ToolCallRequested {
             call_id: call.call_id.clone(),
             tool_name: call.tool_name.clone(),
             arguments: call.input.clone(),
             category: None,
         },
 
-        AgentEvent::ToolCallCompleted { result, .. } => EventPayload::ToolResult {
-            call_id: result.call_id.clone(),
+        AgentEvent::ToolCallCompleted { result, .. } => EventPayload::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some(result.call_id.clone()),
             tool_name: result.tool_name.clone(),
             result: result.output.clone(),
             duration_ms: 0,
@@ -44,8 +45,9 @@ pub fn arcan_to_lago(
             tool_name,
             error,
             ..
-        } => EventPayload::ToolResult {
-            call_id: call_id.clone(),
+        } => EventPayload::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some(call_id.clone()),
             tool_name: tool_name.clone(),
             result: serde_json::json!({ "error": error }),
             duration_ms: 0,
@@ -97,7 +99,7 @@ pub fn arcan_to_lago(
             revision,
             ..
         } => EventPayload::StatePatched {
-            index: *iteration,
+            index: Some(*iteration),
             patch: serde_json::to_value(patch).unwrap_or_default(),
             revision: *revision,
         },
@@ -144,8 +146,8 @@ pub fn arcan_to_lago(
             reason: reason.clone(),
         },
 
-        AgentEvent::RunErrored { error, .. } => EventPayload::Error {
-            error: error.clone(),
+        AgentEvent::RunErrored { error, .. } => EventPayload::ErrorRaised {
+            message: error.clone(),
         },
     };
 
@@ -173,14 +175,14 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
     let session_id = envelope.session_id.to_string();
 
     match &envelope.payload {
-        EventPayload::MessageDelta { delta, index, .. } => Some(AgentEvent::TextDelta {
+        EventPayload::TextDelta { delta, index } => Some(AgentEvent::TextDelta {
             run_id,
             session_id,
-            iteration: *index,
+            iteration: index.unwrap_or(0),
             delta: delta.clone(),
         }),
 
-        EventPayload::ToolInvoke {
+        EventPayload::ToolCallRequested {
             call_id,
             tool_name,
             arguments,
@@ -196,7 +198,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             },
         }),
 
-        EventPayload::ToolResult {
+        EventPayload::ToolCallCompleted {
             call_id,
             tool_name,
             result,
@@ -208,7 +210,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
                 session_id,
                 iteration: 0,
                 result: ToolResultSummary {
-                    call_id: call_id.clone(),
+                    call_id: call_id.clone().unwrap_or_default(),
                     tool_name: tool_name.clone(),
                     output: result.clone(),
                 },
@@ -217,7 +219,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
                 run_id,
                 session_id,
                 iteration: 0,
-                call_id: call_id.clone(),
+                call_id: call_id.clone().unwrap_or_default(),
                 tool_name: tool_name.clone(),
                 error: result
                     .get("error")
@@ -278,7 +280,7 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             .map(|p| AgentEvent::StatePatched {
                 run_id: run_id.clone(),
                 session_id: session_id.clone(),
-                iteration: *index,
+                iteration: index.unwrap_or(0),
                 patch: p,
                 revision: *revision,
             }),
@@ -311,10 +313,10 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             reason: reason.clone(),
         }),
 
-        EventPayload::Error { error } => Some(AgentEvent::RunErrored {
+        EventPayload::ErrorRaised { message } => Some(AgentEvent::RunErrored {
             run_id,
             session_id,
-            error: error.clone(),
+            error: message.clone(),
         }),
 
         // Context compaction events stored as Custom

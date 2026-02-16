@@ -148,6 +148,7 @@ dependencies = [
 name = "arcan-lago"
 version = "0.2.0"
 dependencies = [
+ "aios-protocol",
  "arcan-core",
  "arcan-store",
  "chrono",
