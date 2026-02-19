@@ -108,7 +108,9 @@ async fn agent_loop_echo_produces_correct_event_sequence() {
     let agent_loop = build_agent_loop(EchoProvider);
     let (tx, rx) = mpsc::channel(100);
 
-    let output = agent_loop.run("session-1", "Hello".to_string(), tx).await;
+    let output = agent_loop
+        .run("session-1", "main", "Hello".to_string(), tx)
+        .await;
     assert!(output.is_ok());
 
     let events = collect_events(rx).await;
@@ -169,7 +171,7 @@ async fn agent_loop_persists_events_to_repo() {
     let (tx, rx) = mpsc::channel(100);
 
     agent_loop
-        .run("persist-test", "Hello".to_string(), tx)
+        .run("persist-test", "main", "Hello".to_string(), tx)
         .await
         .unwrap();
 
@@ -177,7 +179,7 @@ async fn agent_loop_persists_events_to_repo() {
     drop(rx);
 
     // Verify events were persisted
-    let records = repo.load_session("persist-test").unwrap();
+    let records = repo.load_session("persist-test", "main").unwrap();
     assert!(!records.is_empty(), "Session should have persisted events");
 
     // Verify first persisted event is RunStarted
@@ -206,7 +208,7 @@ async fn agent_loop_continues_from_existing_session() {
     // First run
     let (tx1, rx1) = mpsc::channel(100);
     agent_loop
-        .run("multi-turn", "First message".to_string(), tx1)
+        .run("multi-turn", "main", "First message".to_string(), tx1)
         .await
         .unwrap();
     drop(rx1);
@@ -214,7 +216,7 @@ async fn agent_loop_continues_from_existing_session() {
     // Second run — should load history from first run
     let (tx2, rx2) = mpsc::channel(100);
     agent_loop
-        .run("multi-turn", "Second message".to_string(), tx2)
+        .run("multi-turn", "main", "Second message".to_string(), tx2)
         .await
         .unwrap();
 
@@ -240,7 +242,7 @@ async fn agent_loop_handles_tool_not_found() {
     let (tx, rx) = mpsc::channel(100);
 
     let output = agent_loop
-        .run("tool-test", "trigger tool".to_string(), tx)
+        .run("tool-test", "main", "trigger tool".to_string(), tx)
         .await;
     assert!(output.is_ok());
 
@@ -261,7 +263,7 @@ async fn agent_loop_tool_not_found_produces_error_stop() {
     let (tx, rx) = mpsc::channel(100);
 
     agent_loop
-        .run("error-stop", "trigger tool".to_string(), tx)
+        .run("error-stop", "main", "trigger tool".to_string(), tx)
         .await
         .unwrap();
 

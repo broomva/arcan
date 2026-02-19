@@ -1,7 +1,25 @@
 # Arcan Project Status
 
 > **This is the single source of truth** for what's implemented, what's missing, and what's planned.
-> Last updated: 2026-02-14
+> Last updated: 2026-02-17
+
+## 2026-02-17 Hard-Cutover Update
+
+- Workspace tests: **255/255 passing**.
+- Session repository semantics are now branch-aware:
+  - `append` requires `branch_id`
+  - `load_session` requires `branch_id`
+  - `head` requires `branch_id`
+- Arcand now exposes canonical v1 endpoints:
+  - `POST /v1/sessions/{session_id}/runs`
+  - `POST /v1/sessions/{session_id}/signals`
+  - `GET /v1/sessions/{session_id}/state`
+  - `GET /v1/sessions/{session_id}/stream`
+- Arcand canonical stream emits data-part events:
+  - `state.patch`, `intent.*`, `tool.*`, plus assistant text/message parts.
+- Run context now carries explicit `branch_id` through orchestrator input/output.
+- Root conformance entrypoint added at:
+  - `/Users/broomva/broomva.tech/live/conformance/run.sh`
 
 ---
 

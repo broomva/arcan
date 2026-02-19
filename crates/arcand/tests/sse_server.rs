@@ -216,6 +216,137 @@ async fn invalid_request_returns_error() {
     );
 }
 
+#[tokio::test]
+async fn v1_runs_streams_canonical_parts() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/v1/sessions/v1-run-session/runs"))
+        .json(&serde_json::json!({
+            "message": "Hello v1"
+        }))
+        .send()
+        .await
+        .expect("v1 runs request failed");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|v| v.to_str().ok()),
+        Some("v1")
+    );
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("event: assistant.text.delta"),
+        "expected assistant.text.delta part in stream, body: {body}"
+    );
+    assert!(
+        body.contains("event: done"),
+        "expected terminal done part in stream, body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn v1_state_returns_canonical_snapshot_shape() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Seed session history
+    let _ = client
+        .post(format!("{url}/v1/sessions/v1-state-session/runs"))
+        .json(&serde_json::json!({
+            "message": "seed snapshot"
+        }))
+        .send()
+        .await
+        .expect("v1 run seed request failed")
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{url}/v1/sessions/v1-state-session/state?branch=main"
+        ))
+        .send()
+        .await
+        .expect("v1 state request failed");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.get("version").is_some(), "missing version: {body}");
+    assert!(
+        body["state"].get("session").is_some(),
+        "missing session: {body}"
+    );
+    assert!(
+        body["state"].get("agent").is_some(),
+        "missing agent: {body}"
+    );
+    assert!(body["state"].get("os").is_some(), "missing os: {body}");
+    assert!(
+        body["state"].get("memory").is_some(),
+        "missing memory: {body}"
+    );
+}
+
+#[tokio::test]
+async fn v1_stream_replays_from_version_cursor() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let _ = client
+        .post(format!("{url}/v1/sessions/v1-stream-session/runs"))
+        .json(&serde_json::json!({
+            "message": "seed replay"
+        }))
+        .send()
+        .await
+        .expect("v1 run seed request failed")
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{url}/v1/sessions/v1-stream-session/stream?branch=main&from_version=0"
+        ))
+        .send()
+        .await
+        .expect("v1 stream request failed");
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("event: assistant.text.delta"),
+        "expected replayed assistant.text.delta, body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn v1_signals_accepts_external_signal() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/v1/sessions/signal-session/signals"))
+        .json(&serde_json::json!({
+            "signal_type": "noop",
+            "data": { "ok": true }
+        }))
+        .send()
+        .await
+        .expect("v1 signals request failed");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["signal_type"], "noop");
+}
+
 // --- Approval endpoint tests ---
 
 use arcan_core::runtime::ApprovalResolver;

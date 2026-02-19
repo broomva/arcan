@@ -37,19 +37,21 @@ impl AgentLoop {
     pub async fn run(
         &self,
         session_id: &str,
+        branch_id: &str,
         user_message: String,
         event_sender: mpsc::Sender<AgentEvent>,
     ) -> Result<RunOutput> {
         let orchestrator = self.orchestrator.clone();
         let session_repo = self.session_repo.clone();
         let session_id_owned = session_id.to_string();
+        let branch_id_owned = branch_id.to_string();
         let approval_gate = self.approval_gate.clone();
 
         // Run everything in spawn_blocking since SessionRepository is synchronous
         // and may use block_on internally (e.g. LagoSessionRepository).
         let output = tokio::task::spawn_blocking(move || -> Result<RunOutput> {
             // 1. Load Session History & Reconstruct State
-            let history = session_repo.load_session(&session_id_owned)?;
+            let history = session_repo.load_session(&session_id_owned, &branch_id_owned)?;
             let mut state = AppState::default();
             let mut messages: Vec<ChatMessage> = Vec::new();
 
@@ -90,10 +92,12 @@ impl AgentLoop {
                 let sender = event_sender.clone();
                 let repo = session_repo.clone();
                 let sid = session_id_owned.clone();
+                let bid = branch_id_owned.clone();
                 gate.set_event_handler(Arc::new(move |event| {
                     let _ = sender.blocking_send(event.clone());
                     let _ = repo.append(AppendEvent {
                         session_id: sid.clone(),
+                        branch_id: bid.clone(),
                         event,
                         parent_id: None,
                     });
@@ -104,6 +108,7 @@ impl AgentLoop {
             let input = RunInput {
                 run_id,
                 session_id: session_id_owned.clone(),
+                branch_id: branch_id_owned.clone(),
                 messages,
                 state,
             };
@@ -111,11 +116,13 @@ impl AgentLoop {
             // 4. Run Orchestrator (Provider::complete is synchronous)
             let session_repo_inner = session_repo.clone();
             let sid = session_id_owned.clone();
+            let bid = branch_id_owned.clone();
             let result = orchestrator.run(input, |event| {
                 let _ = event_sender.blocking_send(event.clone());
 
                 let _ = session_repo_inner.append(AppendEvent {
                     session_id: sid.clone(),
+                    branch_id: bid.clone(),
                     event,
                     parent_id: None,
                 });

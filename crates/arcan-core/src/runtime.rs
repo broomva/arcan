@@ -124,6 +124,7 @@ impl Default for OrchestratorConfig {
 pub struct RunInput {
     pub run_id: String,
     pub session_id: String,
+    pub branch_id: String,
     pub messages: Vec<ChatMessage>,
     pub state: AppState,
 }
@@ -132,6 +133,7 @@ pub struct RunInput {
 pub struct RunOutput {
     pub run_id: String,
     pub session_id: String,
+    pub branch_id: String,
     pub events: Vec<AgentEvent>,
     pub messages: Vec<ChatMessage>,
     pub state: AppState,
@@ -581,6 +583,7 @@ impl Orchestrator {
         let output = RunOutput {
             run_id: input.run_id,
             session_id: input.session_id,
+            branch_id: input.branch_id,
             events,
             messages,
             state,
@@ -745,6 +748,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "session-1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -798,6 +802,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -845,6 +850,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -895,6 +901,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -957,6 +964,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -994,6 +1002,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("hi")],
                 state: AppState::default(),
             },
@@ -1035,6 +1044,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -1096,6 +1106,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -1161,6 +1172,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },
@@ -1236,6 +1248,7 @@ mod tests {
             RunInput {
                 run_id: "run-1".to_string(),
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 messages: vec![ChatMessage::user("test")],
                 state: AppState::default(),
             },

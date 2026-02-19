@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub struct EventRecord {
     pub id: String,
     pub session_id: String,
+    pub branch_id: String,
+    pub sequence: u64,
     pub parent_id: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub event: AgentEvent,
@@ -21,56 +23,75 @@ pub struct EventRecord {
 #[derive(Debug, Clone)]
 pub struct AppendEvent {
     pub session_id: String,
+    pub branch_id: String,
     pub parent_id: Option<String>,
     pub event: AgentEvent,
 }
 
 pub trait SessionRepository: Send + Sync {
     fn append(&self, request: AppendEvent) -> Result<EventRecord, StoreError>;
-    fn load_session(&self, session_id: &str) -> Result<Vec<EventRecord>, StoreError>;
+    fn load_session(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<EventRecord>, StoreError>;
     fn load_children(&self, parent_id: &str) -> Result<Vec<EventRecord>, StoreError>;
-    fn head(&self, session_id: &str) -> Result<Option<EventRecord>, StoreError>;
+    fn head(&self, session_id: &str, branch_id: &str) -> Result<Option<EventRecord>, StoreError>;
 }
 
 #[derive(Default)]
 pub struct InMemorySessionRepository {
-    by_session: RwLock<HashMap<String, Vec<EventRecord>>>,
+    by_session_branch: RwLock<HashMap<String, Vec<EventRecord>>>,
+}
+
+fn session_branch_key(session_id: &str, branch_id: &str) -> String {
+    format!("{session_id}::{branch_id}")
 }
 
 impl SessionRepository for InMemorySessionRepository {
     fn append(&self, request: AppendEvent) -> Result<EventRecord, StoreError> {
+        let mut guard = self
+            .by_session_branch
+            .write()
+            .map_err(|_| StoreError::PoisonedLock("in-memory write".to_string()))?;
+
+        let key = session_branch_key(&request.session_id, &request.branch_id);
+        let records = guard.entry(key).or_default();
+        let sequence = records.len() as u64 + 1;
+
         let record = EventRecord {
             id: Uuid::new_v4().to_string(),
             session_id: request.session_id,
+            branch_id: request.branch_id,
+            sequence,
             parent_id: request.parent_id,
             timestamp: Utc::now(),
             event: request.event,
         };
 
-        let mut guard = self
-            .by_session
-            .write()
-            .map_err(|_| StoreError::PoisonedLock("in-memory write".to_string()))?;
-
-        guard
-            .entry(record.session_id.clone())
-            .or_default()
-            .push(record.clone());
+        records.push(record.clone());
 
         Ok(record)
     }
 
-    fn load_session(&self, session_id: &str) -> Result<Vec<EventRecord>, StoreError> {
+    fn load_session(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<EventRecord>, StoreError> {
         let guard = self
-            .by_session
+            .by_session_branch
             .read()
             .map_err(|_| StoreError::PoisonedLock("in-memory read".to_string()))?;
-        Ok(guard.get(session_id).cloned().unwrap_or_default())
+        Ok(guard
+            .get(&session_branch_key(session_id, branch_id))
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn load_children(&self, parent_id: &str) -> Result<Vec<EventRecord>, StoreError> {
         let guard = self
-            .by_session
+            .by_session_branch
             .read()
             .map_err(|_| StoreError::PoisonedLock("in-memory read".to_string()))?;
 
@@ -86,13 +107,13 @@ impl SessionRepository for InMemorySessionRepository {
         Ok(out)
     }
 
-    fn head(&self, session_id: &str) -> Result<Option<EventRecord>, StoreError> {
+    fn head(&self, session_id: &str, branch_id: &str) -> Result<Option<EventRecord>, StoreError> {
         let guard = self
-            .by_session
+            .by_session_branch
             .read()
             .map_err(|_| StoreError::PoisonedLock("in-memory read".to_string()))?;
         Ok(guard
-            .get(session_id)
+            .get(&session_branch_key(session_id, branch_id))
             .and_then(|records| records.last().cloned()))
     }
 }
@@ -106,8 +127,8 @@ impl JsonlSessionRepository {
         Self { root }
     }
 
-    fn session_file(&self, session_id: &str) -> PathBuf {
-        self.root.join(format!("{session_id}.jsonl"))
+    fn session_file(&self, session_id: &str, branch_id: &str) -> PathBuf {
+        self.root.join(format!("{session_id}__{branch_id}.jsonl"))
     }
 
     fn ensure_root(&self) -> Result<(), StoreError> {
@@ -151,16 +172,19 @@ impl JsonlSessionRepository {
 impl SessionRepository for JsonlSessionRepository {
     fn append(&self, request: AppendEvent) -> Result<EventRecord, StoreError> {
         self.ensure_root()?;
+        let path = self.session_file(&request.session_id, &request.branch_id);
+        let sequence = Self::read_records(&path)?.len() as u64 + 1;
 
         let record = EventRecord {
             id: Uuid::new_v4().to_string(),
             session_id: request.session_id.clone(),
+            branch_id: request.branch_id.clone(),
+            sequence,
             parent_id: request.parent_id,
             timestamp: Utc::now(),
             event: request.event,
         };
 
-        let path = self.session_file(&request.session_id);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -181,8 +205,12 @@ impl SessionRepository for JsonlSessionRepository {
         Ok(record)
     }
 
-    fn load_session(&self, session_id: &str) -> Result<Vec<EventRecord>, StoreError> {
-        Self::read_records(&self.session_file(session_id))
+    fn load_session(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<EventRecord>, StoreError> {
+        Self::read_records(&self.session_file(session_id, branch_id))
     }
 
     fn load_children(&self, parent_id: &str) -> Result<Vec<EventRecord>, StoreError> {
@@ -213,8 +241,8 @@ impl SessionRepository for JsonlSessionRepository {
         Ok(out)
     }
 
-    fn head(&self, session_id: &str) -> Result<Option<EventRecord>, StoreError> {
-        Ok(Self::read_records(&self.session_file(session_id))?.pop())
+    fn head(&self, session_id: &str, branch_id: &str) -> Result<Option<EventRecord>, StoreError> {
+        Ok(Self::read_records(&self.session_file(session_id, branch_id))?.pop())
     }
 }
 
@@ -256,16 +284,18 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r1", "s1"),
             })
             .expect("append should succeed");
 
         let head = store
-            .head("s1")
+            .head("s1", "main")
             .expect("head should load")
             .expect("head exists");
         assert_eq!(head.session_id, "s1");
+        assert_eq!(head.branch_id, "main");
     }
 
     #[test]
@@ -275,22 +305,23 @@ mod tests {
             store
                 .append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: make_event(&format!("r{i}"), "s1"),
                 })
                 .unwrap();
         }
 
-        let records = store.load_session("s1").unwrap();
+        let records = store.load_session("s1", "main").unwrap();
         assert_eq!(records.len(), 5);
     }
 
     #[test]
     fn empty_session_returns_empty() {
         let store = InMemorySessionRepository::default();
-        let records = store.load_session("nonexistent").unwrap();
+        let records = store.load_session("nonexistent", "main").unwrap();
         assert!(records.is_empty());
-        assert!(store.head("nonexistent").unwrap().is_none());
+        assert!(store.head("nonexistent", "main").unwrap().is_none());
     }
 
     #[test]
@@ -299,6 +330,7 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "a".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r1", "a"),
             })
@@ -306,13 +338,14 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "b".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r2", "b"),
             })
             .unwrap();
 
-        assert_eq!(store.load_session("a").unwrap().len(), 1);
-        assert_eq!(store.load_session("b").unwrap().len(), 1);
+        assert_eq!(store.load_session("a", "main").unwrap().len(), 1);
+        assert_eq!(store.load_session("b", "main").unwrap().len(), 1);
     }
 
     #[test]
@@ -321,6 +354,7 @@ mod tests {
         let parent = store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r1", "s1"),
             })
@@ -329,6 +363,7 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: Some(parent.id.clone()),
                 event: make_event("r2", "s1"),
             })
@@ -337,6 +372,7 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r3", "s1"),
             })
@@ -354,6 +390,7 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r1", "s1"),
             })
@@ -362,15 +399,16 @@ mod tests {
         store
             .append(AppendEvent {
                 session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
                 parent_id: None,
                 event: make_event("r2", "s1"),
             })
             .unwrap();
 
-        let records = store.load_session("s1").unwrap();
+        let records = store.load_session("s1", "main").unwrap();
         assert_eq!(records.len(), 2);
 
-        let head = store.head("s1").unwrap().unwrap();
+        let head = store.head("s1", "main").unwrap().unwrap();
         assert!(matches!(
             head.event,
             AgentEvent::RunFinished { ref run_id, .. } if run_id == "r2"
@@ -381,7 +419,7 @@ mod tests {
     fn jsonl_repo_empty_session() {
         let dir = tempfile::tempdir().unwrap();
         let store = JsonlSessionRepository::new(dir.path().to_path_buf());
-        assert!(store.load_session("nope").unwrap().is_empty());
-        assert!(store.head("nope").unwrap().is_none());
+        assert!(store.load_session("nope", "main").unwrap().is_empty());
+        assert!(store.head("nope", "main").unwrap().is_none());
     }
 }

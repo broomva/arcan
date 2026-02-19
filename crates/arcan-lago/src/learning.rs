@@ -276,6 +276,7 @@ mod tests {
         let output = RunOutput {
             run_id: "run-1".to_string(),
             session_id: "sess-1".to_string(),
+            branch_id: "main".to_string(),
             reason: RunStopReason::Error,
             events: vec![],
             messages: vec![],

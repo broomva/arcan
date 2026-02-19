@@ -37,16 +37,8 @@ impl LagoSessionRepository {
 impl SessionRepository for LagoSessionRepository {
     fn append(&self, request: AppendEvent) -> Result<EventRecord, StoreError> {
         let session_id = self.session_id(&request.session_id);
-        let branch_id = self.default_branch.clone();
-
-        // Get the next sequence number.
-        let head_seq = self
-            .block_on(self.journal.head_seq(&session_id, &branch_id))
-            .map_err(|e| StoreError::Io {
-                path: "lago-journal".into(),
-                source: std::io::Error::other(e.to_string()),
-            })?;
-        let seq: SeqNo = head_seq + 1;
+        let branch_id = BranchId::from(request.branch_id.clone());
+        let seq: SeqNo = 0;
 
         // Extract run_id from the event for the envelope.
         let run_id = extract_run_id(&request.event);
@@ -67,26 +59,33 @@ impl SessionRepository for LagoSessionRepository {
         )
         .unwrap_or_else(Utc::now);
 
-        self.block_on(self.journal.append(envelope))
-            .map_err(|e| StoreError::Io {
-                path: "lago-journal".into(),
-                source: std::io::Error::other(e.to_string()),
-            })?;
+        let assigned_seq =
+            self.block_on(self.journal.append(envelope))
+                .map_err(|e| StoreError::Io {
+                    path: "lago-journal".into(),
+                    source: std::io::Error::other(e.to_string()),
+                })?;
 
         Ok(EventRecord {
             id: arcan_event_id,
             session_id: request.session_id,
+            branch_id: request.branch_id,
+            sequence: assigned_seq,
             parent_id: request.parent_id,
             timestamp,
             event: request.event,
         })
     }
 
-    fn load_session(&self, session_id: &str) -> Result<Vec<EventRecord>, StoreError> {
+    fn load_session(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<EventRecord>, StoreError> {
         let sid = self.session_id(session_id);
         let query = EventQuery::new()
             .session(sid.clone())
-            .branch(self.default_branch.clone());
+            .branch(BranchId::from(branch_id.to_string()));
 
         let envelopes = self
             .block_on(self.journal.read(query))
@@ -113,6 +112,8 @@ impl SessionRepository for LagoSessionRepository {
                 records.push(EventRecord {
                     id: arcan_id,
                     session_id: session_id.to_string(),
+                    branch_id: envelope.branch_id.to_string(),
+                    sequence: envelope.seq,
                     parent_id: envelope.parent_id.as_ref().map(ToString::to_string),
                     timestamp,
                     event: agent_event,
@@ -160,6 +161,8 @@ impl SessionRepository for LagoSessionRepository {
                     results.push(EventRecord {
                         id: arcan_id,
                         session_id: envelope.session_id.to_string(),
+                        branch_id: envelope.branch_id.to_string(),
+                        sequence: envelope.seq,
                         parent_id: Some(parent_id.to_string()),
                         timestamp,
                         event: agent_event,
@@ -171,8 +174,8 @@ impl SessionRepository for LagoSessionRepository {
         Ok(results)
     }
 
-    fn head(&self, session_id: &str) -> Result<Option<EventRecord>, StoreError> {
-        let records = self.load_session(session_id)?;
+    fn head(&self, session_id: &str, branch_id: &str) -> Result<Option<EventRecord>, StoreError> {
+        let records = self.load_session(session_id, branch_id)?;
         Ok(records.into_iter().last())
     }
 }
@@ -229,6 +232,7 @@ mod tests {
             move || {
                 repo.append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: make_event("r1", "s1"),
                 })
@@ -242,7 +246,7 @@ mod tests {
 
         let records = tokio::task::spawn_blocking({
             let repo = repo.clone();
-            move || repo.load_session("s1")
+            move || repo.load_session("s1", "main")
         })
         .await
         .unwrap()
@@ -260,12 +264,14 @@ mod tests {
             move || {
                 repo.append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: make_event("r1", "s1"),
                 })
                 .unwrap();
                 repo.append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: make_event("r2", "s1"),
                 })
@@ -277,7 +283,7 @@ mod tests {
 
         let head = tokio::task::spawn_blocking({
             let repo = repo.clone();
-            move || repo.head("s1")
+            move || repo.head("s1", "main")
         })
         .await
         .unwrap()
@@ -292,7 +298,7 @@ mod tests {
 
         let records = tokio::task::spawn_blocking({
             let repo = repo.clone();
-            move || repo.load_session("nonexistent")
+            move || repo.load_session("nonexistent", "main")
         })
         .await
         .unwrap()
@@ -302,7 +308,7 @@ mod tests {
 
         let head = tokio::task::spawn_blocking({
             let repo = repo.clone();
-            move || repo.head("nonexistent")
+            move || repo.head("nonexistent", "main")
         })
         .await
         .unwrap()
@@ -320,6 +326,7 @@ mod tests {
             move || {
                 repo.append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: AgentEvent::ToolCallRequested {
                         run_id: "r1".into(),
@@ -336,6 +343,7 @@ mod tests {
 
                 repo.append(AppendEvent {
                     session_id: "s1".to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event: AgentEvent::ToolCallCompleted {
                         run_id: "r1".into(),
@@ -356,7 +364,7 @@ mod tests {
 
         let records = tokio::task::spawn_blocking({
             let repo = repo.clone();
-            move || repo.load_session("s1")
+            move || repo.load_session("s1", "main")
         })
         .await
         .unwrap()

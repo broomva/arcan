@@ -227,17 +227,12 @@ impl Tool for MemoryProposeTool {
             .map_err(|e| tool_err(format!("serialize error: {e}")))?;
         let entries_ref = BlobHash::from_hex(format!("{:x}", md5_hash(entries_json.as_bytes())));
 
-        let head_seq = self
-            .block_on(self.journal.head_seq(&session_id, branch_id))
-            .map_err(|e| tool_err(format!("journal error: {e}")))?;
-        let seq = head_seq + 1;
-
         let envelope = EventEnvelope {
             event_id: EventId::new(),
             session_id,
             branch_id: branch_id.clone(),
             run_id: Some(RunId::from_string(&ctx.run_id)),
-            seq,
+            seq: 0,
             timestamp: EventEnvelope::now_micros(),
             parent_id: None,
             payload: EventPayload::MemoryProposed {
@@ -351,17 +346,12 @@ impl Tool for MemoryCommitTool {
         let memory_id = MemoryId::new();
         let committed_ref = BlobHash::from_hex(format!("committed-{proposal_id_str}"));
 
-        let head_seq = self
-            .block_on(self.journal.head_seq(&session_id, branch_id))
-            .map_err(|e| tool_err(format!("journal error: {e}")))?;
-        let seq = head_seq + 1;
-
         let envelope = EventEnvelope {
             event_id: EventId::new(),
             session_id,
             branch_id: branch_id.clone(),
             run_id: None,
-            seq,
+            seq: 0,
             timestamp: EventEnvelope::now_micros(),
             parent_id: None,
             payload: EventPayload::MemoryCommitted {

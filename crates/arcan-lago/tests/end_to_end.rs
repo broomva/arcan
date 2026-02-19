@@ -113,6 +113,7 @@ async fn full_session_lifecycle_round_trip() {
             for event in events_clone {
                 repo.append(AppendEvent {
                     session_id: session_id.to_string(),
+                    branch_id: "main".to_string(),
                     parent_id: None,
                     event,
                 })
@@ -126,7 +127,10 @@ async fn full_session_lifecycle_round_trip() {
     // Read back through the repository (Lago journal → Arcan events)
     let records = tokio::task::spawn_blocking({
         let repo = repo.clone();
-        move || repo.load_session(session_id).expect("load should succeed")
+        move || {
+            repo.load_session(session_id, "main")
+                .expect("load should succeed")
+        }
     })
     .await
     .unwrap();
@@ -341,6 +345,7 @@ async fn multiple_sessions_isolated() {
             // Session 1
             repo.append(AppendEvent {
                 session_id: "session-a".into(),
+                branch_id: "main".into(),
                 parent_id: None,
                 event: AgentEvent::TextDelta {
                     run_id: "r1".into(),
@@ -354,6 +359,7 @@ async fn multiple_sessions_isolated() {
             // Session 2
             repo.append(AppendEvent {
                 session_id: "session-b".into(),
+                branch_id: "main".into(),
                 parent_id: None,
                 event: AgentEvent::TextDelta {
                     run_id: "r2".into(),
@@ -367,6 +373,7 @@ async fn multiple_sessions_isolated() {
             // Session 1 again
             repo.append(AppendEvent {
                 session_id: "session-a".into(),
+                branch_id: "main".into(),
                 parent_id: None,
                 event: AgentEvent::RunFinished {
                     run_id: "r1".into(),
@@ -385,7 +392,7 @@ async fn multiple_sessions_isolated() {
     // Load session A
     let records_a = tokio::task::spawn_blocking({
         let repo = repo.clone();
-        move || repo.load_session("session-a").unwrap()
+        move || repo.load_session("session-a", "main").unwrap()
     })
     .await
     .unwrap();
@@ -394,7 +401,7 @@ async fn multiple_sessions_isolated() {
     // Load session B
     let records_b = tokio::task::spawn_blocking({
         let repo = repo.clone();
-        move || repo.load_session("session-b").unwrap()
+        move || repo.load_session("session-b", "main").unwrap()
     })
     .await
     .unwrap();
