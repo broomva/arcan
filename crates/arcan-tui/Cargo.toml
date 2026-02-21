@@ -1,0 +1,37 @@
+[package]
+name = "arcan-tui"
+version = "0.2.0"
+edition = "2024"
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# TUI Framework
+ratatui = "0.26"
+crossterm = "0.27"
+
+# Async & Networking
+tokio = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = "0.6"
+futures = "0.3"
+tokio-stream = { workspace = true }
+
+# Serialization & Utils
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+clap = { workspace = true }
+
+# Domain Types
+aios-protocol = { workspace = true }
+arcan-core = { path = "../arcan-core" }
+
+[dev-dependencies]
+mockall = "0.12"
+wiremock = "0.6"

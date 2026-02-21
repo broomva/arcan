@@ -4,6 +4,7 @@ members = [
   "crates/arcan-harness",
   "crates/arcan-store",
   "crates/arcan-provider",
+  "crates/arcan-tui",
   "crates/arcand",
   "crates/arcan-lago",
   "crates/arcan",
