@@ -6,6 +6,10 @@ authors.workspace = true
 repository.workspace = true
 publish = false
 
+[lib]
+name = "arcan_tui"
+path = "src/lib.rs"
+
 [dependencies]
 # TUI Framework
 ratatui = "0.26"

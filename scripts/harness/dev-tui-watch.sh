@@ -26,7 +26,7 @@ WATCH_PATHS=(
   "-w" "crates/arcan-lago"
 )
 
-DAEMON_CMD=(cargo watch "${WATCH_PATHS[@]}" -x "run -p arcan -- --port ${PORT} --data-dir ${DATA_DIR}")
+DAEMON_CMD=(cargo watch "${WATCH_PATHS[@]}" -x "run -p arcan -- --data-dir ${DATA_DIR} --port ${PORT} serve")
 
 echo "Starting daemon watch on ${URL} (data dir: ${DATA_DIR})"
 if [[ "${ARCAN_MOCK}" == "1" ]]; then
@@ -48,7 +48,7 @@ echo "Waiting for daemon health at ${URL}/health ..."
 for _ in {1..300}; do
   if curl -fsS "${URL}/health" >/dev/null 2>&1; then
     echo "Daemon is healthy. Launching TUI session '${SESSION}'."
-    exec cargo run -p arcan-tui -- --url "${URL}" --session "${SESSION}"
+    exec cargo run -p arcan -- chat --url "${URL}" --session "${SESSION}"
   fi
   sleep 0.2
 done

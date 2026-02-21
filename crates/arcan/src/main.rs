@@ -1,3 +1,5 @@
+mod daemon;
+
 use arcan_core::runtime::{Orchestrator, OrchestratorConfig, Provider, ToolRegistry};
 use arcan_harness::edit::EditFileTool;
 use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
@@ -9,10 +11,10 @@ use arcan_lago::{
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router_full};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -24,21 +26,40 @@ use tracing_subscriber::EnvFilter;
     about = "Arcan agent runtime with streaming and tool execution"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Data directory for journal and blob storage
-    #[arg(long, default_value = ".arcan")]
+    #[arg(long, default_value = ".arcan", global = true)]
     data_dir: PathBuf,
 
     /// HTTP listen port
-    #[arg(long, default_value_t = 3000)]
+    #[arg(long, default_value_t = 3000, global = true)]
     port: u16,
+}
 
-    /// Maximum orchestrator iterations per run
-    #[arg(long, default_value_t = 10)]
-    max_iterations: u32,
+#[derive(Subcommand)]
+enum Command {
+    /// Run the daemon in foreground
+    Serve {
+        /// Maximum orchestrator iterations per run
+        #[arg(long, default_value_t = 10)]
+        max_iterations: u32,
 
-    /// Approval timeout in seconds (default 300 = 5 minutes)
-    #[arg(long, default_value_t = 300)]
-    approval_timeout: u64,
+        /// Approval timeout in seconds (default 300 = 5 minutes)
+        #[arg(long, default_value_t = 300)]
+        approval_timeout: u64,
+    },
+    /// Launch the TUI client (auto-starts daemon if needed)
+    Chat {
+        /// Session ID to attach to
+        #[arg(short, long, default_value = "default")]
+        session: String,
+
+        /// Daemon URL (skip auto-start, connect to existing)
+        #[arg(long)]
+        url: Option<String>,
+    },
 }
 
 async fn shutdown_signal() {
@@ -62,19 +83,22 @@ async fn shutdown_signal() {
     tracing::info!("Received shutdown signal, draining connections...");
 }
 
-fn main() -> anyhow::Result<()> {
-    // Structured logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
-    let cli = Cli::parse();
+fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {
     let workspace_root = std::env::current_dir()?;
-    let data_dir = if cli.data_dir.is_relative() {
-        workspace_root.join(&cli.data_dir)
+    Ok(if data_dir.is_relative() {
+        workspace_root.join(data_dir)
     } else {
-        cli.data_dir.clone()
-    };
+        data_dir.clone()
+    })
+}
+
+fn run_serve(
+    data_dir: &Path,
+    port: u16,
+    max_iterations: u32,
+    approval_timeout: u64,
+) -> anyhow::Result<()> {
+    let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
     let journal_path = data_dir.join("journal.redb");
@@ -192,7 +216,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // --- Approval gate ---
-    let approval_gate = Arc::new(ApprovalGate::new(Duration::from_secs(cli.approval_timeout)));
+    let approval_gate = Arc::new(ApprovalGate::new(Duration::from_secs(approval_timeout)));
 
     // --- Policy middleware ---
     let tool_annotations: std::collections::HashMap<String, _> = registry
@@ -207,7 +231,7 @@ fn main() -> anyhow::Result<()> {
 
     // --- Orchestrator ---
     let config = OrchestratorConfig {
-        max_iterations: cli.max_iterations,
+        max_iterations,
         context: Some(arcan_core::context::ContextConfig::default()),
         context_compiler: None,
     };
@@ -229,7 +253,7 @@ fn main() -> anyhow::Result<()> {
         // --- HTTP Server ---
         let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
         let router = create_router_full(agent_loop, orchestrator, Some(resolver)).await;
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cli.port));
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
 
         tracing::info!(%addr, "Listening");
@@ -240,4 +264,67 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("Server shut down gracefully");
         Ok(())
     })
+}
+
+async fn run_chat(
+    data_dir: PathBuf,
+    port: u16,
+    session: String,
+    url: Option<String>,
+) -> anyhow::Result<()> {
+    let base_url = match url {
+        Some(u) => u,
+        None => daemon::ensure_daemon(&data_dir, port).await?,
+    };
+
+    arcan_tui::run_tui(base_url, session).await
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let data_dir = resolve_data_dir(&cli.data_dir)?;
+
+    match cli.command {
+        Some(Command::Serve {
+            max_iterations,
+            approval_timeout,
+        }) => {
+            // Structured logging to stderr for daemon mode
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+
+            run_serve(&data_dir, cli.port, max_iterations, approval_timeout)
+        }
+        Some(Command::Chat { session, url }) => {
+            // File-based logging for TUI mode (don't clobber the terminal)
+            let log_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&log_dir)?;
+            let file_appender = tracing_appender::rolling::never(&log_dir, "tui.log");
+            tracing_subscriber::fmt()
+                .with_writer(file_appender)
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_chat(data_dir, cli.port, session, url))
+        }
+        None => {
+            // Default: launch TUI with auto-daemon (same as `arcan chat`)
+            let log_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&log_dir)?;
+            let file_appender = tracing_appender::rolling::never(&log_dir, "tui.log");
+            tracing_subscriber::fmt()
+                .with_writer(file_appender)
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_chat(data_dir, cli.port, "default".to_string(), None))
+        }
+    }
 }

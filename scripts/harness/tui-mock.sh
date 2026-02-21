@@ -8,7 +8,7 @@ echo "    Arcan TUI - Mock / Dry-Run Harness Script     "
 echo "=================================================="
 
 # Just verify the binary can build and the CLI args are stable
-cargo run -p arcan-tui -- --help
+cargo run -p arcan -- chat --help
 
 echo ""
 echo "[OK] TUI mock test passed."
