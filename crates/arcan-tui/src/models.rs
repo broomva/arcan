@@ -7,36 +7,45 @@ use chrono::{DateTime, Utc};
 pub struct AppState {
     pub session_id: Option<String>,
     pub current_branch: String,
-    
+
     /// The conversation history (messages, tool executions, errors)
     pub blocks: Vec<UiBlock>,
-    
+
     /// Pending text delta buffer (assistant is typing)
     pub streaming_text: Option<String>,
-    
+
     /// User input string
     pub input_buffer: String,
-    
+
     /// True if the UI is blocked waiting for user approval of a policy intervention
     pub pending_approval: Option<ApprovalRequest>,
-    
+
     /// Tracks if we're currently fetching from daemon
     pub is_busy: bool,
 }
 
 #[derive(Debug, Clone)]
 pub enum UiBlock {
-    HumanMessage { text: String, timestamp: DateTime<Utc> },
-    AssistantMessage { text: String, timestamp: DateTime<Utc> },
-    ToolExecution { 
+    HumanMessage {
+        text: String,
+        timestamp: DateTime<Utc>,
+    },
+    AssistantMessage {
+        text: String,
+        timestamp: DateTime<Utc>,
+    },
+    ToolExecution {
         call_id: String,
-        tool_name: String, 
+        tool_name: String,
         arguments: serde_json::Value,
         status: ToolStatus,
         result: Option<serde_json::Value>,
-        timestamp: DateTime<Utc>
+        timestamp: DateTime<Utc>,
     },
-    SystemAlert { text: String, timestamp: DateTime<Utc> },
+    SystemAlert {
+        text: String,
+        timestamp: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +81,7 @@ impl AppState {
     pub fn apply_event(&mut self, event: AgentEvent) {
         let now = Utc::now();
         match event {
-            AgentEvent::RunStarted => {
+            AgentEvent::RunStarted { .. } => {
                 self.is_busy = true;
                 self.streaming_text = None;
             }
@@ -87,7 +96,10 @@ impl AppState {
             AgentEvent::ToolCallRequested { call, .. } => {
                 // Flush streaming text if it exists (model stopped reasoning, started acting)
                 if let Some(text) = self.streaming_text.take() {
-                    self.blocks.push(UiBlock::AssistantMessage { text, timestamp: now });
+                    self.blocks.push(UiBlock::AssistantMessage {
+                        text,
+                        timestamp: now,
+                    });
                 }
 
                 self.blocks.push(UiBlock::ToolExecution {
@@ -101,45 +113,67 @@ impl AppState {
             }
             AgentEvent::ToolCallCompleted { result, .. } => {
                 // Find and update the running tool block
-                if let Some(UiBlock::ToolExecution { status, result: block_result, .. }) = 
-                    self.blocks.iter_mut().find(|b| {
-                        if let UiBlock::ToolExecution { call_id, .. } = b {
-                            call_id == &result.call_id
-                        } else {
-                            false
-                        }
-                    }) 
-                {
+                if let Some(UiBlock::ToolExecution {
+                    status,
+                    result: block_result,
+                    ..
+                }) = self.blocks.iter_mut().find(|b| {
+                    if let UiBlock::ToolExecution { call_id, .. } = b {
+                        call_id == &result.call_id
+                    } else {
+                        false
+                    }
+                }) {
                     *status = ToolStatus::Success;
                     *block_result = Some(result.output);
                 }
             }
             AgentEvent::ToolCallFailed { call_id, error, .. } => {
-                if let Some(UiBlock::ToolExecution { status, .. }) = 
+                if let Some(UiBlock::ToolExecution { status, .. }) =
                     self.blocks.iter_mut().find(|b| {
                         if let UiBlock::ToolExecution { call_id: id, .. } = b {
                             id == &call_id
                         } else {
                             false
                         }
-                    }) 
+                    })
                 {
                     *status = ToolStatus::Error(error);
                 }
             }
             AgentEvent::RunFinished { final_answer, .. } => {
                 if let Some(text) = self.streaming_text.take() {
-                    self.blocks.push(UiBlock::AssistantMessage { text, timestamp: now });
+                    if !self.last_assistant_message_matches(&text) {
+                        self.blocks.push(UiBlock::AssistantMessage {
+                            text,
+                            timestamp: now,
+                        });
+                    }
                 } else if let Some(ans) = final_answer {
-                    self.blocks.push(UiBlock::AssistantMessage { text: ans, timestamp: now });
+                    if !self.last_assistant_message_matches(&ans) {
+                        self.blocks.push(UiBlock::AssistantMessage {
+                            text: ans,
+                            timestamp: now,
+                        });
+                    }
                 }
                 self.is_busy = false;
             }
             AgentEvent::RunErrored { error, .. } => {
-                self.blocks.push(UiBlock::SystemAlert { text: format!("Run Error: {}", error), timestamp: now });
+                self.blocks.push(UiBlock::SystemAlert {
+                    text: format!("Run Error: {}", error),
+                    timestamp: now,
+                });
                 self.is_busy = false;
             }
-            AgentEvent::ApprovalRequested { approval_id, call_id, tool_name, arguments, risk, .. } => {
+            AgentEvent::ApprovalRequested {
+                approval_id,
+                call_id,
+                tool_name,
+                arguments,
+                risk,
+                ..
+            } => {
                 self.is_busy = false;
                 self.pending_approval = Some(ApprovalRequest {
                     approval_id,
@@ -151,9 +185,9 @@ impl AppState {
             }
             AgentEvent::ApprovalResolved { decision, .. } => {
                 self.pending_approval = None;
-                self.blocks.push(UiBlock::SystemAlert { 
-                    text: format!("Tool execution was {}", decision), 
-                    timestamp: now 
+                self.blocks.push(UiBlock::SystemAlert {
+                    text: format!("Tool execution was {}", decision),
+                    timestamp: now,
                 });
                 self.is_busy = true; // Loop resumes
             }
@@ -161,5 +195,15 @@ impl AppState {
                 // Ignore other events for pure UI view state
             }
         }
+    }
+
+    fn last_assistant_message_matches(&self, text: &str) -> bool {
+        self.blocks
+            .last()
+            .and_then(|block| match block {
+                UiBlock::AssistantMessage { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .is_some_and(|last| last == text)
     }
 }

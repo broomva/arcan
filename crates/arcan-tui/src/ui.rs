@@ -1,14 +1,13 @@
 use crate::models::{AppState, UiBlock};
 use ratatui::{
-    backend::Backend,
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
-pub fn draw<B: Backend>(f: &mut Frame<B>, state: &AppState) {
+pub fn draw(f: &mut Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -34,7 +33,9 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, state: &AppState) {
                     Span::raw(text.clone()),
                 ]));
             }
-            UiBlock::ToolExecution { tool_name, status, .. } => {
+            UiBlock::ToolExecution {
+                tool_name, status, ..
+            } => {
                 let status_str = match status {
                     crate::models::ToolStatus::Running => "(Running...)",
                     crate::models::ToolStatus::Success => "[OK]",
@@ -42,7 +43,10 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, state: &AppState) {
                 };
                 message_lines.push(Line::from(vec![
                     Span::styled("Tool ", Style::default().fg(Color::Yellow)),
-                    Span::styled(format!("{} {}", tool_name, status_str), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!("{} {}", tool_name, status_str),
+                        Style::default().fg(Color::Yellow),
+                    ),
                 ]));
             }
             UiBlock::SystemAlert { text, .. } => {
@@ -63,13 +67,20 @@ pub fn draw<B: Backend>(f: &mut Frame<B>, state: &AppState) {
     }
 
     let messages_block = Paragraph::new(message_lines)
-        .block(Block::default().borders(Borders::ALL).title(" Session Log "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Session Log "),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(messages_block, chunks[0]);
 
     // Input Area
     let prompt = if let Some(approval) = &state.pending_approval {
-        format!("Approval Req for {}: (yes/no) > {}", approval.tool_name, state.input_buffer)
+        format!(
+            "Approval Req for {}: (yes/no) > {}",
+            approval.tool_name, state.input_buffer
+        )
     } else {
         format!("❯ {}", state.input_buffer)
     };

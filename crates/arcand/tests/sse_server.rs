@@ -320,9 +320,67 @@ async fn v1_stream_replays_from_version_cursor() {
 
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
+    let normalized = body.replace('\r', "");
     assert!(
-        body.contains("event: assistant.text.delta"),
-        "expected replayed assistant.text.delta, body: {body}"
+        normalized.contains("event: assistant.text.delta"),
+        "expected replayed assistant.text.delta, body: {normalized}"
+    );
+    assert!(
+        normalized.contains("event: done"),
+        "expected done event in replay, body: {normalized}"
+    );
+    assert!(
+        !normalized.contains("event: done\nid:"),
+        "done event should not carry an id to avoid cursor regressions, body: {normalized}"
+    );
+}
+
+#[tokio::test]
+async fn v1_stream_vercel_v6_replays_protocol_events() {
+    let url = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let _ = client
+        .post(format!("{url}/v1/sessions/v1-v6-session/runs"))
+        .json(&serde_json::json!({
+            "message": "seed v6 replay"
+        }))
+        .send()
+        .await
+        .expect("v1 run seed request failed")
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!(
+            "{url}/v1/sessions/v1-v6-session/stream?branch=main&from_version=0&format=vercel_ai_sdk_v6"
+        ))
+        .send()
+        .await
+        .expect("v1 stream v6 request failed");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|v| v.to_str().ok()),
+        Some("v1")
+    );
+
+    let body = resp.text().await.unwrap();
+    let normalized = body.replace('\r', "");
+    assert!(
+        normalized.contains("\"type\":\"data-aios-event\""),
+        "expected data-aios-event part, body: {normalized}"
+    );
+    assert!(
+        normalized.contains("\"type\":\"AssistantTextDelta\""),
+        "expected canonical EventKind payload, body: {normalized}"
+    );
+    assert!(
+        normalized.contains("data: [DONE]"),
+        "expected [DONE] terminal marker, body: {normalized}"
     );
 }
 

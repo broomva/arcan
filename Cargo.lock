@@ -228,6 +228,7 @@ dependencies = [
 name = "arcand"
 version = "0.2.0"
 dependencies = [
+ "aios-protocol",
  "anyhow",
  "arcan-core",
  "arcan-harness",

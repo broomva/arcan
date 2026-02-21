@@ -223,3 +223,7 @@ git commit -m "feat: description"
 ## Troubleshooting
 
 *(Add entries here when fixing confusing errors. Format: Error → Cause → Fix)*
+
+- `cargo check -p arcan-tui` fails with `Frame<B>` generic errors and `AgentEvent::RunStarted` pattern errors → `ratatui 0.26` uses non-generic `Frame<'_>` and `arcan_core::protocol::AgentEvent` variants are struct variants with required fields → update `ui::draw` signature to `fn draw(f: &mut Frame, ...)`, match events as `AgentEvent::RunStarted { .. }`, and update tests to build current `ToolCall` / `ToolResultSummary` / `AgentEvent` payloads.
+- `cargo run -p arcan` panics at startup with `Cannot drop a runtime in a context where blocking is not allowed` and stack traces into `reqwest::blocking::Client::builder()` → provider clients were being initialized inside `#[tokio::main]` async context → initialize provider stack before entering Tokio runtime (sync `main` + manual runtime `block_on`), and support `ARCAN_PROVIDER=mock` explicitly to force local E2E flows.
+- TUI SSE reconnect loops and duplicate replayed events on `/v1/sessions/{id}/stream` → stream IDs include dotted values (`seq.idx`) and the `done` frame previously emitted a computed `id` that could regress below the latest record sequence; `Last-Event-ID` parsing only accepted plain integers → parse `Last-Event-ID` by taking the numeric prefix before `.`, and emit `done` without an `id` so cursor state stays monotonic across reconnects.

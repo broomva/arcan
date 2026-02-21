@@ -10,16 +10,19 @@ use clap::Parser;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::env;
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// URL of the arcan daemon
-    #[arg(long, default_value = "http://127.0.0.1:8000")]
+    #[arg(long, default_value = "http://127.0.0.1:3000")]
     url: String,
 
     /// Session ID to attach to
@@ -32,10 +35,12 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Set up file-based tracing so we don't clobber the TUI stdout
-    let file_appender = tracing_appender::rolling::never(
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(".arcan"),
-        "tui.log",
-    );
+    let home_dir = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let log_dir = home_dir.join(".arcan");
+    fs::create_dir_all(&log_dir)?;
+    let file_appender = tracing_appender::rolling::never(log_dir, "tui.log");
     tracing_subscriber::fmt()
         .with_writer(file_appender)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

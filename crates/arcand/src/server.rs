@@ -1,7 +1,12 @@
 use crate::commands::{self, CommandResult};
 use crate::r#loop::AgentLoop;
+use aios_protocol::{
+    ActorType, AgentId, ApprovalDecision, ApprovalId, BranchId as AiosBranchId, EventActor,
+    EventId as AiosEventId, EventKind as AiosEventKind, EventRecord as AiosEventRecord,
+    EventSchema, RiskLevel, SessionId as AiosSessionId, SpanStatus, ToolRunId,
+};
 use arcan_core::aisdk::{UiStreamPart, to_ui_stream_parts};
-use arcan_core::protocol::{AgentEvent, ChatMessage, Role};
+use arcan_core::protocol::{AgentEvent, ChatMessage, ModelStopReason, Role, RunStopReason};
 use arcan_core::runtime::{ApprovalResolver, Orchestrator};
 use arcan_core::state::AppState;
 use axum::{
@@ -140,7 +145,35 @@ fn parse_last_event_id(headers: &HeaderMap) -> Option<u64> {
     headers
         .get("Last-Event-ID")
         .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split('.').next())
         .and_then(|s| s.parse::<u64>().ok())
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::parse_last_event_id;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn parse_last_event_id_accepts_plain_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Last-Event-ID", HeaderValue::from_static("42"));
+        assert_eq!(parse_last_event_id(&headers), Some(42));
+    }
+
+    #[test]
+    fn parse_last_event_id_accepts_dotted_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Last-Event-ID", HeaderValue::from_static("42.1"));
+        assert_eq!(parse_last_event_id(&headers), Some(42));
+    }
+
+    #[test]
+    fn parse_last_event_id_rejects_invalid_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Last-Event-ID", HeaderValue::from_static("abc"));
+        assert_eq!(parse_last_event_id(&headers), None);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,12 +206,27 @@ pub struct V1StreamQuery {
     pub branch: String,
     #[serde(default)]
     pub from_version: Option<u64>,
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct V1StateResponse {
     pub version: u64,
     pub state: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamFormat {
+    CanonicalV1,
+    VercelAiSdkV6,
+}
+
+fn parse_stream_format(value: Option<&str>) -> StreamFormat {
+    match value {
+        Some("vercel_ai_sdk_v6" | "aisdk_v6") => StreamFormat::VercelAiSdkV6,
+        _ => StreamFormat::CanonicalV1,
+    }
 }
 
 fn replay_records(records: &[arcan_store::session::EventRecord]) -> (AppState, Vec<ChatMessage>) {
@@ -211,6 +259,246 @@ fn replay_records(records: &[arcan_store::session::EventRecord]) -> (AppState, V
     }
 
     (state, messages)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum VercelAiSdkV6Part {
+    #[serde(rename = "start")]
+    Start {
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
+    #[serde(rename = "start-step")]
+    StartStep,
+    #[serde(rename = "data-aios-event")]
+    DataAiosEvent {
+        id: String,
+        data: serde_json::Value,
+        transient: bool,
+    },
+    #[serde(rename = "finish-step")]
+    FinishStep {
+        #[serde(rename = "finishReason")]
+        finish_reason: String,
+    },
+    #[serde(rename = "finish")]
+    Finish,
+}
+
+fn model_stop_reason_to_string(reason: ModelStopReason) -> &'static str {
+    match reason {
+        ModelStopReason::EndTurn => "end_turn",
+        ModelStopReason::ToolUse => "tool_use",
+        ModelStopReason::NeedsUser => "needs_user",
+        ModelStopReason::MaxTokens => "max_tokens",
+        ModelStopReason::Safety => "safety",
+        ModelStopReason::Unknown => "unknown",
+    }
+}
+
+fn run_stop_reason_to_string(reason: RunStopReason) -> &'static str {
+    match reason {
+        RunStopReason::Completed => "completed",
+        RunStopReason::NeedsUser => "needs_user",
+        RunStopReason::BlockedByPolicy => "blocked_by_policy",
+        RunStopReason::BudgetExceeded => "budget_exceeded",
+        RunStopReason::Cancelled => "cancelled",
+        RunStopReason::Error => "error",
+    }
+}
+
+fn parse_risk_level(level: &str) -> RiskLevel {
+    match level.to_ascii_lowercase().as_str() {
+        "low" => RiskLevel::Low,
+        "medium" => RiskLevel::Medium,
+        "high" => RiskLevel::High,
+        "critical" => RiskLevel::Critical,
+        _ => RiskLevel::Medium,
+    }
+}
+
+fn parse_approval_decision(value: &str) -> ApprovalDecision {
+    match value.to_ascii_lowercase().as_str() {
+        "approved" => ApprovalDecision::Approved,
+        "denied" => ApprovalDecision::Denied,
+        "timeout" => ApprovalDecision::Timeout,
+        _ => ApprovalDecision::Denied,
+    }
+}
+
+fn agent_event_to_aios_kind(event: &AgentEvent) -> AiosEventKind {
+    match event {
+        AgentEvent::RunStarted {
+            provider,
+            max_iterations,
+            ..
+        } => AiosEventKind::RunStarted {
+            provider: provider.clone(),
+            max_iterations: *max_iterations,
+        },
+        AgentEvent::IterationStarted { iteration, .. } => {
+            AiosEventKind::StepStarted { index: *iteration }
+        }
+        AgentEvent::ModelOutput {
+            iteration,
+            stop_reason,
+            directive_count,
+            ..
+        } => AiosEventKind::StepFinished {
+            index: *iteration,
+            stop_reason: model_stop_reason_to_string(*stop_reason).to_string(),
+            directive_count: *directive_count,
+        },
+        AgentEvent::TextDelta {
+            delta, iteration, ..
+        } => AiosEventKind::AssistantTextDelta {
+            delta: delta.clone(),
+            index: Some(*iteration),
+        },
+        AgentEvent::ToolCallRequested { call, .. } => AiosEventKind::ToolCallRequested {
+            call_id: call.call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            arguments: call.input.clone(),
+            category: None,
+        },
+        AgentEvent::ToolCallCompleted { result, .. } => AiosEventKind::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some(result.call_id.clone()),
+            tool_name: result.tool_name.clone(),
+            result: result.output.clone(),
+            duration_ms: 0,
+            status: SpanStatus::Ok,
+        },
+        AgentEvent::ToolCallFailed {
+            call_id,
+            tool_name,
+            error,
+            ..
+        } => AiosEventKind::ToolCallFailed {
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            error: error.clone(),
+        },
+        AgentEvent::StatePatched {
+            patch,
+            revision,
+            iteration,
+            ..
+        } => AiosEventKind::StatePatched {
+            index: Some(*iteration),
+            patch: serde_json::to_value(patch).unwrap_or_else(|_| json!({})),
+            revision: *revision,
+        },
+        AgentEvent::ContextCompacted {
+            dropped_count,
+            tokens_before,
+            tokens_after,
+            ..
+        } => AiosEventKind::ContextCompacted {
+            dropped_count: *dropped_count,
+            tokens_before: *tokens_before,
+            tokens_after: *tokens_after,
+        },
+        AgentEvent::ApprovalRequested {
+            approval_id,
+            call_id,
+            tool_name,
+            arguments,
+            risk,
+            ..
+        } => AiosEventKind::ApprovalRequested {
+            approval_id: ApprovalId::from_string(approval_id.clone()),
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            risk: parse_risk_level(risk),
+        },
+        AgentEvent::ApprovalResolved {
+            approval_id,
+            decision,
+            reason,
+            ..
+        } => AiosEventKind::ApprovalResolved {
+            approval_id: ApprovalId::from_string(approval_id.clone()),
+            decision: parse_approval_decision(decision),
+            reason: reason.clone(),
+        },
+        AgentEvent::RunErrored { error, .. } => AiosEventKind::RunErrored {
+            error: error.clone(),
+        },
+        AgentEvent::RunFinished {
+            reason,
+            total_iterations,
+            final_answer,
+            ..
+        } => AiosEventKind::RunFinished {
+            reason: run_stop_reason_to_string(*reason).to_string(),
+            total_iterations: *total_iterations,
+            final_answer: final_answer.clone(),
+            usage: None,
+        },
+    }
+}
+
+fn arcan_record_to_aios_record(record: &arcan_store::session::EventRecord) -> AiosEventRecord {
+    AiosEventRecord {
+        event_id: AiosEventId::from_string(record.id.clone()),
+        session_id: AiosSessionId::from_string(record.session_id.clone()),
+        agent_id: AgentId::default(),
+        branch_id: AiosBranchId::from_string(record.branch_id.clone()),
+        sequence: record.sequence,
+        timestamp: record.timestamp,
+        actor: EventActor {
+            actor_type: ActorType::System,
+            component: Some("arcan-daemon".to_string()),
+        },
+        schema: EventSchema::default(),
+        causation_id: record
+            .parent_id
+            .as_ref()
+            .map(|id| AiosEventId::from_string(id.clone())),
+        correlation_id: None,
+        trace_id: None,
+        span_id: None,
+        digest: None,
+        kind: agent_event_to_aios_kind(&record.event),
+    }
+}
+
+fn kernel_event_v6_parts(event: &AiosEventRecord) -> [VercelAiSdkV6Part; 5] {
+    let message_id = format!("kernel-event-{}", event.event_id);
+    let payload = serde_json::to_value(event).unwrap_or_else(|error| {
+        json!({
+            "error": error.to_string(),
+            "sequence": event.sequence,
+        })
+    });
+
+    [
+        VercelAiSdkV6Part::Start { message_id },
+        VercelAiSdkV6Part::StartStep,
+        VercelAiSdkV6Part::DataAiosEvent {
+            id: event.sequence.to_string(),
+            data: payload,
+            transient: false,
+        },
+        VercelAiSdkV6Part::FinishStep {
+            finish_reason: "stop".to_string(),
+        },
+        VercelAiSdkV6Part::Finish,
+    ]
+}
+
+fn v6_part_to_sse(part: &VercelAiSdkV6Part, id: String) -> Event {
+    let payload = serde_json::to_string(part).unwrap_or_else(|error| {
+        json!({
+            "type": "error",
+            "errorText": error.to_string(),
+        })
+        .to_string()
+    });
+    Event::default().id(id).data(payload)
 }
 
 fn canonical_data_parts(event: &AgentEvent) -> Vec<(String, serde_json::Value)> {
@@ -448,6 +736,7 @@ async fn v1_stream_handler(
 ) -> Result<Response, AppError> {
     let repo = state.agent_loop.session_repo.clone();
     let branch = query.branch.clone();
+    let stream_format = parse_stream_format(query.format.as_deref());
     let from_version = parse_last_event_id(&headers)
         .or(query.from_version)
         .unwrap_or(0);
@@ -459,19 +748,43 @@ async fn v1_stream_handler(
 
     let mut frames: Vec<Result<Event, Infallible>> = Vec::new();
     for record in records.iter().filter(|r| r.sequence > from_version) {
-        for (idx, (name, payload)) in canonical_data_parts(&record.event).into_iter().enumerate() {
-            let id = if idx == 0 {
-                record.sequence.to_string()
-            } else {
-                format!("{}.{}", record.sequence, idx)
-            };
-            frames.push(Ok(part_to_sse(&name, &payload, id)));
+        match stream_format {
+            StreamFormat::CanonicalV1 => {
+                for (idx, (name, payload)) in
+                    canonical_data_parts(&record.event).into_iter().enumerate()
+                {
+                    let id = if idx == 0 {
+                        record.sequence.to_string()
+                    } else {
+                        format!("{}.{}", record.sequence, idx)
+                    };
+                    frames.push(Ok(part_to_sse(&name, &payload, id)));
+                }
+            }
+            StreamFormat::VercelAiSdkV6 => {
+                let protocol_record = arcan_record_to_aios_record(record);
+                for (idx, part) in kernel_event_v6_parts(&protocol_record).iter().enumerate() {
+                    let id = if idx == 0 {
+                        record.sequence.to_string()
+                    } else {
+                        format!("{}.{}", record.sequence, idx)
+                    };
+                    frames.push(Ok(v6_part_to_sse(part, id)));
+                }
+            }
         }
     }
-    frames.push(Ok(Event::default()
-        .event("done")
-        .id((from_version + frames.len() as u64 + 1).to_string())
-        .data(r#"{"type":"done"}"#)));
+
+    match stream_format {
+        StreamFormat::CanonicalV1 => {
+            frames.push(Ok(Event::default()
+                .event("done")
+                .data(r#"{"type":"done"}"#)));
+        }
+        StreamFormat::VercelAiSdkV6 => {
+            frames.push(Ok(Event::default().data("[DONE]")));
+        }
+    }
 
     let sse = Sse::new(tokio_stream::iter(frames)).keep_alive(
         axum::response::sse::KeepAlive::new()

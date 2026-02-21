@@ -62,8 +62,7 @@ async fn shutdown_signal() {
     tracing::info!("Received shutdown signal, draining connections...");
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // Structured logging
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -135,6 +134,10 @@ async fn main() -> anyhow::Result<()> {
     // Selection order: ARCAN_PROVIDER env var > auto-detect from API keys > MockProvider
     let provider_name = std::env::var("ARCAN_PROVIDER").unwrap_or_default();
     let provider: Arc<dyn Provider> = match provider_name.as_str() {
+        "mock" => {
+            tracing::warn!("Provider: MockProvider (forced via ARCAN_PROVIDER=mock)");
+            Arc::new(MockProvider)
+        }
         "openai" => match arcan_provider::openai::OpenAiConfig::openai_from_env() {
             Ok(config) => {
                 tracing::info!(model = %config.model, "Provider: OpenAI");
@@ -217,17 +220,24 @@ async fn main() -> anyhow::Result<()> {
         approval_gate.clone(),
     ));
 
-    // --- HTTP Server ---
-    let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
-    let router = create_router_full(agent_loop, orchestrator, Some(resolver)).await;
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cli.port));
-    let listener = TcpListener::bind(addr).await?;
+    // Build provider stack and blocking HTTP clients before entering Tokio runtime.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
 
-    tracing::info!(%addr, "Listening");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    runtime.block_on(async move {
+        // --- HTTP Server ---
+        let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
+        let router = create_router_full(agent_loop, orchestrator, Some(resolver)).await;
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cli.port));
+        let listener = TcpListener::bind(addr).await?;
 
-    tracing::info!("Server shut down gracefully");
-    Ok(())
+        tracing::info!(%addr, "Listening");
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+
+        tracing::info!("Server shut down gracefully");
+        Ok(())
+    })
 }
