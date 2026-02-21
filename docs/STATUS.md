@@ -3,6 +3,16 @@
 > **This is the single source of truth** for what's implemented, what's missing, and what's planned.
 > Last updated: 2026-02-17
 
+## 2026-02-21 Incremental Update
+
+- Added `arcan-tui` regression coverage for duplicate assistant rendering on repeated `RunFinished` events (`test_run_finished_deduplicates_repeated_assistant_answer`).
+- Verified end-to-end local flow with canonical v1 endpoints + `format=vercel_ai_sdk_v6` stream and TUI consumption path.
+- Workspace checks completed successfully:
+  - `cargo check --workspace`
+  - `cargo clippy --workspace`
+  - `cargo test --workspace`
+  - `cargo build --workspace`
+
 ## 2026-02-17 Hard-Cutover Update
 
 - Workspace tests: **255/255 passing**.

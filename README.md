@@ -31,6 +31,26 @@ ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan
 arcan --port 3000 --data-dir .arcan --max-iterations 10
 ```
 
+### Dev Watch Mode (Daemon + TUI)
+
+```bash
+# one-time install
+cargo install cargo-watch
+
+# starts daemon in watch mode, waits for /health, then opens TUI
+./scripts/harness/dev-tui-watch.sh
+```
+
+Environment overrides:
+
+```bash
+# custom port/session/data directory
+PORT=3200 SESSION=dev-1 DATA_DIR=/tmp/arcan-dev ./scripts/harness/dev-tui-watch.sh
+
+# use real provider env vars instead of mock mode
+ARCAN_MOCK=0 ./scripts/harness/dev-tui-watch.sh
+```
+
 ## Docs
 
 - `docs/architecture.md`
