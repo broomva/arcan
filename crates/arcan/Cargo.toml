@@ -20,12 +20,16 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
+arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.2.0" }
 arcan-harness = { path = "../arcan-harness", version = "0.2.0" }
 arcan-provider = { path = "../arcan-provider", version = "0.2.0" }
 arcand = { path = "../arcand", version = "0.2.0" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.0" }
 arcan-tui = { path = "../arcan-tui" }
+aios-protocol.workspace = true
+aios-runtime.workspace = true
 lago-core.workspace = true
+lago-aios-eventstore-adapter.workspace = true
 lago-journal.workspace = true
 lago-policy.workspace = true
 lago-store.workspace = true

@@ -1,7 +1,7 @@
 # Arcan Project Status
 
 > **This is the single source of truth** for what's implemented, what's missing, and what's planned.
-> Last updated: 2026-02-17
+> Last updated: 2026-02-22
 
 ## 2026-02-21 Incremental Update
 
@@ -13,6 +13,42 @@
   - `cargo test --workspace`
   - `cargo build --workspace`
 
+## 2026-02-22 Baseline Unification Update
+
+- Added `arcan-aios-adapters` crate with canonical aiOS port adapters:
+  - `provider.rs`
+  - `tools.rs`
+  - `policy.rs`
+  - `approval.rs`
+  - `memory.rs`
+- Added Arcand canonical router module (`arcand/src/canonical.rs`) with session API surface:
+  - `POST /sessions`
+  - `POST /sessions/{session_id}/runs`
+  - `GET /sessions/{session_id}/state`
+  - `GET /sessions/{session_id}/events`
+  - `GET /sessions/{session_id}/events/stream`
+  - `POST /sessions/{session_id}/branches`
+  - `GET /sessions/{session_id}/branches`
+  - `POST /sessions/{session_id}/branches/{branch_id}/merge`
+  - `POST /sessions/{session_id}/approvals/{approval_id}`
+- `arcan` daemon startup now hosts canonical `aios-runtime` through Lago-backed event-store adapter rather than the legacy production runtime path.
+- Legacy `arcand` production modules (`server.rs`, `loop.rs`, `commands.rs`) were removed from the active build; canonical router + canonical API tests are now the only arcand runtime path.
+- `arcan-tui` now calls canonical session endpoints (`/sessions/...`) and canonical approval route (`/sessions/{session_id}/approvals/{approval_id}`).
+
+## 2026-02-22 Status Note
+
+- Canonical API is now:
+  - `POST /sessions`
+  - `POST /sessions/{session_id}/runs`
+  - `GET /sessions/{session_id}/state`
+  - `GET /sessions/{session_id}/events`
+  - `GET /sessions/{session_id}/events/stream`
+  - `POST /sessions/{session_id}/branches`
+  - `GET /sessions/{session_id}/branches`
+  - `POST /sessions/{session_id}/branches/{branch_id}/merge`
+  - `POST /sessions/{session_id}/approvals/{approval_id}`
+- Older references to `/v1/...`, `/chat`, and `/approve` in deeper historical sections are pre-baseline context and should be treated as non-canonical.
+
 ## 2026-02-17 Hard-Cutover Update
 
 - Workspace tests: **255/255 passing**.
@@ -20,13 +56,7 @@
   - `append` requires `branch_id`
   - `load_session` requires `branch_id`
   - `head` requires `branch_id`
-- Arcand now exposes canonical v1 endpoints:
-  - `POST /v1/sessions/{session_id}/runs`
-  - `POST /v1/sessions/{session_id}/signals`
-  - `GET /v1/sessions/{session_id}/state`
-  - `GET /v1/sessions/{session_id}/stream`
-- Arcand canonical stream emits data-part events:
-  - `state.patch`, `intent.*`, `tool.*`, plus assistant text/message parts.
+- Arcand transitional v1 endpoint work from this update has been superseded by the canonical `/sessions/...` API listed above.
 - Run context now carries explicit `branch_id` through orchestrator input/output.
 - Root conformance entrypoint added at:
   - `/Users/broomva/broomva.tech/live/conformance/run.sh`
@@ -61,7 +91,7 @@ arcan-rs/
 | `arcan-harness` | Tools, sandbox, MCP bridge, skills | 39 | 9 tool impls, `FsPolicy`, `SandboxPolicy`, `SkillRegistry`, `McpTool` |
 | `arcan-store` | Persistence backends | 7 | `SessionRepository`, `InMemorySessionRepository`, `JsonlSessionRepository` |
 | `arcan-provider` | LLM adapters | 9 | `AnthropicProvider`, `RigProvider`, `anthropic_rig_provider()` |
-| `arcand` | Server infrastructure | 0 | `AgentLoop`, `create_router()`, `MockProvider` |
+| `arcand` | Canonical session API router | 3 integration tests | `create_canonical_router()`, `MockProvider` |
 | `arcan-lago` | Lago persistence bridge | 33 | `LagoSessionRepository`, `LagoPolicyMiddleware`, `AppStateProjection`, `SseBridge` |
 | `arcan` | Production daemon binary | 0 | CLI entry point with Lago + policy |
 

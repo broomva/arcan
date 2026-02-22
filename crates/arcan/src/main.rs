@@ -1,22 +1,27 @@
 mod daemon;
 
-use arcan_core::runtime::{Orchestrator, OrchestratorConfig, Provider, ToolRegistry};
+use aios_protocol::{
+    ApprovalPort, EventStorePort, MemoryPort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
+};
+use aios_runtime::{KernelRuntime, RuntimeConfig};
+use arcan_aios_adapters::{
+    ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanMemoryAdapter, ArcanPolicyAdapter,
+    ArcanProviderAdapter,
+};
+use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::edit::EditFileTool;
 use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
 use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
-use arcan_lago::{
-    ApprovalGate, LagoPolicyMiddleware, LagoSessionRepository, MemoryCommitTool, MemoryProjection,
-    MemoryProposeTool, MemoryQueryTool,
-};
+use arcan_lago::{MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcand::{r#loop::AgentLoop, mock::MockProvider, server::create_router_full};
+use arcand::{canonical::create_canonical_router, mock::MockProvider};
 use clap::{Parser, Subcommand};
+use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -95,8 +100,8 @@ fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {
 fn run_serve(
     data_dir: &Path,
     port: u16,
-    max_iterations: u32,
-    approval_timeout: u64,
+    _max_iterations: u32,
+    _approval_timeout: u64,
 ) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
@@ -115,7 +120,6 @@ fn run_serve(
     let journal = RedbJournal::open(&journal_path)?;
     let _blob_store = lago_store::BlobStore::open(&blobs_path)?;
     let journal: Arc<dyn lago_core::Journal> = Arc::new(journal);
-    let session_repo = Arc::new(LagoSessionRepository::new(journal.clone()));
 
     // --- Policies ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
@@ -215,44 +219,35 @@ fn run_serve(
         }
     };
 
-    // --- Approval gate ---
-    let approval_gate = Arc::new(ApprovalGate::new(Duration::from_secs(approval_timeout)));
+    // --- Canonical aiOS runtime adapters ---
+    let event_store: Arc<dyn EventStorePort> =
+        Arc::new(LagoAiosEventStoreAdapter::new(journal.clone()));
+    let provider_adapter: Arc<dyn ModelProviderPort> =
+        Arc::new(ArcanProviderAdapter::new(provider, registry.definitions()));
+    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
+    let policy_gate: Arc<dyn PolicyGatePort> =
+        Arc::new(ArcanPolicyAdapter::new(aios_protocol::PolicySet::default()));
+    let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
+    let memory: Arc<dyn MemoryPort> = Arc::new(ArcanMemoryAdapter::new(data_dir.join("sessions")));
 
-    // --- Policy middleware ---
-    let tool_annotations: std::collections::HashMap<String, _> = registry
-        .definitions()
-        .into_iter()
-        .filter_map(|def| def.annotations.map(|ann| (def.name, ann)))
-        .collect();
-    let policy_engine = lago_policy::PolicyEngine::new();
-    let policy_mw =
-        LagoPolicyMiddleware::with_gate(policy_engine, tool_annotations, approval_gate.clone());
-    let middlewares: Vec<Arc<dyn arcan_core::runtime::Middleware>> = vec![Arc::new(policy_mw)];
-
-    // --- Orchestrator ---
-    let config = OrchestratorConfig {
-        max_iterations,
-        context: Some(arcan_core::context::ContextConfig::default()),
-        context_compiler: None,
-    };
-    let orchestrator = Arc::new(Orchestrator::new(provider, registry, middlewares, config));
-
-    // --- Agent Loop ---
-    let agent_loop = Arc::new(AgentLoop::with_approval_gate(
-        session_repo,
-        orchestrator.clone(),
-        approval_gate.clone(),
+    let runtime = Arc::new(KernelRuntime::new(
+        RuntimeConfig::new(data_dir.to_path_buf()),
+        event_store,
+        provider_adapter,
+        tool_harness,
+        memory,
+        approvals,
+        policy_gate,
     ));
 
     // Build provider stack and blocking HTTP clients before entering Tokio runtime.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
-    runtime.block_on(async move {
+    tokio_runtime.block_on(async move {
         // --- HTTP Server ---
-        let resolver: Arc<dyn arcan_core::runtime::ApprovalResolver> = approval_gate;
-        let router = create_router_full(agent_loop, orchestrator, Some(resolver)).await;
+        let router = create_canonical_router(runtime);
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
 

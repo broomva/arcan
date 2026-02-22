@@ -1,5 +1,2 @@
-pub mod commands;
-pub mod heartbeat;
-pub mod r#loop;
+pub mod canonical;
 pub mod mock;
-pub mod server;

@@ -2,6 +2,7 @@
 members = [
   "crates/arcan-core",
   "crates/arcan-harness",
+  "crates/arcan-aios-adapters",
   "crates/arcan-store",
   "crates/arcan-provider",
   "crates/arcan-tui",
@@ -83,6 +84,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Agent OS protocol (canonical contract)
 aios-protocol = { path = "../aiOS/crates/aios-protocol", version = "0.1.0" }
+aios-runtime = { path = "../aiOS/crates/aios-runtime", version = "0.1.0" }
 
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.0" }
@@ -90,3 +92,4 @@ lago-core = { path = "../lago/crates/lago-core", version = "0.2.0" }
 lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.0" }
 lago-store = { path = "../lago/crates/lago-store", version = "0.2.0" }
 lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.0" }
+lago-aios-eventstore-adapter = { path = "../lago/crates/lago-aios-eventstore-adapter", version = "0.2.0" }

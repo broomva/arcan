@@ -22,14 +22,9 @@ pub struct NetworkClient {
     config: NetworkConfig,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct GetModelResponse {
-    model: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct SetModelResponse {
-    model: String,
+fn parse_protocol_record(data: &str) -> Option<AgentEvent> {
+    let record: ProtocolEventRecord = serde_json::from_str(data).ok()?;
+    agent_event_from_protocol_record(&record)
 }
 
 fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Option<AgentEvent> {
@@ -408,12 +403,12 @@ impl NetworkClient {
     /// Submits a message to the agent's run endpoint
     pub async fn submit_run(&self, message: &str, branch: Option<&str>) -> anyhow::Result<()> {
         let url = format!(
-            "{}/v1/sessions/{}/runs",
+            "{}/sessions/{}/runs",
             self.config.base_url, self.config.session_id
         );
 
         let body = json!({
-            "message": message,
+            "objective": message,
             "branch": branch,
         });
 
@@ -434,12 +429,19 @@ impl NetworkClient {
         decision: &str,
         reason: Option<&str>,
     ) -> anyhow::Result<()> {
-        let url = format!("{}/approve", self.config.base_url);
+        let url = format!(
+            "{}/sessions/{}/approvals/{}",
+            self.config.base_url, self.config.session_id, approval_id
+        );
+        let approved = matches!(
+            decision.to_ascii_lowercase().as_str(),
+            "approved" | "approve" | "yes" | "y" | "true"
+        );
+        let actor = reason.unwrap_or("tui");
 
         let body = json!({
-            "approval_id": approval_id,
-            "decision": decision,
-            "reason": reason,
+            "approved": approved,
+            "actor": actor,
         });
 
         let res = self.client.post(&url).json(&body).send().await?;
@@ -454,41 +456,22 @@ impl NetworkClient {
 
     /// Fetches the currently selected model from the daemon.
     pub async fn get_model(&self) -> anyhow::Result<String> {
-        let url = format!("{}/model", self.config.base_url);
-        let res = self.client.get(&url).send().await?;
-
-        if !res.status().is_success() {
-            let error_text = res.text().await?;
-            anyhow::bail!("Failed to fetch model: {}", error_text);
-        }
-
-        let body: GetModelResponse = res.json().await?;
-        Ok(body.model)
+        anyhow::bail!("Model inspection is not exposed in the canonical session API")
     }
 
     /// Switches the active provider/model in the daemon.
     pub async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
-        let url = format!("{}/model", self.config.base_url);
-        let body = json!({
-            "provider": provider,
-            "model": model,
-        });
-
-        let res = self.client.post(&url).json(&body).send().await?;
-
-        if !res.status().is_success() {
-            let error_text = res.text().await?;
-            anyhow::bail!("Failed to switch model: {}", error_text);
-        }
-
-        let payload: SetModelResponse = res.json().await?;
-        Ok(payload.model)
+        let requested = match model {
+            Some(model) => format!("{provider}:{model}"),
+            None => provider.to_string(),
+        };
+        anyhow::bail!("Model switching ({requested}) is not exposed in the canonical session API")
     }
 
     /// Continuously listens to the SSE stream and pushes parsed events to the channel
     pub async fn listen_events(&self, sender: mpsc::Sender<AgentEvent>) -> anyhow::Result<()> {
         let url = format!(
-            "{}/v1/sessions/{}/stream?branch=main&format=vercel_ai_sdk_v6",
+            "{}/sessions/{}/events/stream?branch=main&cursor=0&format=vercel_ai_sdk_v6",
             self.config.base_url, self.config.session_id
         );
 
@@ -506,7 +489,9 @@ impl NetworkClient {
                         continue;
                     }
 
-                    if let Some(agent_event) = parse_vercel_v6_part(data) {
+                    if let Some(agent_event) =
+                        parse_protocol_record(data).or_else(|| parse_vercel_v6_part(data))
+                    {
                         if sender.send(agent_event).await.is_err() {
                             break;
                         }

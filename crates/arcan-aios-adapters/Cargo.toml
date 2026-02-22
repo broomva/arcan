@@ -1,0 +1,25 @@
+[package]
+name = "arcan-aios-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Arcan adapters implementing aiOS protocol ports"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.2.0" }
+aios-protocol.workspace = true
+aios-policy = { path = "../../../aiOS/crates/aios-policy" }
+aios-memory = { path = "../../../aiOS/crates/aios-memory" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

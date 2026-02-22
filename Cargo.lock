@@ -12,15 +12,104 @@ dependencies = [
 ]
 
 [[package]]
+name = "aios-events"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "futures-util",
+ "parking_lot",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "aios-memory"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "aios-policy"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "async-trait",
+ "chrono",
+ "indexmap",
+ "serde",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "aios-protocol"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "futures-util",
  "indexmap",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "aios-runtime"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "anyhow",
+ "chrono",
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aios-sandbox"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aios-tools"
+version = "0.1.0"
+dependencies = [
+ "aios-policy",
+ "aios-protocol",
+ "aios-sandbox",
+ "anyhow",
+ "async-trait",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -98,7 +187,10 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 name = "arcan"
 version = "0.2.0"
 dependencies = [
+ "aios-protocol",
+ "aios-runtime",
  "anyhow",
+ "arcan-aios-adapters",
  "arcan-core",
  "arcan-harness",
  "arcan-lago",
@@ -108,6 +200,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "lago-aios-eventstore-adapter",
  "lago-core",
  "lago-journal",
  "lago-policy",
@@ -119,6 +212,20 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "arcan-aios-adapters"
+version = "0.2.0"
+dependencies = [
+ "aios-memory",
+ "aios-policy",
+ "aios-protocol",
+ "anyhow",
+ "arcan-core",
+ "async-trait",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -232,22 +339,21 @@ dependencies = [
 name = "arcand"
 version = "0.2.0"
 dependencies = [
+ "aios-events",
+ "aios-memory",
+ "aios-policy",
  "aios-protocol",
- "anyhow",
+ "aios-runtime",
+ "aios-sandbox",
+ "aios-tools",
  "arcan-core",
- "arcan-harness",
- "arcan-provider",
- "arcan-store",
+ "async-trait",
  "axum",
- "chrono",
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
- "tower-http",
- "tracing",
  "uuid",
 ]
 
@@ -1011,6 +1117,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,6 +1477,19 @@ checksum = "a5a3cc660ba5d72bce0b3bb295bf20847ccbb40fd423f3f05b61273672e561fe"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lago-aios-eventstore-adapter"
+version = "0.2.0"
+dependencies = [
+ "aios-protocol",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "lago-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Agent loop, SSE server, and HTTP routing for the Arcan daemon"
+description = "Canonical session API router for the Arcan daemon"
 readme = "../../README.md"
 
 [lints]
@@ -16,23 +16,22 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
-tracing.workspace = true
-arcan-harness = { path = "../arcan-harness", version = "0.2.0" }
-arcan-provider = { path = "../arcan-provider", version = "0.2.0" }
-arcan-store = { path = "../arcan-store", version = "0.2.0" }
-anyhow.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
-tower-http.workspace = true
 uuid.workspace = true
-thiserror.workspace = true
-chrono.workspace = true
 aios-protocol = { workspace = true }
+aios-runtime = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio-stream.workspace = true
+async-trait.workspace = true
+aios-events = { path = "../../../aiOS/crates/aios-events" }
+aios-memory = { path = "../../../aiOS/crates/aios-memory" }
+aios-policy = { path = "../../../aiOS/crates/aios-policy" }
+aios-sandbox = { path = "../../../aiOS/crates/aios-sandbox" }
+aios-tools = { path = "../../../aiOS/crates/aios-tools" }
