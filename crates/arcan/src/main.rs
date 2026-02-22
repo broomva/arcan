@@ -18,6 +18,7 @@ use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{canonical::create_canonical_router, mock::MockProvider};
 use clap::{Parser, Subcommand};
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
+use lago_core::{EventQuery, Journal};
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -57,9 +58,9 @@ enum Command {
     },
     /// Launch the TUI client (auto-starts daemon if needed)
     Chat {
-        /// Session ID to attach to
-        #[arg(short, long, default_value = "default")]
-        session: String,
+        /// Session ID to attach to (defaults to most recent session)
+        #[arg(short, long)]
+        session: Option<String>,
 
         /// Daemon URL (skip auto-start, connect to existing)
         #[arg(long)]
@@ -95,6 +96,63 @@ fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {
     } else {
         data_dir.clone()
     })
+}
+
+fn read_last_session_hint(data_dir: &Path) -> Option<String> {
+    let path = data_dir.join("last_session");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let session = raw.trim();
+    if session.is_empty() {
+        None
+    } else {
+        Some(session.to_owned())
+    }
+}
+
+fn persist_last_session_hint(data_dir: &Path, session: &str) -> anyhow::Result<()> {
+    std::fs::create_dir_all(data_dir)?;
+    std::fs::write(data_dir.join("last_session"), session)?;
+    Ok(())
+}
+
+async fn most_recent_session_from_journal(data_dir: &Path) -> anyhow::Result<Option<String>> {
+    let journal_path = data_dir.join("journal.redb");
+    if !journal_path.exists() {
+        return Ok(None);
+    }
+
+    let journal = RedbJournal::open(&journal_path)?;
+
+    // Preferred path when sessions are indexed in Lago.
+    let sessions = journal.list_sessions().await?;
+    if let Some(session) = sessions.into_iter().max_by_key(|entry| entry.created_at) {
+        return Ok(Some(session.session_id.to_string()));
+    }
+
+    // Fallback for runtime paths that only append events.
+    let events = journal.read(EventQuery::new()).await?;
+    Ok(events
+        .into_iter()
+        .max_by_key(|event| event.timestamp)
+        .map(|event| event.session_id.to_string()))
+}
+
+async fn resolve_chat_session(data_dir: &Path, requested: Option<String>) -> String {
+    if let Some(session) = requested {
+        return session;
+    }
+
+    if let Some(session) = read_last_session_hint(data_dir) {
+        return session;
+    }
+
+    match most_recent_session_from_journal(data_dir).await {
+        Ok(Some(session)) => return session,
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "failed to detect most recent session from journal"),
+    }
+
+    "default".to_owned()
 }
 
 fn run_serve(
@@ -264,13 +322,19 @@ fn run_serve(
 async fn run_chat(
     data_dir: PathBuf,
     port: u16,
-    session: String,
+    session: Option<String>,
     url: Option<String>,
 ) -> anyhow::Result<()> {
+    let session = resolve_chat_session(&data_dir, session).await;
+    tracing::info!(session = %session, "launching TUI");
     let base_url = match url {
         Some(u) => u,
         None => daemon::ensure_daemon(&data_dir, port).await?,
     };
+
+    if let Err(error) = persist_last_session_hint(&data_dir, &session) {
+        tracing::warn!(%error, "failed to persist last_session hint");
+    }
 
     arcan_tui::run_tui(base_url, session).await
 }
@@ -319,7 +383,94 @@ fn main() -> anyhow::Result<()> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(run_chat(data_dir, cli.port, "default".to_string(), None))
+            runtime.block_on(run_chat(data_dir, cli.port, None, None))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lago_core::{
+        BranchId as LagoBranchId, EventEnvelope, EventId as LagoEventId,
+        EventPayload as LagoEventPayload, SessionId as LagoSessionId,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn last_session_hint_roundtrip() {
+        let dir = unique_temp_dir("arcan-last-session-hint");
+        persist_last_session_hint(&dir, "session-42").expect("persist hint");
+        assert_eq!(read_last_session_hint(&dir).as_deref(), Some("session-42"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_chat_session_prefers_explicit_session() {
+        let dir = unique_temp_dir("arcan-resolve-explicit");
+        persist_last_session_hint(&dir, "hint-session").expect("persist hint");
+        let selected = resolve_chat_session(&dir, Some("explicit-session".to_owned())).await;
+        assert_eq!(selected, "explicit-session");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_chat_session_uses_last_session_hint() {
+        let dir = unique_temp_dir("arcan-resolve-hint");
+        persist_last_session_hint(&dir, "hint-session").expect("persist hint");
+        let selected = resolve_chat_session(&dir, None).await;
+        assert_eq!(selected, "hint-session");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn most_recent_session_falls_back_to_latest_event_timestamp() {
+        let dir = unique_temp_dir("arcan-resolve-journal");
+        let journal_path = dir.join("journal.redb");
+        let journal = RedbJournal::open(&journal_path).expect("open journal");
+
+        let mk_event = |session: &str, timestamp: u64| EventEnvelope {
+            event_id: LagoEventId::new(),
+            session_id: LagoSessionId::from_string(session),
+            branch_id: LagoBranchId::from_string("main"),
+            run_id: None,
+            seq: 0,
+            timestamp,
+            parent_id: None,
+            payload: LagoEventPayload::Message {
+                role: "user".to_owned(),
+                content: "hello".to_owned(),
+                model: None,
+                token_usage: None,
+            },
+            metadata: std::collections::HashMap::new(),
+            schema_version: 1,
+        };
+
+        journal
+            .append(mk_event("session-old", 1_000))
+            .await
+            .expect("append old event");
+        journal
+            .append(mk_event("session-new", 2_000))
+            .await
+            .expect("append new event");
+        drop(journal);
+
+        let selected = most_recent_session_from_journal(&dir)
+            .await
+            .expect("resolve most recent session");
+        assert_eq!(selected.as_deref(), Some("session-new"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

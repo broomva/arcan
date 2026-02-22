@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::mpsc;
+use tokio::{fs, sync::mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use uuid::Uuid;
 
@@ -161,6 +161,11 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
 }
 
+async fn persist_last_session_hint(runtime: &KernelRuntime, session_id: &SessionId) {
+    let path = runtime.root_path().join("last_session");
+    let _ = fs::write(path, session_id.as_str()).await;
+}
+
 async fn create_session(
     State(state): State<CanonicalState>,
     Json(request): Json<CreateSessionRequest>,
@@ -181,6 +186,7 @@ async fn create_session(
             .await
             .map_err(internal_error)?
     };
+    persist_last_session_hint(state.runtime.as_ref(), &manifest.session_id).await;
     Ok(Json(manifest))
 }
 
@@ -223,6 +229,8 @@ async fn run_session(
         )
         .await
         .map_err(internal_error)?;
+
+    persist_last_session_hint(state.runtime.as_ref(), &tick.session_id).await;
 
     Ok(Json(RunResponse {
         session_id: tick.session_id,

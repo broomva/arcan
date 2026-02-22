@@ -21,14 +21,21 @@ cargo install arcan
 ## Usage
 
 ```bash
-# Run with mock provider
+# Launch interactive TUI (default command).
+# Re-attaches to the most recent session automatically.
 cargo run -p arcan
 
-# Run with Anthropic Claude
-ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan
+# Run daemon explicitly
+cargo run -p arcan -- serve
+
+# Run daemon with Anthropic Claude
+ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan -- serve
+
+# Launch TUI explicitly
+arcan chat
 
 # CLI options
-arcan --port 3000 --data-dir .arcan --max-iterations 10
+arcan --port 3000 --data-dir .arcan
 ```
 
 ### Dev Watch Mode (Daemon + TUI)

@@ -62,6 +62,7 @@ Streaming notes:
 - Role: production daemon binary.
 - Status: active canonical host.
 - Behavior: composes runtime + adapters + Lago persistence and serves canonical routes.
+- CLI UX: running `arcan` with no subcommand launches TUI and auto-attaches to the most recent session via `${data_dir}/last_session` (with journal fallback).
 
 ### `arcand`
 
@@ -69,6 +70,7 @@ Streaming notes:
 - Status: active.
 - Exports: `canonical`, `mock`.
 - Integration tests: canonical API lifecycle, named session auto-create on run, canonical v6 stream replay path.
+- Session continuity: canonical `POST /sessions` and `POST /sessions/{session_id}/runs` persist `${runtime_root}/last_session` for CLI/TUI resume behavior.
 
 ### `arcan-aios-adapters`
 
@@ -160,4 +162,3 @@ These are active engineering gaps in the current baseline (not migration items):
 - [x] Canonical session + approval endpoints consumed by TUI network client.
 - [x] Workspace lint/build/test gates clean.
 - [x] Conformance checks clean.
-
