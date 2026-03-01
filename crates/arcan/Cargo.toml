@@ -25,7 +25,7 @@ arcan-harness = { path = "../arcan-harness", version = "0.2.1" }
 arcan-provider = { path = "../arcan-provider", version = "0.2.1" }
 arcand = { path = "../arcand", version = "0.2.1" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.1" }
-arcan-tui = { path = "../arcan-tui" }
+arcan-tui = { path = "../arcan-tui", version = "0.2.1" }
 aios-protocol.workspace = true
 aios-runtime.workspace = true
 lago-core.workspace = true

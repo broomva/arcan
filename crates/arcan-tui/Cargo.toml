@@ -1,11 +1,15 @@
 [package]
 name = "arcan-tui"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Terminal UI for the Arcan agent runtime"
+readme = "../../README.md"
 
 [lib]
 name = "arcan_tui"
@@ -35,7 +39,7 @@ clap = { workspace = true }
 
 # Domain Types
 aios-protocol = { workspace = true }
-arcan-core = { path = "../arcan-core" }
+arcan-core = { path = "../arcan-core", version = "0.2.1" }
 
 [dev-dependencies]
 mockall = "0.12"
