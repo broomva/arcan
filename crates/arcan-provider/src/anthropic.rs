@@ -6,14 +6,27 @@ use arcan_core::protocol::{
 use arcan_core::runtime::{Provider, ProviderRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::Arc;
+
+use crate::credential::{AnthropicApiKeyCredential, Credential};
 
 /// Configuration for the Anthropic provider.
-#[derive(Debug, Clone)]
 pub struct AnthropicConfig {
-    pub api_key: String,
+    pub credential: Arc<dyn Credential>,
     pub model: String,
     pub max_tokens: u32,
     pub base_url: String,
+}
+
+impl std::fmt::Debug for AnthropicConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnthropicConfig")
+            .field("credential", &self.credential.kind())
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 impl AnthropicConfig {
@@ -34,7 +47,7 @@ impl AnthropicConfig {
             .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
 
         Ok(Self {
-            api_key,
+            credential: Arc::new(AnthropicApiKeyCredential::new(api_key)),
             model,
             max_tokens,
             base_url,
@@ -73,7 +86,7 @@ impl AnthropicConfig {
             .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
         Ok(Self {
-            api_key,
+            credential: Arc::new(crate::credential::AnthropicApiKeyCredential::new(api_key)),
             model,
             max_tokens,
             base_url,
@@ -214,10 +227,16 @@ impl Provider for AnthropicProvider {
 
         let url = format!("{}/v1/messages", self.config.base_url);
 
+        let api_key = self
+            .config
+            .credential
+            .auth_header()
+            .map_err(|e| CoreError::Provider(format!("credential error: {e}")))?;
+
         let response = self
             .client
             .post(&url)
-            .header("x-api-key", &self.config.api_key)
+            .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
@@ -310,15 +329,18 @@ enum ResponseBlock {
 mod tests {
     use super::*;
 
-    #[test]
-    fn builds_messages_with_system_prompt() {
-        let config = AnthropicConfig {
-            api_key: "test".to_string(),
+    fn test_config() -> AnthropicConfig {
+        AnthropicConfig {
+            credential: Arc::new(AnthropicApiKeyCredential::new("test".to_string())),
             model: "test-model".to_string(),
             max_tokens: 1024,
             base_url: "http://localhost".to_string(),
-        };
-        let provider = AnthropicProvider::new(config);
+        }
+    }
+
+    #[test]
+    fn builds_messages_with_system_prompt() {
+        let provider = AnthropicProvider::new(test_config());
 
         let messages = vec![
             ChatMessage::system("You are helpful."),
@@ -333,13 +355,7 @@ mod tests {
 
     #[test]
     fn parses_text_response() {
-        let config = AnthropicConfig {
-            api_key: "test".to_string(),
-            model: "test-model".to_string(),
-            max_tokens: 1024,
-            base_url: "http://localhost".to_string(),
-        };
-        let provider = AnthropicProvider::new(config);
+        let provider = AnthropicProvider::new(test_config());
 
         let response = ApiResponse {
             content: vec![ResponseBlock::Text {
@@ -357,13 +373,7 @@ mod tests {
 
     #[test]
     fn parses_tool_use_response() {
-        let config = AnthropicConfig {
-            api_key: "test".to_string(),
-            model: "test-model".to_string(),
-            max_tokens: 1024,
-            base_url: "http://localhost".to_string(),
-        };
-        let provider = AnthropicProvider::new(config);
+        let provider = AnthropicProvider::new(test_config());
 
         let response = ApiResponse {
             content: vec![
