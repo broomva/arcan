@@ -95,10 +95,10 @@ aios-sandbox = { path = "../aiOS/crates/aios-sandbox", version = "0.1.0" }
 aios-tools = { path = "../aiOS/crates/aios-tools", version = "0.1.0" }
 
 # Lago persistence layer (path deps for local development)
-lago-api = { path = "../lago/crates/lago-api", version = "0.2.0" }
-lago-core = { path = "../lago/crates/lago-core", version = "0.2.0" }
-lago-fs = { path = "../lago/crates/lago-fs", version = "0.2.0" }
-lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.0" }
-lago-store = { path = "../lago/crates/lago-store", version = "0.2.0" }
-lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.0" }
-lago-aios-eventstore-adapter = { path = "../lago/crates/lago-aios-eventstore-adapter", version = "0.2.0" }
+lago-api = { path = "../lago/crates/lago-api", version = "0.2.1" }
+lago-core = { path = "../lago/crates/lago-core", version = "0.2.1" }
+lago-fs = { path = "../lago/crates/lago-fs", version = "0.2.1" }
+lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.1" }
+lago-store = { path = "../lago/crates/lago-store", version = "0.2.1" }
+lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.1" }
+lago-aios-eventstore-adapter = { path = "../lago/crates/lago-aios-eventstore-adapter", version = "0.2.1" }
