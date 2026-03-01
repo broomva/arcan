@@ -5,5 +5,5 @@ pub mod tools;
 
 pub use approval::ArcanApprovalAdapter;
 pub use policy::ArcanPolicyAdapter;
-pub use provider::ArcanProviderAdapter;
+pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
 pub use tools::ArcanHarnessAdapter;

@@ -35,6 +35,21 @@ pub struct ProviderRequest {
 pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError>;
+
+    /// Whether this provider supports streaming completions.
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Stream a completion, calling `on_text` for each text delta as it arrives.
+    /// Returns the final assembled `ModelTurn`. Default falls back to `complete()`.
+    fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        _on_text: &dyn Fn(&str),
+    ) -> Result<ModelTurn, CoreError> {
+        self.complete(request)
+    }
 }
 
 #[derive(Debug, Clone)]

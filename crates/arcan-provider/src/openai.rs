@@ -23,6 +23,8 @@ pub struct OpenAiConfig {
     pub base_url: String,
     /// Provider name for display/logging.
     pub provider_name: String,
+    /// Enable streaming mode (`"stream": true`). Avoids timeouts for slow models.
+    pub enable_streaming: bool,
 }
 
 impl OpenAiConfig {
@@ -46,11 +48,12 @@ impl OpenAiConfig {
             max_tokens,
             base_url,
             provider_name: "openai".to_string(),
+            enable_streaming: false,
         })
     }
 
     /// Create config for Ollama from environment variables.
-    /// Defaults to localhost:11434 with no API key.
+    /// Defaults to localhost:11434 with no API key. Streaming enabled by default.
     pub fn ollama_from_env() -> Result<Self, CoreError> {
         let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
         let max_tokens = std::env::var("OLLAMA_MAX_TOKENS")
@@ -66,6 +69,7 @@ impl OpenAiConfig {
             max_tokens,
             base_url,
             provider_name: "ollama".to_string(),
+            enable_streaming: true,
         })
     }
 }
@@ -244,9 +248,180 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+impl OpenAiCompatibleProvider {
+    /// Execute a streaming request, calling `on_text` for each text delta.
+    /// Accumulates the full response and returns the assembled `ModelTurn`.
+    fn execute_streaming(
+        &self,
+        request: &ProviderRequest,
+        on_text: &dyn Fn(&str),
+    ) -> Result<ModelTurn, CoreError> {
+        let api_messages = self.build_messages(&request.messages);
+        let api_tools = self.convert_tools(&request.tools);
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": api_messages,
+            "max_tokens": self.config.max_tokens,
+            "stream": true,
+        });
+
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&api_tools)
+                .map_err(|e| CoreError::Provider(format!("failed to serialize tools: {e}")))?;
+        }
+
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
+
+        let mut http_request = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json");
+
+        if !self.config.api_key.is_empty() {
+            http_request =
+                http_request.header("authorization", format!("Bearer {}", self.config.api_key));
+        }
+
+        let response = http_request
+            .json(&body)
+            .send()
+            .map_err(|e| CoreError::Provider(format!("streaming HTTP request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(CoreError::Provider(format!(
+                "{} streaming API returned {status}: {body_text}",
+                self.config.provider_name
+            )));
+        }
+
+        let reader = std::io::BufReader::new(response);
+        let mut accumulated_text = String::new();
+        // tool_calls accumulator: index → (id, name, arguments)
+        let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
+            std::collections::BTreeMap::new();
+        let mut finish_reason: Option<String> = None;
+        let mut usage: Option<ApiUsage> = None;
+
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let line =
+                line.map_err(|e| CoreError::Provider(format!("streaming read error: {e}")))?;
+
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+
+            if data == "[DONE]" {
+                break;
+            }
+
+            let chunk: StreamChunk = match serde_json::from_str(data) {
+                Ok(c) => c,
+                Err(_) => continue, // skip unparseable lines
+            };
+
+            if let Some(u) = chunk.usage {
+                usage = Some(u);
+            }
+
+            for choice in chunk.choices {
+                if let Some(reason) = choice.finish_reason {
+                    finish_reason = Some(reason);
+                }
+
+                if let Some(content) = &choice.delta.content {
+                    if !content.is_empty() {
+                        on_text(content);
+                        accumulated_text.push_str(content);
+                    }
+                }
+
+                if let Some(tcs) = &choice.delta.tool_calls {
+                    for tc in tcs {
+                        let entry = tool_calls
+                            .entry(tc.index)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
+
+                        if let Some(ref id) = tc.id {
+                            entry.0.clone_from(id);
+                        }
+                        if let Some(ref func) = tc.function {
+                            if let Some(ref name) = func.name {
+                                entry.1.clone_from(name);
+                            }
+                            if let Some(ref args) = func.arguments {
+                                entry.2.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build directives from accumulated data
+        let mut directives = Vec::new();
+
+        if !accumulated_text.is_empty() {
+            directives.push(ModelDirective::Text {
+                delta: accumulated_text,
+            });
+        }
+
+        for (_index, (id, name, arguments)) in tool_calls {
+            let input: serde_json::Value =
+                serde_json::from_str(&arguments).unwrap_or_else(|_| serde_json::json!({}));
+            directives.push(ModelDirective::ToolCall {
+                call: ToolCall {
+                    call_id: id,
+                    tool_name: name,
+                    input,
+                },
+            });
+        }
+
+        let stop_reason = match finish_reason.as_deref() {
+            Some("stop") => ModelStopReason::EndTurn,
+            Some("tool_calls") => ModelStopReason::ToolUse,
+            Some("length") => ModelStopReason::MaxTokens,
+            Some("content_filter") => ModelStopReason::Safety,
+            _ => ModelStopReason::Unknown,
+        };
+
+        let token_usage = usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        });
+
+        Ok(ModelTurn {
+            directives,
+            stop_reason,
+            usage: token_usage,
+        })
+    }
+}
+
 impl Provider for OpenAiCompatibleProvider {
     fn name(&self) -> &str {
         &self.config.model
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.config.enable_streaming
+    }
+
+    fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        on_text: &dyn Fn(&str),
+    ) -> Result<ModelTurn, CoreError> {
+        self.execute_streaming(request, on_text)
     }
 
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
@@ -349,6 +524,46 @@ struct ApiUsage {
     completion_tokens: u64,
 }
 
+// ─── Streaming response types ───────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StreamChunk {
+    choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamChoice {
+    delta: StreamDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCall {
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamToolCallFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCallFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +576,7 @@ mod tests {
             max_tokens: 4096,
             base_url: "http://localhost:8080".to_string(),
             provider_name: "test".to_string(),
+            enable_streaming: false,
         }
     }
 
@@ -526,9 +742,11 @@ mod tests {
             max_tokens: 4096,
             base_url: "http://localhost:11434".to_string(),
             provider_name: "ollama".to_string(),
+            enable_streaming: true,
         };
         assert!(config.api_key.is_empty());
         assert_eq!(config.base_url, "http://localhost:11434");
+        assert!(config.enable_streaming);
     }
 
     #[test]

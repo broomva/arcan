@@ -364,7 +364,7 @@ async fn stream_events(
         while let Ok(event) = subscription.recv().await {
             if event.session_id == session_filter
                 && event.branch_id == branch_filter
-                && event.sequence > cursor
+                && (event.sequence > cursor || event.sequence == 0)
             {
                 let _ = tx.send(event).await;
             }

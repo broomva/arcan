@@ -7,6 +7,7 @@ use aios_protocol::{
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use arcan_aios_adapters::{
     ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanPolicyAdapter, ArcanProviderAdapter,
+    StreamingSenderHandle,
 };
 use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::edit::EditFileTool;
@@ -377,8 +378,13 @@ fn run_serve(
     // --- Canonical aiOS runtime adapters ---
     let event_store: Arc<dyn EventStorePort> =
         Arc::new(LagoAiosEventStoreAdapter::new(journal.clone()));
-    let provider_adapter: Arc<dyn ModelProviderPort> =
-        Arc::new(ArcanProviderAdapter::new(provider, registry.definitions()));
+    // Shared handle: starts empty, filled after runtime creation.
+    let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
+    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(ArcanProviderAdapter::new(
+        provider,
+        registry.definitions(),
+        streaming_sender.clone(),
+    ));
     let observer = Arc::new(LakeFsObserver {
         workspace_root: workspace_root.clone(),
         journal: journal.clone(),
@@ -398,6 +404,9 @@ fn run_serve(
         approvals,
         policy_gate,
     ));
+
+    // Wire the broadcast sender now that the runtime exists.
+    *streaming_sender.lock().unwrap() = Some(runtime.event_sender());
 
     // Build provider stack and blocking HTTP clients before entering Tokio runtime.
     let data_dir_owned = data_dir.to_path_buf();
@@ -547,10 +556,6 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lago_core::{
-        BranchId as LagoBranchId, EventEnvelope, EventId as LagoEventId,
-        EventPayload as LagoEventPayload, SessionId as LagoSessionId,
-    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -595,12 +600,5 @@ mod tests {
         let selected = resolve_session(&dir, None, None).await;
         assert_eq!(selected, "default");
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn parse_sse_events_basic() {
-        let body = "data: {\"kind\":{\"type\":\"TextDelta\",\"delta\":\"hi\"}}\n\ndata: {\"kind\":{\"type\":\"RunFinished\"}}\n\n";
-        let events = cli_run::parse_sse_events(body);
-        assert_eq!(events.len(), 2);
     }
 }

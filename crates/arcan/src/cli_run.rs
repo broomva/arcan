@@ -1,23 +1,21 @@
 //! Non-interactive CLI runner for Arcan.
 //!
-//! Sends a single message to the daemon, prints the response to stdout,
-//! and exits with code 0 on success or 1 on error.
+//! Opens an SSE stream for real-time events, then POST /runs concurrently.
+//! Text deltas, tool lifecycle, and errors render to stdout as they arrive.
 
 use std::io::Write;
 
+use futures_util::StreamExt;
 use reqwest::Client;
+use reqwest_eventsource::{Event as SseEvent, EventSource};
 use serde::Deserialize;
-
-/// SSE event parsed from the stream.
-#[cfg(test)]
-pub(crate) struct SseEvent {
-    pub(crate) data: String,
-}
 
 /// Subset of EventRecord fields we care about for CLI output.
 #[derive(Debug, Deserialize)]
 struct EventRecord {
     kind: EventKind,
+    #[serde(default)]
+    sequence: u64,
 }
 
 /// Subset of EventKind variants for display purposes.
@@ -57,9 +55,8 @@ enum EventKind {
 
 /// Run a single message against the daemon and print the response to stdout.
 ///
-/// The run endpoint is synchronous (returns after the tick completes),
-/// so we fetch events via `GET /events` after the run finishes rather than
-/// streaming an SSE connection that would never close.
+/// Opens an SSE stream at `/events/stream` before firing `/runs`, so events
+/// (including ephemeral streaming text deltas) render in real time.
 pub async fn run_cli(
     base_url: &str,
     session_id: &str,
@@ -75,135 +72,150 @@ pub async fn run_cli(
         .send()
         .await?;
 
-    // POST the run — this blocks until the tick completes.
-    let run_response = client
-        .post(format!("{base_url}/sessions/{session_id}/runs"))
-        .json(&serde_json::json!({ "objective": message }))
-        .send()
-        .await?;
-
-    if !run_response.status().is_success() {
-        let status = run_response.status();
-        let body = run_response.text().await.unwrap_or_default();
-        anyhow::bail!("Run request failed ({status}): {body}");
-    }
-
-    // Parse run response to get the event range for this run only.
-    let run_result: serde_json::Value = run_response.json().await?;
-    let last_sequence = run_result
-        .get("last_sequence")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let events_emitted = run_result
-        .get("events_emitted")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let from_sequence = last_sequence
-        .saturating_sub(events_emitted)
-        .saturating_add(1);
-
-    // Fetch only events from this run (not previous runs).
+    // Get the current event cursor so we only see new events.
     let events_response = client
         .get(format!(
-            "{base_url}/sessions/{session_id}/events?from_sequence={from_sequence}&limit=10000"
+            "{base_url}/sessions/{session_id}/events?limit=10000"
         ))
         .send()
         .await?;
-
-    if !events_response.status().is_success() {
-        let status = events_response.status();
-        let body = events_response.text().await.unwrap_or_default();
-        anyhow::bail!("Events request failed ({status}): {body}");
-    }
-
-    let body = events_response.text().await?;
-
-    if json_output {
-        let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(stdout, "{body}");
-        return Ok(0);
-    }
-
-    // Parse the events list response.
-    let events_list: serde_json::Value = serde_json::from_str(&body)?;
-    let Some(events) = events_list.get("events").and_then(|v| v.as_array()) else {
-        anyhow::bail!("Unexpected events response format");
+    let cursor = if events_response.status().is_success() {
+        let body: serde_json::Value = events_response.json().await?;
+        body.get("events")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.last())
+            .and_then(|e| e.get("sequence"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    } else {
+        0
     };
+
+    // Open SSE stream before firing the run.
+    let stream_url =
+        format!("{base_url}/sessions/{session_id}/events/stream?cursor={cursor}&format=canonical");
+    let mut event_source = EventSource::get(&stream_url);
+
+    // Fire the run concurrently (don't await completion before reading SSE).
+    let run_url = format!("{base_url}/sessions/{session_id}/runs");
+    let run_body = serde_json::json!({ "objective": message });
+    let run_client = client.clone();
+    let run_handle = tokio::spawn(async move {
+        let result = run_client.post(&run_url).json(&run_body).send().await;
+        match result {
+            Ok(resp) if !resp.status().is_success() => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                Err(anyhow::anyhow!("Run request failed ({status}): {body}"))
+            }
+            Ok(_) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("Run request failed: {e}")),
+        }
+    });
 
     let mut exit_code = 0;
     let mut stdout = std::io::stdout().lock();
+    // Track whether we've received ephemeral streaming text (sequence 0).
+    // If so, we skip persisted text events to avoid duplicate output.
+    let mut saw_streaming_text = false;
 
-    for event_value in events {
-        let Ok(record) = serde_json::from_value::<EventRecord>(event_value.clone()) else {
-            continue;
-        };
+    // Read SSE events as they arrive.
+    while let Some(event) = event_source.next().await {
+        match event {
+            Ok(SseEvent::Open) => {}
+            Ok(SseEvent::Message(msg)) => {
+                if json_output {
+                    let _ = writeln!(stdout, "{}", msg.data);
+                    let _ = stdout.flush();
+                }
 
-        match record.kind {
-            EventKind::TextDelta { ref delta } | EventKind::AssistantTextDelta { ref delta } => {
-                let _ = write!(stdout, "{delta}");
-                let _ = stdout.flush();
+                let Ok(record) = serde_json::from_str::<EventRecord>(&msg.data) else {
+                    continue;
+                };
+
+                if !json_output {
+                    match &record.kind {
+                        EventKind::TextDelta { delta }
+                        | EventKind::AssistantTextDelta { delta } => {
+                            if record.sequence == 0 {
+                                // Ephemeral streaming delta — display immediately.
+                                saw_streaming_text = true;
+                                let _ = write!(stdout, "{delta}");
+                                let _ = stdout.flush();
+                            } else if !saw_streaming_text {
+                                // Persisted delta, but only show if we didn't
+                                // already see streaming text.
+                                let _ = write!(stdout, "{delta}");
+                                let _ = stdout.flush();
+                            }
+                            // else: skip persisted duplicate
+                        }
+                        EventKind::Message { content } => {
+                            if !saw_streaming_text {
+                                let _ = write!(stdout, "{content}");
+                                let _ = stdout.flush();
+                            }
+                        }
+                        EventKind::ToolCallRequested { tool_name } => {
+                            let _ = writeln!(stdout, "\n[tool: {tool_name}] requested");
+                        }
+                        EventKind::ToolCallStarted { tool_name } => {
+                            let _ = writeln!(stdout, "[tool: {tool_name}] started");
+                        }
+                        EventKind::ToolCallCompleted { tool_name } => {
+                            let _ = writeln!(stdout, "[tool: {tool_name}] OK");
+                        }
+                        EventKind::ToolCallFailed { tool_name, error } => {
+                            let _ = writeln!(stdout, "[tool: {tool_name}] ERROR: {error}");
+                        }
+                        EventKind::RunFinished {} => {
+                            let _ = writeln!(stdout);
+                            event_source.close();
+                            break;
+                        }
+                        EventKind::RunErrored { error } => {
+                            let _ = writeln!(stdout, "\nERROR: {error}");
+                            exit_code = 1;
+                            event_source.close();
+                            break;
+                        }
+                        EventKind::Other => {}
+                    }
+                }
+
+                // In JSON mode, also detect run termination events.
+                if json_output {
+                    match &record.kind {
+                        EventKind::RunFinished {} => {
+                            event_source.close();
+                            break;
+                        }
+                        EventKind::RunErrored { .. } => {
+                            exit_code = 1;
+                            event_source.close();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
             }
-            EventKind::Message { ref content } => {
-                let _ = write!(stdout, "{content}");
-                let _ = stdout.flush();
-            }
-            EventKind::ToolCallRequested { ref tool_name } => {
-                let _ = writeln!(stdout, "\n[tool: {tool_name}] requested");
-            }
-            EventKind::ToolCallStarted { ref tool_name } => {
-                let _ = writeln!(stdout, "[tool: {tool_name}] started");
-            }
-            EventKind::ToolCallCompleted { ref tool_name } => {
-                let _ = writeln!(stdout, "[tool: {tool_name}] OK");
-            }
-            EventKind::ToolCallFailed {
-                ref tool_name,
-                ref error,
-            } => {
-                let _ = writeln!(stdout, "[tool: {tool_name}] ERROR: {error}");
-            }
-            EventKind::RunFinished {} => {
-                let _ = writeln!(stdout);
+            Err(_) => {
+                // SSE connection closed or errored — stop reading.
                 break;
             }
-            EventKind::RunErrored { ref error } => {
-                let _ = writeln!(stdout, "\nERROR: {error}");
-                exit_code = 1;
-                break;
-            }
-            EventKind::Other => {}
+        }
+    }
+
+    // Ensure the run request completed (surface errors).
+    if let Err(e) = run_handle.await? {
+        // Only report run errors if we didn't already get a RunErrored event.
+        if exit_code == 0 {
+            let _ = writeln!(stdout, "\nERROR: {e}");
+            exit_code = 1;
         }
     }
 
     Ok(exit_code)
-}
-
-/// Parse SSE events from raw text body.
-#[cfg(test)]
-pub(crate) fn parse_sse_events(body: &str) -> Vec<SseEvent> {
-    let mut events = Vec::new();
-    let mut current_data = String::new();
-
-    for line in body.lines() {
-        if let Some(data) = line.strip_prefix("data:") {
-            let data = data.trim_start();
-            if !current_data.is_empty() {
-                current_data.push('\n');
-            }
-            current_data.push_str(data);
-        } else if line.is_empty() && !current_data.is_empty() {
-            events.push(SseEvent {
-                data: std::mem::take(&mut current_data),
-            });
-        }
-    }
-
-    // Handle trailing event without final newline.
-    if !current_data.is_empty() {
-        events.push(SseEvent { data: current_data });
-    }
-
-    events
 }
 
 /// Try to resolve a session via the daemon's HTTP API.

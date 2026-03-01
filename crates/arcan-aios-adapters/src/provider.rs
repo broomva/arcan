@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use aios_protocol::{
-    KernelError, ModelCompletion, ModelCompletionRequest, ModelDirective, ModelProviderPort,
-    ModelStopReason, TokenUsage, ToolCall,
+    EventKind, EventRecord, KernelError, ModelCompletion, ModelCompletionRequest, ModelDirective,
+    ModelProviderPort, ModelStopReason, TokenUsage, ToolCall,
 };
 use arcan_core::protocol::{
     ChatMessage, ModelDirective as ArcanDirective, ModelStopReason as ArcanStopReason,
@@ -10,19 +10,31 @@ use arcan_core::protocol::{
 use arcan_core::runtime::{Provider, ProviderRequest};
 use arcan_core::state::AppState;
 use async_trait::async_trait;
+use tokio::sync::broadcast;
+
+/// Shared handle for the runtime broadcast sender.
+/// Starts as `None` (before the runtime is created) and is filled in
+/// once `KernelRuntime::event_sender()` is available.
+pub type StreamingSenderHandle = Arc<std::sync::Mutex<Option<broadcast::Sender<EventRecord>>>>;
 
 #[derive(Clone)]
 pub struct ArcanProviderAdapter {
     provider: Arc<dyn Provider>,
     tools: Vec<arcan_core::protocol::ToolDefinition>,
+    streaming_sender: StreamingSenderHandle,
 }
 
 impl ArcanProviderAdapter {
     pub fn new(
         provider: Arc<dyn Provider>,
         tools: Vec<arcan_core::protocol::ToolDefinition>,
+        streaming_sender: StreamingSenderHandle,
     ) -> Self {
-        Self { provider, tools }
+        Self {
+            provider,
+            tools,
+            streaming_sender,
+        }
     }
 }
 
@@ -52,16 +64,46 @@ impl ModelProviderPort for ArcanProviderAdapter {
             state: AppState::default(),
         };
 
+        let provider = self.provider.clone();
+        let use_streaming = provider.supports_streaming();
+        let sender = self
+            .streaming_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        let session_id = request.session_id.clone();
+        let branch_id = request.branch_id.clone();
+
         // The Arcan Provider trait is synchronous and may use reqwest::blocking,
         // which panics if called directly on a tokio worker thread.
         // Wrap in spawn_blocking to run on a dedicated thread.
-        let provider = self.provider.clone();
-        let turn = tokio::task::spawn_blocking(move || provider.complete(&provider_request))
-            .await
-            .map_err(|join_error: tokio::task::JoinError| {
-                KernelError::Runtime(format!("provider task panicked: {join_error}"))
-            })?
-            .map_err(|error| KernelError::Runtime(error.to_string()))?;
+        let turn = tokio::task::spawn_blocking(move || {
+            if use_streaming {
+                if let Some(sender) = sender {
+                    let sess = session_id;
+                    let branch = branch_id;
+                    return provider.complete_streaming(&provider_request, &|text| {
+                        let event = EventRecord::new(
+                            sess.clone(),
+                            branch.clone(),
+                            0, // sequence 0 = ephemeral, not persisted
+                            EventKind::AssistantTextDelta {
+                                delta: text.to_owned(),
+                                index: None,
+                            },
+                        );
+                        let _ = sender.send(event);
+                    });
+                }
+            }
+            provider.complete(&provider_request)
+        })
+        .await
+        .map_err(|join_error: tokio::task::JoinError| {
+            KernelError::Runtime(format!("provider task panicked: {join_error}"))
+        })?
+        .map_err(|error| KernelError::Runtime(error.to_string()))?;
 
         let mut directives = Vec::new();
         let mut final_answer = None;
