@@ -2,11 +2,14 @@
 # Run: cargo deny check
 # Install: cargo install cargo-deny
 
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+ignore = []
 
 [licenses]
 unlicensed = "deny"

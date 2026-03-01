@@ -283,7 +283,7 @@ mod tests {
         let result = compile_context(&blocks, &config);
         // Should keep Persona (255) and Rules (200), drop Memory (50) and Retrieval (30)
         assert!(result.system_messages.len() <= 3);
-        assert!(result.dropped_blocks.len() >= 1);
+        assert!(!result.dropped_blocks.is_empty());
         // Persona should always be there
         assert!(
             result

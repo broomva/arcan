@@ -699,11 +699,7 @@ mod tests {
         }
 
         fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
-            let value = call
-                .input
-                .get("value")
-                .cloned()
-                .unwrap_or_else(|| json!(null));
+            let value = call.input.get("value").cloned().unwrap_or(json!(null));
             Ok(ToolResult {
                 call_id: call.call_id.clone(),
                 tool_name: call.tool_name.clone(),

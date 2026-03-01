@@ -87,7 +87,7 @@ jobs:
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85.0"
+          toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 

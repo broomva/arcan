@@ -438,8 +438,10 @@ mod tests {
     fn resolve_uses_provider_specific_model() {
         let mut config = ArcanConfig::default();
         config.defaults.provider = Some("ollama".into());
-        let mut pc = ProviderConfig::default();
-        pc.model = Some("special-model".into());
+        let pc = ProviderConfig {
+            model: Some("special-model".into()),
+            ..Default::default()
+        };
         config.providers.insert("ollama".into(), pc);
 
         let resolved = resolve(&config, None, None, None, None, None);
@@ -451,8 +453,10 @@ mod tests {
         let mut config = ArcanConfig::default();
         config.defaults.provider = Some("ollama".into());
         config.defaults.port = Some(3001);
-        let mut pc = ProviderConfig::default();
-        pc.model = Some("llama3.2".into());
+        let pc = ProviderConfig {
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
         config.providers.insert("ollama".into(), pc);
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
