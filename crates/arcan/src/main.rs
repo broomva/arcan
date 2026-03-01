@@ -1,4 +1,5 @@
 mod cli_run;
+mod config;
 mod daemon;
 
 use aios_protocol::{
@@ -18,6 +19,7 @@ use arcan_lago::{MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQu
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{canonical::create_canonical_router, mock::MockProvider};
 use clap::{Parser, Subcommand};
+use config::ResolvedConfig;
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_core::{
     BranchId, EventEnvelope, EventId, EventPayload, EventQuery, Journal, Projection, SessionId,
@@ -136,8 +138,16 @@ struct Cli {
     data_dir: PathBuf,
 
     /// HTTP listen port
-    #[arg(long, default_value_t = 3000, global = true)]
-    port: u16,
+    #[arg(long, global = true)]
+    port: Option<u16>,
+
+    /// LLM provider (anthropic, openai, ollama, mock)
+    #[arg(long, global = true)]
+    provider: Option<String>,
+
+    /// Model name override
+    #[arg(long, global = true)]
+    model: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -145,12 +155,12 @@ enum Command {
     /// Run the daemon in foreground
     Serve {
         /// Maximum orchestrator iterations per run
-        #[arg(long, default_value_t = 10)]
-        max_iterations: u32,
+        #[arg(long)]
+        max_iterations: Option<u32>,
 
         /// Approval timeout in seconds (default 300 = 5 minutes)
-        #[arg(long, default_value_t = 300)]
-        approval_timeout: u64,
+        #[arg(long)]
+        approval_timeout: Option<u64>,
     },
     /// Launch the TUI client (auto-starts daemon if needed)
     Chat {
@@ -179,6 +189,35 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Manage persistent configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Show daemon status, provider, model, and session info
+    Status,
+    /// Stop the running daemon
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Set a config value (e.g., `arcan config set provider ollama`)
+    Set {
+        /// Config key (provider, model, port, or dotted path like providers.ollama.base_url)
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Get a config value
+    Get {
+        /// Config key
+        key: String,
+    },
+    /// List all configuration
+    List,
+    /// Initialize a default config file
+    Init,
 }
 
 async fn shutdown_signal() {
@@ -253,12 +292,68 @@ async fn resolve_session(
     "default".to_owned()
 }
 
-fn run_serve(
-    data_dir: &Path,
-    port: u16,
-    _max_iterations: u32,
-    _approval_timeout: u64,
-) -> anyhow::Result<()> {
+/// Build provider from resolved configuration.
+fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>> {
+    let pc = resolved.provider_config.as_ref();
+
+    match resolved.provider.as_str() {
+        "mock" => {
+            tracing::warn!("Provider: MockProvider (forced via config)");
+            Ok(Arc::new(MockProvider))
+        }
+        "openai" => {
+            let config = arcan_provider::openai::OpenAiConfig::openai_from_resolved(
+                resolved.model.as_deref(),
+                pc.and_then(|p| p.base_url.as_deref()),
+                pc.and_then(|p| p.max_tokens),
+            )?;
+            tracing::info!(model = %config.model, "Provider: OpenAI");
+            Ok(Arc::new(
+                arcan_provider::openai::OpenAiCompatibleProvider::new(config),
+            ))
+        }
+        "ollama" => {
+            let config = arcan_provider::openai::OpenAiConfig::ollama_from_resolved(
+                resolved.model.as_deref(),
+                pc.and_then(|p| p.base_url.as_deref()),
+                pc.and_then(|p| p.max_tokens),
+                pc.and_then(|p| p.enable_streaming),
+            )?;
+            tracing::info!(model = %config.model, base_url = %config.base_url, "Provider: Ollama");
+            Ok(Arc::new(
+                arcan_provider::openai::OpenAiCompatibleProvider::new(config),
+            ))
+        }
+        "anthropic" => {
+            let config = AnthropicConfig::from_resolved(
+                resolved.model.as_deref(),
+                pc.and_then(|p| p.base_url.as_deref()),
+                pc.and_then(|p| p.max_tokens),
+            )?;
+            tracing::info!(model = %config.model, "Provider: Anthropic");
+            Ok(Arc::new(AnthropicProvider::new(config)))
+        }
+        // Auto-detect: try providers in order
+        _ => {
+            if let Ok(config) = AnthropicConfig::from_env() {
+                tracing::info!(model = %config.model, "Provider: Anthropic (auto-detected)");
+                Ok(Arc::new(AnthropicProvider::new(config)))
+            } else if let Ok(config) = arcan_provider::openai::OpenAiConfig::openai_from_env() {
+                tracing::info!(model = %config.model, "Provider: OpenAI (auto-detected)");
+                Ok(Arc::new(
+                    arcan_provider::openai::OpenAiCompatibleProvider::new(config),
+                ))
+            } else {
+                tracing::warn!(
+                    "Provider: MockProvider (set ARCAN_PROVIDER or API key env vars for real LLM)"
+                );
+                Ok(Arc::new(MockProvider))
+            }
+        }
+    }
+}
+
+fn run_serve(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
@@ -270,6 +365,9 @@ fn run_serve(
         workspace = %workspace_root.display(),
         journal = %journal_path.display(),
         blobs = %blobs_path.display(),
+        provider = %resolved.provider,
+        model = ?resolved.model,
+        port = resolved.port,
         "Starting arcan"
     );
 
@@ -315,65 +413,7 @@ fn run_serve(
     registry.register(MemoryCommitTool::new(journal.clone()));
 
     // --- Provider ---
-    // Selection order: ARCAN_PROVIDER env var > auto-detect from API keys > MockProvider
-    let provider_name = std::env::var("ARCAN_PROVIDER").unwrap_or_default();
-    let provider: Arc<dyn Provider> = match provider_name.as_str() {
-        "mock" => {
-            tracing::warn!("Provider: MockProvider (forced via ARCAN_PROVIDER=mock)");
-            Arc::new(MockProvider)
-        }
-        "openai" => match arcan_provider::openai::OpenAiConfig::openai_from_env() {
-            Ok(config) => {
-                tracing::info!(model = %config.model, "Provider: OpenAI");
-                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
-                    config,
-                ))
-            }
-            Err(e) => {
-                tracing::error!("ARCAN_PROVIDER=openai but config failed: {e}");
-                return Err(e.into());
-            }
-        },
-        "ollama" => match arcan_provider::openai::OpenAiConfig::ollama_from_env() {
-            Ok(config) => {
-                tracing::info!(model = %config.model, base_url = %config.base_url, "Provider: Ollama");
-                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
-                    config,
-                ))
-            }
-            Err(e) => {
-                tracing::error!("ARCAN_PROVIDER=ollama but config failed: {e}");
-                return Err(e.into());
-            }
-        },
-        "anthropic" => match AnthropicConfig::from_env() {
-            Ok(config) => {
-                tracing::info!(model = %config.model, "Provider: Anthropic");
-                Arc::new(AnthropicProvider::new(config))
-            }
-            Err(e) => {
-                tracing::error!("ARCAN_PROVIDER=anthropic but config failed: {e}");
-                return Err(e.into());
-            }
-        },
-        // Auto-detect: try providers in order
-        _ => {
-            if let Ok(config) = AnthropicConfig::from_env() {
-                tracing::info!(model = %config.model, "Provider: Anthropic (auto-detected)");
-                Arc::new(AnthropicProvider::new(config))
-            } else if let Ok(config) = arcan_provider::openai::OpenAiConfig::openai_from_env() {
-                tracing::info!(model = %config.model, "Provider: OpenAI (auto-detected)");
-                Arc::new(arcan_provider::openai::OpenAiCompatibleProvider::new(
-                    config,
-                ))
-            } else {
-                tracing::warn!(
-                    "Provider: MockProvider (set ARCAN_PROVIDER or API key env vars for real LLM)"
-                );
-                Arc::new(MockProvider)
-            }
-        }
-    };
+    let provider = build_provider(resolved)?;
 
     // --- Canonical aiOS runtime adapters ---
     let event_store: Arc<dyn EventStorePort> =
@@ -410,6 +450,7 @@ fn run_serve(
 
     // Build provider stack and blocking HTTP clients before entering Tokio runtime.
     let data_dir_owned = data_dir.to_path_buf();
+    let port = resolved.port;
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -435,14 +476,22 @@ fn run_serve(
 
 async fn run_chat(
     data_dir: PathBuf,
-    port: u16,
+    resolved: &ResolvedConfig,
     session: Option<String>,
     url: Option<String>,
 ) -> anyhow::Result<()> {
     // Ensure daemon is running first to avoid redb lock conflicts.
     let base_url = match url {
         Some(u) => u,
-        None => daemon::ensure_daemon(&data_dir, port).await?,
+        None => {
+            daemon::ensure_daemon(
+                &data_dir,
+                resolved.port,
+                Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
+                resolved.model.as_deref(),
+            )
+            .await?
+        }
     };
 
     // Resolve session via API (no direct journal access).
@@ -458,7 +507,7 @@ async fn run_chat(
 
 async fn run_message(
     data_dir: PathBuf,
-    port: u16,
+    resolved: &ResolvedConfig,
     message: String,
     session: Option<String>,
     url: Option<String>,
@@ -467,7 +516,15 @@ async fn run_message(
     // Ensure daemon is running first.
     let base_url = match url {
         Some(u) => u,
-        None => daemon::ensure_daemon(&data_dir, port).await?,
+        None => {
+            daemon::ensure_daemon(
+                &data_dir,
+                resolved.port,
+                Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
+                resolved.model.as_deref(),
+            )
+            .await?
+        }
     };
 
     // Resolve session via API (no direct journal access).
@@ -477,16 +534,148 @@ async fn run_message(
         tracing::warn!(%error, "failed to persist last_session hint");
     }
 
-    let exit_code = cli_run::run_cli(&base_url, &session, &message, json_output).await?;
+    let exit_code = cli_run::run_cli(
+        &base_url,
+        &session,
+        &message,
+        json_output,
+        resolved.model.as_deref(),
+    )
+    .await?;
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
     Ok(())
 }
 
+#[allow(clippy::print_stdout)]
+fn run_config(data_dir: &Path, action: ConfigAction) -> anyhow::Result<()> {
+    match action {
+        ConfigAction::Init => {
+            let path = config::local_config_path(data_dir);
+            if path.exists() {
+                println!("Config file already exists: {}", path.display());
+            } else {
+                std::fs::create_dir_all(data_dir)?;
+                std::fs::write(&path, config::default_config_content())?;
+                println!("Created config: {}", path.display());
+            }
+        }
+        ConfigAction::Set { key, value } => {
+            let mut cfg = config::load_config(data_dir);
+            cfg.set_key(&key, &value)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            config::save_config(data_dir, &cfg)?;
+            println!("{key} = {value}");
+        }
+        ConfigAction::Get { key } => {
+            let cfg = config::load_config(data_dir);
+            match cfg.get_key(&key) {
+                Some(value) => println!("{value}"),
+                None => println!("(not set)"),
+            }
+        }
+        ConfigAction::List => {
+            let cfg = config::load_config(data_dir);
+            let content = toml::to_string_pretty(&cfg)
+                .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
+            if content.trim().is_empty()
+                || content.trim() == "[defaults]\n\n[agent]"
+                || content
+                    .lines()
+                    .all(|l| l.trim().is_empty() || l.starts_with('['))
+            {
+                println!("(no config values set)");
+                if let Some(path) = config::global_config_path() {
+                    println!("Global config: {}", path.display());
+                }
+                println!(
+                    "Local config:  {}",
+                    config::local_config_path(data_dir).display()
+                );
+            } else {
+                print!("{content}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::print_stdout)]
+async fn run_status(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Result<()> {
+    println!("Arcan Status");
+    println!("============");
+
+    // Config
+    println!(
+        "Provider:   {}",
+        if resolved.provider.is_empty() {
+            "(auto-detect)"
+        } else {
+            &resolved.provider
+        }
+    );
+    println!(
+        "Model:      {}",
+        resolved.model.as_deref().unwrap_or("(provider default)")
+    );
+    println!("Port:       {}", resolved.port);
+    println!("Data dir:   {}", data_dir.display());
+
+    // Daemon status
+    let base_url = format!("http://127.0.0.1:{}", resolved.port);
+    match daemon::check_existing_pid(data_dir) {
+        Some(pid) => {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()?;
+            let healthy = matches!(
+                client.get(format!("{base_url}/health")).send().await,
+                Ok(resp) if resp.status().is_success()
+            );
+            if healthy {
+                println!("Daemon:     running (PID {pid}, healthy)");
+            } else {
+                println!("Daemon:     running (PID {pid}, NOT healthy)");
+            }
+        }
+        None => {
+            println!("Daemon:     not running");
+        }
+    }
+
+    // Last session
+    match read_last_session_hint(data_dir) {
+        Some(session) => println!("Session:    {session}"),
+        None => println!("Session:    (none)"),
+    }
+
+    // Config file locations
+    if let Some(global_path) = config::global_config_path() {
+        let exists = global_path.exists();
+        println!(
+            "Global cfg: {} {}",
+            global_path.display(),
+            if exists { "" } else { "(not found)" }
+        );
+    }
+    let local_path = config::local_config_path(data_dir);
+    let exists = local_path.exists();
+    println!(
+        "Local cfg:  {} {}",
+        local_path.display(),
+        if exists { "" } else { "(not found)" }
+    );
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(&cli.data_dir)?;
+
+    // Load layered config.
+    let file_config = config::load_config(&data_dir);
 
     match cli.command {
         Some(Command::Serve {
@@ -498,7 +687,16 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
-            run_serve(&data_dir, cli.port, max_iterations, approval_timeout)
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                max_iterations,
+                approval_timeout,
+            );
+
+            run_serve(&data_dir, &resolved)
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)
@@ -510,10 +708,19 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(run_chat(data_dir, cli.port, session, url))
+            runtime.block_on(run_chat(data_dir, &resolved, session, url))
         }
         Some(Command::Run {
             message,
@@ -530,10 +737,52 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(run_message(data_dir, cli.port, message, session, url, json))
+            runtime.block_on(run_message(
+                data_dir, &resolved, message, session, url, json,
+            ))
+        }
+        Some(Command::Config { action }) => run_config(&data_dir, action),
+        Some(Command::Status) => {
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_status(&data_dir, &resolved))
+        }
+        Some(Command::Stop) => {
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(daemon::stop_daemon(&data_dir, resolved.port))
         }
         None => {
             // Default: launch TUI with auto-daemon (same as `arcan chat`)
@@ -545,10 +794,19 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(run_chat(data_dir, cli.port, None, None))
+            runtime.block_on(run_chat(data_dir, &resolved, None, None))
         }
     }
 }

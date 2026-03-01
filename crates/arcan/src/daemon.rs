@@ -14,7 +14,7 @@ async fn is_daemon_healthy(base_url: &str) -> bool {
 
 /// Check if a PID file exists and the process is alive.
 /// Returns `Some(pid)` if alive, `None` if dead or no PID file.
-fn check_existing_pid(data_dir: &Path) -> Option<u32> {
+pub fn check_existing_pid(data_dir: &Path) -> Option<u32> {
     let pid_path = data_dir.join("daemon.pid");
     let raw = fs::read_to_string(&pid_path).ok()?;
     let pid: u32 = raw.trim().parse().ok()?;
@@ -30,7 +30,7 @@ fn check_existing_pid(data_dir: &Path) -> Option<u32> {
 
 /// Check if a process with the given PID is alive using `kill -0`.
 #[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
+pub fn is_process_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stdout(std::process::Stdio::null())
@@ -40,7 +40,7 @@ fn is_process_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
+pub fn is_process_alive(_pid: u32) -> bool {
     // On non-Unix, we can't cheaply check — assume alive if PID file exists.
     true
 }
@@ -54,6 +54,51 @@ pub fn remove_pid_file(data_dir: &Path) {
     }
 }
 
+/// Stop a running daemon by sending SIGTERM and waiting for exit.
+pub async fn stop_daemon(data_dir: &Path, port: u16) -> anyhow::Result<()> {
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // Check PID file first.
+    let Some(pid) = check_existing_pid(data_dir) else {
+        // No live process — check if the port is healthy anyway.
+        if is_daemon_healthy(&base_url).await {
+            anyhow::bail!(
+                "Daemon is healthy on {base_url} but no PID file found. Stop it manually."
+            );
+        }
+        anyhow::bail!("No running daemon found.");
+    };
+
+    // Send SIGTERM.
+    #[cfg(unix)]
+    {
+        let status = std::process::Command::new("kill")
+            .args([&pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if status.is_err() || !status.unwrap().success() {
+            anyhow::bail!("Failed to send SIGTERM to PID {pid}");
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!("stop is only supported on Unix systems");
+    }
+
+    // Poll until process is dead (up to 10s).
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if !is_process_alive(pid) {
+            remove_pid_file(data_dir);
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("Daemon (PID {pid}) did not exit within 10 seconds");
+}
+
 /// Ensure a daemon is running on the given port.
 ///
 /// 1. Probe `GET /health`. If healthy, return immediately.
@@ -61,7 +106,12 @@ pub fn remove_pid_file(data_dir: &Path) {
 /// 3. If PID is stale, remove PID file and proceed.
 /// 4. Spawn `arcan serve` as a detached child process.
 /// 5. Poll `/health` until it succeeds (up to ~12 s).
-pub async fn ensure_daemon(data_dir: &Path, port: u16) -> anyhow::Result<String> {
+pub async fn ensure_daemon(
+    data_dir: &Path,
+    port: u16,
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> anyhow::Result<String> {
     let base_url = format!("http://127.0.0.1:{port}");
 
     if is_daemon_healthy(&base_url).await {
@@ -97,14 +147,18 @@ pub async fn ensure_daemon(data_dir: &Path, port: u16) -> anyhow::Result<String>
     // Resolve the current executable so `arcan serve` uses the same binary.
     let exe = std::env::current_exe()?;
 
+    let port_str = port.to_string();
+    let dir_str = data_dir.to_string_lossy().to_string();
+    let mut args = vec!["serve", "--port", &port_str, "--data-dir", &dir_str];
+    if let Some(p) = provider {
+        args.extend(["--provider", p]);
+    }
+    if let Some(m) = model {
+        args.extend(["--model", m]);
+    }
+
     let child = std::process::Command::new(exe)
-        .args([
-            "serve",
-            "--port",
-            &port.to_string(),
-            "--data-dir",
-            &data_dir.to_string_lossy(),
-        ])
+        .args(&args)
         .stdout(log_file)
         .stderr(stderr_log)
         .stdin(std::process::Stdio::null())

@@ -20,6 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -30,6 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -46,6 +54,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
@@ -56,6 +68,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release
@@ -65,9 +81,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.80.0"
+          toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
@@ -85,4 +105,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-deny --locked
+      - run: cargo deny check

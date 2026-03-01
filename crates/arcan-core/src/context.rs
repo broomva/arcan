@@ -372,7 +372,7 @@ mod tests {
             make_msg(Role::System, "sys"),
             make_msg(Role::User, "q1"),
             make_msg(Role::Assistant, "calling tool"),
-            ChatMessage::tool_result("call-1", &"x".repeat(500)),
+            ChatMessage::tool_result("call-1", "x".repeat(500)),
             make_msg(Role::User, "current"),
         ];
 
