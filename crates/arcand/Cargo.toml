@@ -31,8 +31,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio-stream.workspace = true
 async-trait.workspace = true
-aios-events = { path = "../../../aiOS/crates/aios-events" }
-
-aios-policy = { path = "../../../aiOS/crates/aios-policy" }
-aios-sandbox = { path = "../../../aiOS/crates/aios-sandbox" }
-aios-tools = { path = "../../../aiOS/crates/aios-tools" }
+aios-events = { workspace = true }
+aios-policy = { workspace = true }
+aios-sandbox = { workspace = true }
+aios-tools = { workspace = true }

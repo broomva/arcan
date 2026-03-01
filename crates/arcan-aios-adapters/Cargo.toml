@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 aios-protocol.workspace = true
-aios-policy = { path = "../../../aiOS/crates/aios-policy" }
+aios-policy = { workspace = true }
 
 anyhow.workspace = true
 async-trait.workspace = true

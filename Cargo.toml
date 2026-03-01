@@ -89,6 +89,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Agent OS protocol (canonical contract)
 aios-protocol = { path = "../aiOS/crates/aios-protocol", version = "0.1.0" }
 aios-runtime = { path = "../aiOS/crates/aios-runtime", version = "0.1.0" }
+aios-events = { path = "../aiOS/crates/aios-events", version = "0.1.0" }
+aios-policy = { path = "../aiOS/crates/aios-policy", version = "0.1.0" }
+aios-sandbox = { path = "../aiOS/crates/aios-sandbox", version = "0.1.0" }
+aios-tools = { path = "../aiOS/crates/aios-tools", version = "0.1.0" }
 
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.0" }
