@@ -15,7 +15,7 @@ pub fn draw(f: &mut Frame, state: &AppState) {
             Constraint::Min(3),    // Chat log
             Constraint::Length(3), // Input box
         ])
-        .split(f.size());
+        .split(f.area());
 
     // Messages Area
     let mut message_lines = Vec::new();

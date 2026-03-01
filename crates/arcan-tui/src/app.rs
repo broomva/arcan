@@ -115,7 +115,10 @@ impl App {
         true
     }
 
-    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()> {
+    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()>
+    where
+        B::Error: Send + Sync + 'static,
+    {
         loop {
             // Draw UI
             terminal.draw(|f| ui::draw(f, &self.state))?;
