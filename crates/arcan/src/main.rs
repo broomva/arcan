@@ -1,12 +1,11 @@
 mod daemon;
 
 use aios_protocol::{
-    ApprovalPort, EventStorePort, MemoryPort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
+    ApprovalPort, EventStorePort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use arcan_aios_adapters::{
-    ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanMemoryAdapter, ArcanPolicyAdapter,
-    ArcanProviderAdapter,
+    ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanPolicyAdapter, ArcanProviderAdapter,
 };
 use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::edit::EditFileTool;
@@ -18,13 +17,108 @@ use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{canonical::create_canonical_router, mock::MockProvider};
 use clap::{Parser, Subcommand};
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
-use lago_core::{EventQuery, Journal};
+use lago_core::{
+    BranchId, EventEnvelope, EventId, EventPayload, EventQuery, Journal, Projection, SessionId,
+};
+use lago_fs::{DiffEntry, ManifestProjection};
 use lago_journal::RedbJournal;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+
+struct LakeFsObserver {
+    workspace_root: PathBuf,
+    journal: Arc<dyn Journal>,
+    blob_store: Arc<lago_store::BlobStore>,
+}
+
+#[async_trait::async_trait]
+impl arcan_aios_adapters::tools::ToolHarnessObserver for LakeFsObserver {
+    async fn post_execute(&self, session_id: String, _tool_name: String) {
+        // We skip memory tools since they don't modify the FS directly, and bash since we might want more granular control, but for now we trace everything.
+        let sess_id = SessionId::from_string(session_id.clone());
+        let branch_id = BranchId::from_string("main");
+
+        let events = match self
+            .journal
+            .read(EventQuery::new().session(lago_core::SessionId::from_string(session_id)))
+            .await
+        {
+            Ok(events) => events,
+            Err(e) => {
+                tracing::warn!(%e, "LakeFsObserver: failed to read journal");
+                return;
+            }
+        };
+
+        let mut proj = ManifestProjection::new();
+        for e in events {
+            if e.branch_id == branch_id {
+                let _ = proj.on_event(&e);
+            }
+        }
+
+        let current_manifest = proj.manifest().clone();
+
+        let new_manifest =
+            match lago_fs::snapshot(&self.workspace_root, &current_manifest, &self.blob_store) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(%e, "LakeFsObserver: failed to snapshot workspace");
+                    return;
+                }
+            };
+
+        let diffs = lago_fs::diff(&current_manifest, &new_manifest);
+        if diffs.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            diff_count = diffs.len(),
+            "LakeFsObserver: workspace changed, emitting events"
+        );
+
+        for diff in diffs {
+            let payload = match diff {
+                DiffEntry::Added { path, entry } => EventPayload::FileWrite {
+                    path,
+                    blob_hash: entry.blob_hash.into(),
+                    size_bytes: entry.size_bytes,
+                    content_type: entry.content_type,
+                },
+                DiffEntry::Modified {
+                    path, new: entry, ..
+                } => EventPayload::FileWrite {
+                    path,
+                    blob_hash: entry.blob_hash.into(),
+                    size_bytes: entry.size_bytes,
+                    content_type: entry.content_type,
+                },
+                DiffEntry::Removed { path, .. } => EventPayload::FileDelete { path },
+            };
+
+            let envelope = EventEnvelope {
+                event_id: EventId::new(),
+                session_id: sess_id.clone(),
+                branch_id: branch_id.clone(),
+                run_id: None,
+                seq: 0,
+                timestamp: EventEnvelope::now_micros(),
+                parent_id: None,
+                payload,
+                metadata: std::collections::HashMap::new(),
+                schema_version: 1,
+            };
+
+            if let Err(e) = self.journal.append(envelope).await {
+                tracing::warn!(%e, "LakeFsObserver: failed to append event");
+            }
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -176,7 +270,7 @@ fn run_serve(
     );
 
     let journal = RedbJournal::open(&journal_path)?;
-    let _blob_store = lago_store::BlobStore::open(&blobs_path)?;
+    let _blob_store = Arc::new(lago_store::BlobStore::open(&blobs_path)?);
     let journal: Arc<dyn lago_core::Journal> = Arc::new(journal);
 
     // --- Policies ---
@@ -282,18 +376,22 @@ fn run_serve(
         Arc::new(LagoAiosEventStoreAdapter::new(journal.clone()));
     let provider_adapter: Arc<dyn ModelProviderPort> =
         Arc::new(ArcanProviderAdapter::new(provider, registry.definitions()));
-    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
+    let observer = Arc::new(LakeFsObserver {
+        workspace_root: workspace_root.clone(),
+        journal: journal.clone(),
+        blob_store: _blob_store,
+    });
+    let tool_harness: Arc<dyn ToolHarnessPort> =
+        Arc::new(ArcanHarnessAdapter::new(registry).with_observer(observer));
     let policy_gate: Arc<dyn PolicyGatePort> =
         Arc::new(ArcanPolicyAdapter::new(aios_protocol::PolicySet::default()));
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
-    let memory: Arc<dyn MemoryPort> = Arc::new(ArcanMemoryAdapter::new(data_dir.join("sessions")));
 
     let runtime = Arc::new(KernelRuntime::new(
         RuntimeConfig::new(data_dir.to_path_buf()),
         event_store,
         provider_adapter,
         tool_harness,
-        memory,
         approvals,
         policy_gate,
     ));

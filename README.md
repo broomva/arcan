@@ -8,6 +8,10 @@ Rust-first agent runtime and daemon focused on harness quality, typed streaming 
 cargo install arcan
 ```
 
+> [!IMPORTANT]
+> Be sure to add `/Users/broomva/.cargo/bin` to your `PATH` to be able to run the installed binaries.
+
+
 ## Workspace
 
 - `crates/arcan-core`: protocol, state, runtime contracts, orchestrator loop
@@ -38,24 +42,23 @@ arcan chat
 arcan --port 3000 --data-dir .arcan
 ```
 
-### Dev Watch Mode (Daemon + TUI)
+### Dev Mode (Daemon + TUI)
+
+Starts the daemon, waits for health check, and then launches the TUI.
 
 ```bash
-# one-time install
-cargo install cargo-watch
-
-# starts daemon in watch mode, waits for /health, then opens TUI
-./scripts/harness/dev-tui-watch.sh
+# Run the dev harness
+./scripts/harness/dev-tui.sh
 ```
 
 Environment overrides:
 
 ```bash
 # custom port/session/data directory
-PORT=3200 SESSION=dev-1 DATA_DIR=/tmp/arcan-dev ./scripts/harness/dev-tui-watch.sh
+PORT=3200 SESSION=dev-1 DATA_DIR=/tmp/arcan-dev ./scripts/harness/dev-tui.sh
 
 # use real provider env vars instead of mock mode
-ARCAN_MOCK=0 ./scripts/harness/dev-tui-watch.sh
+ARCAN_MOCK=0 ./scripts/harness/dev-tui.sh
 ```
 
 ## Docs

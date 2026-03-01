@@ -29,11 +29,13 @@ arcan-tui = { path = "../arcan-tui" }
 aios-protocol.workspace = true
 aios-runtime.workspace = true
 lago-core.workspace = true
+lago-fs.workspace = true
 lago-aios-eventstore-adapter.workspace = true
 lago-journal.workspace = true
 lago-policy.workspace = true
 lago-store.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
 reqwest.workspace = true

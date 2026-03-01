@@ -4,15 +4,30 @@ use aios_protocol::{
 use arcan_core::protocol::ToolCall;
 use arcan_core::runtime::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
+use std::sync::Arc;
+
+#[async_trait]
+pub trait ToolHarnessObserver: Send + Sync {
+    async fn post_execute(&self, session_id: String, tool_name: String);
+}
 
 #[derive(Clone)]
 pub struct ArcanHarnessAdapter {
     registry: ToolRegistry,
+    observers: Vec<Arc<dyn ToolHarnessObserver>>,
 }
 
 impl ArcanHarnessAdapter {
     pub fn new(registry: ToolRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            observers: Vec::new(),
+        }
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn ToolHarnessObserver>) -> Self {
+        self.observers.push(observer);
+        self
     }
 }
 
@@ -56,6 +71,16 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
                 output: result.output,
             }
         };
+
+        for observer in &self.observers {
+            observer
+                .as_ref()
+                .post_execute(
+                    request.session_id.as_str().to_owned(),
+                    arcan_call.tool_name.clone(),
+                )
+                .await;
+        }
 
         Ok(ToolExecutionReport {
             tool_run_id: ToolRunId::default(),

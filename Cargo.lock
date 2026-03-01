@@ -28,18 +28,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aios-memory"
-version = "0.1.0"
-dependencies = [
- "aios-protocol",
- "anyhow",
- "async-trait",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "aios-policy"
 version = "0.1.0"
 dependencies = [
@@ -197,11 +185,13 @@ dependencies = [
  "arcan-provider",
  "arcan-tui",
  "arcand",
+ "async-trait",
  "axum",
  "chrono",
  "clap",
  "lago-aios-eventstore-adapter",
  "lago-core",
+ "lago-fs",
  "lago-journal",
  "lago-policy",
  "lago-store",
@@ -218,7 +208,6 @@ dependencies = [
 name = "arcan-aios-adapters"
 version = "0.2.0"
 dependencies = [
- "aios-memory",
  "aios-policy",
  "aios-protocol",
  "anyhow",
@@ -340,7 +329,6 @@ name = "arcand"
 version = "0.2.0"
 dependencies = [
  "aios-events",
- "aios-memory",
  "aios-policy",
  "aios-protocol",
  "aios-runtime",
@@ -1538,6 +1526,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]

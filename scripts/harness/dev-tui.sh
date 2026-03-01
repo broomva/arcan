@@ -10,25 +10,9 @@ DATA_DIR="${DATA_DIR:-/tmp/arcan-dev}"
 URL="http://127.0.0.1:${PORT}"
 ARCAN_MOCK="${ARCAN_MOCK:-1}"
 
-if ! command -v cargo-watch >/dev/null 2>&1; then
-  echo "cargo-watch is required."
-  echo "Install with: cargo install cargo-watch"
-  exit 1
-fi
+DAEMON_CMD=(cargo run -p arcan -- --data-dir "${DATA_DIR}" --port "${PORT}" serve)
 
-WATCH_PATHS=(
-  "-w" "Cargo.toml"
-  "-w" "crates/arcan"
-  "-w" "crates/arcand"
-  "-w" "crates/arcan-core"
-  "-w" "crates/arcan-provider"
-  "-w" "crates/arcan-harness"
-  "-w" "crates/arcan-lago"
-)
-
-DAEMON_CMD=(cargo watch "${WATCH_PATHS[@]}" -x "run -p arcan -- --data-dir ${DATA_DIR} --port ${PORT} serve")
-
-echo "Starting daemon watch on ${URL} (data dir: ${DATA_DIR})"
+echo "Starting daemon on ${URL} (data dir: ${DATA_DIR})"
 if [[ "${ARCAN_MOCK}" == "1" ]]; then
   echo "Mode: mock provider (OPENAI_API_KEY / ANTHROPIC_API_KEY unset)"
   env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY "${DAEMON_CMD[@]}" &

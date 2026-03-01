@@ -3,12 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
-use aios_memory::WorkspaceMemoryStore;
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
 use aios_protocol::{
-    ApprovalPort, EventStorePort, KernelResult, MemoryPort, ModelCompletion,
-    ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort,
-    PolicySet, ToolHarnessPort,
+    ApprovalPort, EventStorePort, KernelResult, ModelCompletion, ModelCompletionRequest,
+    ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort, PolicySet, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
@@ -64,7 +62,6 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
     let dispatcher = Arc::new(ToolDispatcher::new(registry, policy_engine, sandbox));
     let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
 
-    let memory: Arc<dyn MemoryPort> = Arc::new(WorkspaceMemoryStore::new(root.join("sessions")));
     let provider: Arc<dyn ModelProviderPort> = Arc::new(TestProvider);
 
     Arc::new(KernelRuntime::new(
@@ -72,7 +69,6 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
         event_store,
         provider,
         tool_harness,
-        memory,
         approvals,
         policy_gate,
     ))

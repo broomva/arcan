@@ -18,7 +18,7 @@ workspace = true
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
 aios-protocol.workspace = true
 aios-policy = { path = "../../../aiOS/crates/aios-policy" }
-aios-memory = { path = "../../../aiOS/crates/aios-memory" }
+
 anyhow.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
