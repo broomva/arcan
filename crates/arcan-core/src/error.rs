@@ -12,4 +12,6 @@ pub enum CoreError {
     Middleware(String),
     #[error("state patch failed: {0}")]
     State(String),
+    #[error("auth error: {0}")]
+    Auth(String),
 }

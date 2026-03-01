@@ -16,10 +16,17 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.0" }
+base64 = "0.22"
+dirs = "6"
+open = "5"
+rand = "0.9"
 reqwest.workspace = true
 rig-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+url = "2"
 uuid.workspace = true

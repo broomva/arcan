@@ -6,15 +6,17 @@ use arcan_core::protocol::{
 use arcan_core::runtime::{Provider, ProviderRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::Arc;
+
+use crate::credential::{ApiKeyCredential, Credential};
 
 /// Configuration for an OpenAI-compatible provider.
 ///
 /// Works with: OpenAI, Ollama, Together, Groq, LM Studio, vLLM, and any
 /// server that implements the OpenAI chat completions API.
-#[derive(Debug, Clone)]
 pub struct OpenAiConfig {
-    /// API key (empty string for local servers like Ollama).
-    pub api_key: String,
+    /// Credential for API authentication (API key or OAuth token).
+    pub credential: Arc<dyn Credential>,
     /// Model name (e.g., "gpt-4o", "llama3.1", "qwen2.5").
     pub model: String,
     /// Maximum tokens for model response.
@@ -25,6 +27,18 @@ pub struct OpenAiConfig {
     pub provider_name: String,
     /// Enable streaming mode (`"stream": true`). Avoids timeouts for slow models.
     pub enable_streaming: bool,
+}
+
+impl std::fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("credential", &self.credential.kind())
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("base_url", &self.base_url)
+            .field("provider_name", &self.provider_name)
+            .finish()
+    }
 }
 
 impl OpenAiConfig {
@@ -43,7 +57,7 @@ impl OpenAiConfig {
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
 
         Ok(Self {
-            api_key,
+            credential: Arc::new(ApiKeyCredential::new(api_key)),
             model,
             max_tokens,
             base_url,
@@ -64,7 +78,7 @@ impl OpenAiConfig {
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
 
         Ok(Self {
-            api_key: String::new(),
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
             model,
             max_tokens,
             base_url,
@@ -102,7 +116,7 @@ impl OpenAiConfig {
             .unwrap_or_else(|| "https://api.openai.com".to_string());
 
         Ok(Self {
-            api_key,
+            credential: Arc::new(ApiKeyCredential::new(api_key)),
             model,
             max_tokens,
             base_url,
@@ -137,13 +151,25 @@ impl OpenAiConfig {
             .unwrap_or_else(|| "http://localhost:11434".to_string());
 
         Ok(Self {
-            api_key: String::new(),
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
             model,
             max_tokens,
             base_url,
             provider_name: "ollama".to_string(),
             enable_streaming: enable_streaming_override.unwrap_or(true),
         })
+    }
+
+    /// Create config with an OAuth credential.
+    pub fn from_oauth(credential: Arc<dyn Credential>, model: String) -> Self {
+        Self {
+            credential,
+            model,
+            max_tokens: 4096,
+            base_url: "https://api.openai.com".to_string(),
+            provider_name: "openai".to_string(),
+            enable_streaming: false,
+        }
     }
 }
 
@@ -256,6 +282,7 @@ impl OpenAiCompatibleProvider {
     }
 
     /// Execute with retry logic for transient errors (429, 5xx).
+    /// On 401 Unauthorized, attempts to refresh the credential once before failing.
     fn execute_with_retry(
         &self,
         body: &Value,
@@ -264,6 +291,7 @@ impl OpenAiCompatibleProvider {
     ) -> Result<String, CoreError> {
         let mut last_error = None;
         let base_delay = std::time::Duration::from_millis(200);
+        let mut refreshed_on_401 = false;
 
         for attempt in 0..=max_retries {
             if attempt > 0 {
@@ -276,10 +304,9 @@ impl OpenAiCompatibleProvider {
                 .post(url)
                 .header("content-type", "application/json");
 
-            // Only add Authorization header if API key is non-empty
-            if !self.config.api_key.is_empty() {
-                request =
-                    request.header("authorization", format!("Bearer {}", self.config.api_key));
+            // Use credential for auth header (supports API keys, OAuth tokens, etc.)
+            if let Ok(header_value) = self.config.credential.auth_header() {
+                request = request.header("authorization", header_value);
             }
 
             let response = match request.json(body).send() {
@@ -295,6 +322,16 @@ impl OpenAiCompatibleProvider {
             let response_text = response
                 .text()
                 .map_err(|e| CoreError::Provider(format!("failed to read response: {e}")))?;
+
+            // On 401, try refreshing the credential once.
+            if status.as_u16() == 401
+                && !refreshed_on_401
+                && self.config.credential.needs_refresh()
+                && self.config.credential.refresh().is_ok()
+            {
+                refreshed_on_401 = true;
+                continue;
+            }
 
             // Retry on transient errors
             if (status.as_u16() == 429 || status.is_server_error()) && attempt < max_retries {
@@ -351,9 +388,9 @@ impl OpenAiCompatibleProvider {
             .post(&url)
             .header("content-type", "application/json");
 
-        if !self.config.api_key.is_empty() {
-            http_request =
-                http_request.header("authorization", format!("Bearer {}", self.config.api_key));
+        // Add authorization header from credential (API key or OAuth token)
+        if let Ok(auth_header) = self.config.credential.auth_header() {
+            http_request = http_request.header("authorization", auth_header);
         }
 
         let response = http_request
@@ -644,7 +681,7 @@ mod tests {
 
     fn test_config() -> OpenAiConfig {
         OpenAiConfig {
-            api_key: "test-key".to_string(),
+            credential: Arc::new(ApiKeyCredential::new("test-key".to_string())),
             model: "gpt-4o".to_string(),
             max_tokens: 4096,
             base_url: "http://localhost:8080".to_string(),
@@ -809,15 +846,17 @@ mod tests {
     #[test]
     fn ollama_config_defaults() {
         // This just tests the config structure, not actual env vars
+        let cred = ApiKeyCredential::new(String::new());
         let config = OpenAiConfig {
-            api_key: String::new(),
+            credential: Arc::new(cred),
             model: "llama3.2".to_string(),
             max_tokens: 4096,
             base_url: "http://localhost:11434".to_string(),
             provider_name: "ollama".to_string(),
             enable_streaming: true,
         };
-        assert!(config.api_key.is_empty());
+        // Empty credential returns error on auth_header (expected for local servers)
+        assert!(config.credential.auth_header().is_err());
         assert_eq!(config.base_url, "http://localhost:11434");
         assert!(config.enable_streaming);
     }

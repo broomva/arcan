@@ -198,6 +198,20 @@ enum Command {
     Status,
     /// Stop the running daemon
     Stop,
+    /// Authenticate with an LLM provider via OAuth
+    Login {
+        /// Provider to authenticate with (e.g. "openai")
+        provider: String,
+
+        /// Use device code flow instead of browser-based PKCE (for headless environments)
+        #[arg(long)]
+        device: bool,
+    },
+    /// Remove stored OAuth credentials for a provider
+    Logout {
+        /// Provider to log out of (e.g. "openai")
+        provider: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -292,6 +306,18 @@ async fn resolve_session(
     "default".to_owned()
 }
 
+/// Try to create an OpenAI provider from stored OAuth credentials.
+fn try_openai_oauth_provider() -> Option<Arc<dyn Provider>> {
+    let tokens = arcan_provider::oauth::load_tokens("openai").ok()?;
+    let credential = Arc::new(arcan_provider::oauth::OAuthCredential::openai(tokens));
+    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let config = arcan_provider::openai::OpenAiConfig::from_oauth(credential, model.clone());
+    tracing::info!(%model, "Provider: OpenAI (OAuth)");
+    Some(Arc::new(
+        arcan_provider::openai::OpenAiCompatibleProvider::new(config),
+    ))
+}
+
 /// Build provider from resolved configuration.
 fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>> {
     let pc = resolved.provider_config.as_ref();
@@ -301,7 +327,11 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
             tracing::warn!("Provider: MockProvider (forced via config)");
             Ok(Arc::new(MockProvider))
         }
-        "openai" => {
+        "openai" | "codex" | "openai-codex" => {
+            // Try OAuth credential first, then fall back to env var / resolved config.
+            if let Some(p) = try_openai_oauth_provider() {
+                return Ok(p);
+            }
             let config = arcan_provider::openai::OpenAiConfig::openai_from_resolved(
                 resolved.model.as_deref(),
                 pc.and_then(|p| p.base_url.as_deref()),
@@ -338,6 +368,8 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
             if let Ok(config) = AnthropicConfig::from_env() {
                 tracing::info!(model = %config.model, "Provider: Anthropic (auto-detected)");
                 Ok(Arc::new(AnthropicProvider::new(config)))
+            } else if let Some(p) = try_openai_oauth_provider() {
+                Ok(p)
             } else if let Ok(config) = arcan_provider::openai::OpenAiConfig::openai_from_env() {
                 tracing::info!(model = %config.model, "Provider: OpenAI (auto-detected)");
                 Ok(Arc::new(
@@ -670,6 +702,34 @@ async fn run_status(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Resul
     Ok(())
 }
 
+fn run_login(provider: &str, device: bool) -> anyhow::Result<()> {
+    match provider {
+        "openai" | "codex" | "openai-codex" => {
+            if device {
+                arcan_provider::oauth::device_login_openai().map_err(|e| anyhow::anyhow!("{e}"))?;
+            } else {
+                arcan_provider::oauth::pkce_login_openai().map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            Ok(())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Unknown provider '{provider}'. Supported: openai"
+        )),
+    }
+}
+
+#[allow(clippy::print_stderr)]
+fn run_logout(provider: &str) -> anyhow::Result<()> {
+    // Normalize provider name for credential lookup.
+    let normalized = match provider {
+        "codex" | "openai-codex" => "openai",
+        other => other,
+    };
+    arcan_provider::oauth::remove_tokens(normalized).map_err(|e| anyhow::anyhow!("{e}"))?;
+    eprintln!("Logged out of {provider}");
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(&cli.data_dir)?;
@@ -722,6 +782,8 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             runtime.block_on(run_chat(data_dir, &resolved, session, url))
         }
+        Some(Command::Login { provider, device }) => run_login(&provider, device),
+        Some(Command::Logout { provider }) => run_logout(&provider),
         Some(Command::Run {
             message,
             session,
