@@ -52,9 +52,15 @@ impl ModelProviderPort for ArcanProviderAdapter {
             state: AppState::default(),
         };
 
-        let turn = self
-            .provider
-            .complete(&provider_request)
+        // The Arcan Provider trait is synchronous and may use reqwest::blocking,
+        // which panics if called directly on a tokio worker thread.
+        // Wrap in spawn_blocking to run on a dedicated thread.
+        let provider = self.provider.clone();
+        let turn = tokio::task::spawn_blocking(move || provider.complete(&provider_request))
+            .await
+            .map_err(|join_error: tokio::task::JoinError| {
+                KernelError::Runtime(format!("provider task panicked: {join_error}"))
+            })?
             .map_err(|error| KernelError::Runtime(error.to_string()))?;
 
         let mut directives = Vec::new();

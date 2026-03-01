@@ -1,3 +1,4 @@
+mod cli_run;
 mod daemon;
 
 use aios_protocol::{
@@ -160,6 +161,23 @@ enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Send a single message and print the response (non-interactive)
+    Run {
+        /// The message to send
+        message: String,
+
+        /// Session ID (created if it doesn't exist)
+        #[arg(short, long)]
+        session: Option<String>,
+
+        /// Daemon URL (skip auto-start, connect to existing)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Output raw JSON events (one per line) instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 async fn shutdown_signal() {
@@ -209,29 +227,13 @@ fn persist_last_session_hint(data_dir: &Path, session: &str) -> anyhow::Result<(
     Ok(())
 }
 
-async fn most_recent_session_from_journal(data_dir: &Path) -> anyhow::Result<Option<String>> {
-    let journal_path = data_dir.join("journal.redb");
-    if !journal_path.exists() {
-        return Ok(None);
-    }
-
-    let journal = RedbJournal::open(&journal_path)?;
-
-    // Preferred path when sessions are indexed in Lago.
-    let sessions = journal.list_sessions().await?;
-    if let Some(session) = sessions.into_iter().max_by_key(|entry| entry.created_at) {
-        return Ok(Some(session.session_id.to_string()));
-    }
-
-    // Fallback for runtime paths that only append events.
-    let events = journal.read(EventQuery::new()).await?;
-    Ok(events
-        .into_iter()
-        .max_by_key(|event| event.timestamp)
-        .map(|event| event.session_id.to_string()))
-}
-
-async fn resolve_chat_session(data_dir: &Path, requested: Option<String>) -> String {
+/// Resolve session via the daemon's HTTP API first, falling back to local hints.
+/// This avoids opening the journal (which would conflict with the daemon's redb lock).
+async fn resolve_session(
+    data_dir: &Path,
+    requested: Option<String>,
+    base_url: Option<&str>,
+) -> String {
     if let Some(session) = requested {
         return session;
     }
@@ -240,10 +242,11 @@ async fn resolve_chat_session(data_dir: &Path, requested: Option<String>) -> Str
         return session;
     }
 
-    match most_recent_session_from_journal(data_dir).await {
-        Ok(Some(session)) => return session,
-        Ok(None) => {}
-        Err(error) => tracing::warn!(%error, "failed to detect most recent session from journal"),
+    // Try the HTTP API if a daemon URL is available (avoids redb lock conflict).
+    if let Some(url) = base_url {
+        if let Some(session) = cli_run::resolve_session_via_api(url).await {
+            return session;
+        }
     }
 
     "default".to_owned()
@@ -397,6 +400,7 @@ fn run_serve(
     ));
 
     // Build provider stack and blocking HTTP clients before entering Tokio runtime.
+    let data_dir_owned = data_dir.to_path_buf();
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -412,6 +416,9 @@ fn run_serve(
             .with_graceful_shutdown(shutdown_signal())
             .await?;
 
+        // Clean up PID file on graceful shutdown.
+        daemon::remove_pid_file(&data_dir_owned);
+
         tracing::info!("Server shut down gracefully");
         Ok(())
     })
@@ -423,18 +430,49 @@ async fn run_chat(
     session: Option<String>,
     url: Option<String>,
 ) -> anyhow::Result<()> {
-    let session = resolve_chat_session(&data_dir, session).await;
-    tracing::info!(session = %session, "launching TUI");
+    // Ensure daemon is running first to avoid redb lock conflicts.
     let base_url = match url {
         Some(u) => u,
         None => daemon::ensure_daemon(&data_dir, port).await?,
     };
+
+    // Resolve session via API (no direct journal access).
+    let session = resolve_session(&data_dir, session, Some(&base_url)).await;
+    tracing::info!(session = %session, "launching TUI");
 
     if let Err(error) = persist_last_session_hint(&data_dir, &session) {
         tracing::warn!(%error, "failed to persist last_session hint");
     }
 
     arcan_tui::run_tui(base_url, session).await
+}
+
+async fn run_message(
+    data_dir: PathBuf,
+    port: u16,
+    message: String,
+    session: Option<String>,
+    url: Option<String>,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    // Ensure daemon is running first.
+    let base_url = match url {
+        Some(u) => u,
+        None => daemon::ensure_daemon(&data_dir, port).await?,
+    };
+
+    // Resolve session via API (no direct journal access).
+    let session = resolve_session(&data_dir, session, Some(&base_url)).await;
+
+    if let Err(error) = persist_last_session_hint(&data_dir, &session) {
+        tracing::warn!(%error, "failed to persist last_session hint");
+    }
+
+    let exit_code = cli_run::run_cli(&base_url, &session, &message, json_output).await?;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -467,6 +505,26 @@ fn main() -> anyhow::Result<()> {
                 .enable_all()
                 .build()?;
             runtime.block_on(run_chat(data_dir, cli.port, session, url))
+        }
+        Some(Command::Run {
+            message,
+            session,
+            url,
+            json,
+        }) => {
+            // File-based logging for CLI mode (don't clobber stdout)
+            let log_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&log_dir)?;
+            let file_appender = tracing_appender::rolling::never(&log_dir, "run.log");
+            tracing_subscriber::fmt()
+                .with_writer(file_appender)
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_message(data_dir, cli.port, message, session, url, json))
         }
         None => {
             // Default: launch TUI with auto-daemon (same as `arcan chat`)
@@ -514,61 +572,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_chat_session_prefers_explicit_session() {
+    async fn resolve_session_prefers_explicit() {
         let dir = unique_temp_dir("arcan-resolve-explicit");
         persist_last_session_hint(&dir, "hint-session").expect("persist hint");
-        let selected = resolve_chat_session(&dir, Some("explicit-session".to_owned())).await;
+        let selected = resolve_session(&dir, Some("explicit-session".to_owned()), None).await;
         assert_eq!(selected, "explicit-session");
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn resolve_chat_session_uses_last_session_hint() {
+    async fn resolve_session_uses_last_session_hint() {
         let dir = unique_temp_dir("arcan-resolve-hint");
         persist_last_session_hint(&dir, "hint-session").expect("persist hint");
-        let selected = resolve_chat_session(&dir, None).await;
+        let selected = resolve_session(&dir, None, None).await;
         assert_eq!(selected, "hint-session");
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
-    async fn most_recent_session_falls_back_to_latest_event_timestamp() {
-        let dir = unique_temp_dir("arcan-resolve-journal");
-        let journal_path = dir.join("journal.redb");
-        let journal = RedbJournal::open(&journal_path).expect("open journal");
-
-        let mk_event = |session: &str, timestamp: u64| EventEnvelope {
-            event_id: LagoEventId::new(),
-            session_id: LagoSessionId::from_string(session),
-            branch_id: LagoBranchId::from_string("main"),
-            run_id: None,
-            seq: 0,
-            timestamp,
-            parent_id: None,
-            payload: LagoEventPayload::Message {
-                role: "user".to_owned(),
-                content: "hello".to_owned(),
-                model: None,
-                token_usage: None,
-            },
-            metadata: std::collections::HashMap::new(),
-            schema_version: 1,
-        };
-
-        journal
-            .append(mk_event("session-old", 1_000))
-            .await
-            .expect("append old event");
-        journal
-            .append(mk_event("session-new", 2_000))
-            .await
-            .expect("append new event");
-        drop(journal);
-
-        let selected = most_recent_session_from_journal(&dir)
-            .await
-            .expect("resolve most recent session");
-        assert_eq!(selected.as_deref(), Some("session-new"));
+    async fn resolve_session_defaults_when_no_hint() {
+        let dir = unique_temp_dir("arcan-resolve-default");
+        let selected = resolve_session(&dir, None, None).await;
+        assert_eq!(selected, "default");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn parse_sse_events_basic() {
+        let body = "data: {\"kind\":{\"type\":\"TextDelta\",\"delta\":\"hi\"}}\n\ndata: {\"kind\":{\"type\":\"RunFinished\"}}\n\n";
+        let events = cli_run::parse_sse_events(body);
+        assert_eq!(events.len(), 2);
     }
 }

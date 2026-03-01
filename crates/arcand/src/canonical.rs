@@ -122,7 +122,7 @@ pub fn create_canonical_router(runtime: Arc<KernelRuntime>) -> Router {
     let state = CanonicalState { runtime };
     Router::new()
         .route("/health", get(health))
-        .route("/sessions", post(create_session))
+        .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/{session_id}/runs", post(run_session))
         .route("/sessions/{session_id}/state", get(get_state))
         .route("/sessions/{session_id}/events", get(list_events))
@@ -159,6 +159,27 @@ impl StreamFormat {
 
 async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
+}
+
+#[derive(Debug, Serialize)]
+struct SessionSummary {
+    session_id: String,
+    owner: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn list_sessions(State(state): State<CanonicalState>) -> Json<Vec<SessionSummary>> {
+    let manifests = state.runtime.list_sessions();
+    let mut summaries: Vec<SessionSummary> = manifests
+        .into_iter()
+        .map(|m| SessionSummary {
+            session_id: m.session_id.as_str().to_owned(),
+            owner: m.owner,
+            created_at: m.created_at,
+        })
+        .collect();
+    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Json(summaries)
 }
 
 async fn persist_last_session_hint(runtime: &KernelRuntime, session_id: &SessionId) {

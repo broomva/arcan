@@ -1,0 +1,16 @@
+{
+  "progress": 0.0,
+  "uncertainty": 0.7,
+  "risk_level": "low",
+  "budget": {
+    "tokens_remaining": 120000,
+    "time_remaining_ms": 300000,
+    "cost_remaining_usd": 5.0,
+    "tool_calls_remaining": 48,
+    "error_budget_remaining": 8
+  },
+  "error_streak": 0,
+  "context_pressure": 0.1,
+  "side_effect_pressure": 0.0,
+  "human_dependency": 0.0
+}
