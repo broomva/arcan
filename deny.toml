@@ -1,4 +1,4 @@
-# cargo-deny configuration
+# cargo-deny configuration (v2)
 # Run: cargo deny check
 # Install: cargo install cargo-deny
 
@@ -8,11 +8,10 @@ all-features = false
 no-default-features = false
 
 [advisories]
-vulnerability = "deny"
-ignore = []
+version = 2
 
 [licenses]
-unlicensed = "deny"
+version = 2
 allow = [
     "MIT",
     "Apache-2.0",
