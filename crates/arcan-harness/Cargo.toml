@@ -15,7 +15,7 @@ readme = "../../README.md"
 workspace = true
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.2.0" }
+arcan-core = { path = "../arcan-core", version = "0.2.1" }
 blake3.workspace = true
 tracing.workspace = true
 schemars.workspace = true
