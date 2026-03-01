@@ -81,6 +81,8 @@ serde_yaml = "0.9"
 wait-timeout = "0.2"
 walkdir = "2"
 clap = { version = "4", features = ["derive"] }
+dirs = "6"
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

@@ -62,13 +62,20 @@ pub async fn run_cli(
     session_id: &str,
     message: &str,
     json_output: bool,
+    model: Option<&str>,
 ) -> anyhow::Result<i32> {
     let client = Client::new();
 
     // Ensure session exists (creates if needed via POST /sessions).
+    let mut session_body = serde_json::json!({ "session_id": session_id });
+    if let Some(m) = model {
+        session_body["model_routing"] = serde_json::json!({
+            "primary_model": m,
+        });
+    }
     client
         .post(format!("{base_url}/sessions"))
-        .json(&serde_json::json!({ "session_id": session_id }))
+        .json(&session_body)
         .send()
         .await?;
 

@@ -72,6 +72,79 @@ impl OpenAiConfig {
             enable_streaming: true,
         })
     }
+
+    /// Create OpenAI config from resolved CLI settings.
+    pub fn openai_from_resolved(
+        model_override: Option<&str>,
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<Self, CoreError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            CoreError::Provider("OPENAI_API_KEY environment variable not set".to_string())
+        })?;
+
+        let model = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("OPENAI_MODEL").ok())
+            .unwrap_or_else(|| "gpt-4o".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("OPENAI_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(4096);
+
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+            .unwrap_or_else(|| "https://api.openai.com".to_string());
+
+        Ok(Self {
+            api_key,
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "openai".to_string(),
+            enable_streaming: false,
+        })
+    }
+
+    /// Create Ollama config from resolved CLI settings.
+    pub fn ollama_from_resolved(
+        model_override: Option<&str>,
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+        enable_streaming_override: Option<bool>,
+    ) -> Result<Self, CoreError> {
+        let model = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("OLLAMA_MODEL").ok())
+            .unwrap_or_else(|| "llama3.2".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("OLLAMA_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(4096);
+
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("OLLAMA_BASE_URL").ok())
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+        Ok(Self {
+            api_key: String::new(),
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "ollama".to_string(),
+            enable_streaming: enable_streaming_override.unwrap_or(true),
+        })
+    }
 }
 
 /// Provider implementation for any OpenAI-compatible chat completions API.

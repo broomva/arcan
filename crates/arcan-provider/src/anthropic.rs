@@ -40,6 +40,45 @@ impl AnthropicConfig {
             base_url,
         })
     }
+
+    /// Create config from resolved CLI settings.
+    ///
+    /// API key is always read from env (never from config file).
+    /// Other settings use the provided overrides, falling back to env vars.
+    pub fn from_resolved(
+        model_override: Option<&str>,
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<Self, CoreError> {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            CoreError::Provider("ANTHROPIC_API_KEY environment variable not set".to_string())
+        })?;
+
+        let model = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("ANTHROPIC_MODEL").ok())
+            .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("ANTHROPIC_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(4096);
+
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
+            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+        Ok(Self {
+            api_key,
+            model,
+            max_tokens,
+            base_url,
+        })
+    }
 }
 
 /// Anthropic Messages API provider implementing the `Provider` trait.
