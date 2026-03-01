@@ -15,10 +15,14 @@ use crate::credential::Credential;
 
 const OPENAI_AUTH_URL: &str = "https://auth.openai.com/authorize";
 const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
-const OPENAI_DEVICE_AUTH_URL: &str = "https://auth.openai.com/oauth/device/code";
-const OPENAI_CLIENT_ID: &str = "app_scp_BIqDzYAUWMiRFEih7bh0N";
+const OPENAI_DEVICE_USERCODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const OPENAI_DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
+const OPENAI_DEVICE_CALLBACK_URI: &str = "https://auth.openai.com/deviceauth/callback";
+const OPENAI_DEVICE_VERIFY_URL: &str = "https://auth.openai.com/codex/device";
+const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_REDIRECT_URI: &str = "http://127.0.0.1:8769/callback";
 const OPENAI_SCOPE: &str = "openai.public";
+const USER_AGENT: &str = concat!("arcan/", env!("CARGO_PKG_VERSION"));
 
 // ─── Token types ──────────────────────────────────────────────────
 
@@ -219,6 +223,19 @@ pub fn list_stored_providers() -> Vec<String> {
         .collect()
 }
 
+// ─── HTTP client ─────────────────────────────────────────────────
+
+/// Build a blocking HTTP client with a proper User-Agent header.
+///
+/// Cloudflare's bot protection returns 403 for requests without a User-Agent,
+/// so all OAuth HTTP calls must use this builder instead of `Client::new()`.
+fn http_client() -> Result<reqwest::blocking::Client, CoreError> {
+    reqwest::blocking::ClientBuilder::new()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| CoreError::Auth(format!("failed to build HTTP client: {e}")))
+}
+
 // ─── Token refresh ────────────────────────────────────────────────
 
 /// Standard OAuth 2.0 refresh_token grant.
@@ -227,7 +244,7 @@ fn refresh_token_grant(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<OAuthTokenSet, CoreError> {
-    let client = reqwest::blocking::Client::new();
+    let client = http_client()?;
     let resp = client
         .post(token_url)
         .form(&[
@@ -306,7 +323,7 @@ pub fn pkce_login_openai() -> Result<OAuthTokenSet, CoreError> {
     let code = wait_for_callback(&listener)?;
 
     // Exchange code for tokens.
-    let client = reqwest::blocking::Client::new();
+    let client = http_client()?;
     let resp = client
         .post(OPENAI_TOKEN_URL)
         .form(&[
@@ -339,18 +356,23 @@ pub fn pkce_login_openai() -> Result<OAuthTokenSet, CoreError> {
 
 /// Run the Device Code flow for OpenAI (headless/SSH environments).
 ///
-/// 1. Request device code
-/// 2. Display verification URL and user code
-/// 3. Poll token endpoint until authorized
-/// 4. Store tokens to disk
+/// OpenAI uses a proprietary device auth flow (not RFC 8628):
+/// 1. POST to `/api/accounts/deviceauth/usercode` to get a user code
+/// 2. User visits `https://auth.openai.com/codex/device` and enters the code
+/// 3. Poll `/api/accounts/deviceauth/token` until authorized
+/// 4. Exchange the returned authorization code for OAuth tokens via PKCE
+/// 5. Store tokens to disk
+///
+/// **Prerequisite**: Device code auth must be enabled in ChatGPT security settings.
 #[allow(clippy::print_stderr)]
 pub fn device_login_openai() -> Result<OAuthTokenSet, CoreError> {
-    let client = reqwest::blocking::Client::new();
+    let client = http_client()?;
 
-    // Step 1: Request device code.
+    // Step 1: Request user code.
+    let usercode_body = serde_json::json!({ "client_id": OPENAI_CLIENT_ID });
     let resp = client
-        .post(OPENAI_DEVICE_AUTH_URL)
-        .form(&[("client_id", OPENAI_CLIENT_ID), ("scope", OPENAI_SCOPE)])
+        .post(OPENAI_DEVICE_USERCODE_URL)
+        .json(&usercode_body)
         .send()
         .map_err(|e| CoreError::Auth(format!("device auth request failed: {e}")))?;
 
@@ -365,22 +387,23 @@ pub fn device_login_openai() -> Result<OAuthTokenSet, CoreError> {
         )));
     }
 
-    let device_resp: DeviceCodeResponse = serde_json::from_str(&body)
+    let device_resp: DeviceUserCodeResponse = serde_json::from_str(&body)
         .map_err(|e| CoreError::Auth(format!("invalid device auth response: {e}")))?;
 
+    let interval_secs: u64 = device_resp.interval.trim().parse().unwrap_or(5).max(5);
+
     // Step 2: Display instructions.
-    eprintln!("\nTo authenticate, visit: {}", device_resp.verification_uri);
-    if let Some(ref complete_uri) = device_resp.verification_uri_complete {
-        eprintln!("Or open: {complete_uri}");
-    }
+    eprintln!("\nTo authenticate, visit: {OPENAI_DEVICE_VERIFY_URL}");
     eprintln!("Enter code: {}\n", device_resp.user_code);
 
-    // Step 3: Poll for token.
-    let interval = std::time::Duration::from_secs(device_resp.interval.max(5));
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(device_resp.expires_in.min(900));
+    // Try to open browser (best-effort).
+    let _ = open::that(OPENAI_DEVICE_VERIFY_URL);
 
-    loop {
+    // Step 3: Poll for authorization code.
+    let interval = std::time::Duration::from_secs(interval_secs);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+
+    let code_resp = loop {
         std::thread::sleep(interval);
 
         if std::time::Instant::now() > deadline {
@@ -389,13 +412,14 @@ pub fn device_login_openai() -> Result<OAuthTokenSet, CoreError> {
             ));
         }
 
+        let poll_body = serde_json::json!({
+            "device_auth_id": device_resp.device_auth_id,
+            "user_code": device_resp.user_code,
+        });
+
         let resp = client
-            .post(OPENAI_TOKEN_URL)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                ("client_id", OPENAI_CLIENT_ID),
-                ("device_code", &device_resp.device_code),
-            ])
+            .post(OPENAI_DEVICE_TOKEN_URL)
+            .json(&poll_body)
             .send()
             .map_err(|e| CoreError::Auth(format!("device token poll failed: {e}")))?;
 
@@ -405,42 +429,52 @@ pub fn device_login_openai() -> Result<OAuthTokenSet, CoreError> {
             .map_err(|e| CoreError::Auth(format!("failed to read poll response: {e}")))?;
 
         if status.is_success() {
-            let tokens = parse_token_response(&body, "openai")?;
-            store_tokens(&tokens)?;
-            eprintln!("Successfully authenticated with OpenAI!");
-            return Ok(tokens);
+            let code_resp: DeviceCodeSuccessResponse =
+                serde_json::from_str(&body).map_err(|e| {
+                    CoreError::Auth(format!("invalid device code success response: {e}"))
+                })?;
+            break code_resp;
         }
 
-        // Check for specific OAuth error codes.
-        if let Ok(err_resp) = serde_json::from_str::<OAuthErrorResponse>(&body) {
-            match err_resp.error.as_str() {
-                "authorization_pending" => continue,
-                "slow_down" => {
-                    // Back off a bit more.
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    continue;
-                }
-                "expired_token" => {
-                    return Err(CoreError::Auth(
-                        "device code expired, please try again".to_string(),
-                    ));
-                }
-                "access_denied" => {
-                    return Err(CoreError::Auth("authorization denied by user".to_string()));
-                }
-                _ => {
-                    return Err(CoreError::Auth(format!(
-                        "device auth error: {}",
-                        err_resp.error_description.unwrap_or(err_resp.error)
-                    )));
-                }
-            }
+        // 403 and 404 mean "authorization pending" — keep polling.
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+            continue;
         }
 
         return Err(CoreError::Auth(format!(
             "unexpected device token response ({status}): {body}"
         )));
+    };
+
+    // Step 4: Exchange authorization code for tokens via standard OAuth token endpoint.
+    let resp = client
+        .post(OPENAI_TOKEN_URL)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", OPENAI_CLIENT_ID),
+            ("code", code_resp.authorization_code.as_str()),
+            ("redirect_uri", OPENAI_DEVICE_CALLBACK_URI),
+            ("code_verifier", code_resp.code_verifier.as_str()),
+        ])
+        .send()
+        .map_err(|e| CoreError::Auth(format!("token exchange failed: {e}")))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .map_err(|e| CoreError::Auth(format!("failed to read token response: {e}")))?;
+
+    if !status.is_success() {
+        return Err(CoreError::Auth(format!(
+            "token exchange failed ({status}): {body}"
+        )));
     }
+
+    let tokens = parse_token_response(&body, "openai")?;
+    store_tokens(&tokens)?;
+
+    eprintln!("Successfully authenticated with OpenAI!");
+    Ok(tokens)
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────
@@ -529,20 +563,24 @@ struct TokenResponse {
     token_type: Option<String>,
 }
 
+/// Response from OpenAI's proprietary `/api/accounts/deviceauth/usercode` endpoint.
 #[derive(Debug, Deserialize)]
-struct DeviceCodeResponse {
-    device_code: String,
+struct DeviceUserCodeResponse {
+    device_auth_id: String,
+    #[serde(alias = "usercode")]
     user_code: String,
-    verification_uri: String,
-    verification_uri_complete: Option<String>,
-    expires_in: u64,
-    interval: u64,
+    /// Polling interval as a string (OpenAI returns it with whitespace).
+    interval: String,
 }
 
+/// Success response from OpenAI's `/api/accounts/deviceauth/token` endpoint.
+/// Contains PKCE parameters for the subsequent OAuth token exchange.
 #[derive(Debug, Deserialize)]
-struct OAuthErrorResponse {
-    error: String,
-    error_description: Option<String>,
+struct DeviceCodeSuccessResponse {
+    authorization_code: String,
+    #[allow(dead_code)]
+    code_challenge: String,
+    code_verifier: String,
 }
 
 // ─── URL encoding helper ──────────────────────────────────────────
@@ -718,5 +756,14 @@ mod tests {
         // This just tests that the function doesn't panic on empty/missing dirs.
         // In CI or fresh machines, there may be no stored providers.
         let _ = list_stored_providers();
+    }
+
+    #[test]
+    fn http_client_builds_with_user_agent() {
+        let client = http_client().expect("http_client should build successfully");
+        // Verify the client is usable (it was built with a User-Agent).
+        drop(client);
+        // Verify the USER_AGENT constant starts with "arcan/".
+        assert!(USER_AGENT.starts_with("arcan/"));
     }
 }

@@ -702,7 +702,14 @@ async fn run_status(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Resul
     Ok(())
 }
 
-fn run_login(provider: &str, device: bool) -> anyhow::Result<()> {
+#[allow(clippy::print_stderr)]
+fn run_login(provider: &str, device: bool, data_dir: &Path) -> anyhow::Result<()> {
+    // Normalize to canonical provider name for config persistence.
+    let canonical = match provider {
+        "codex" | "openai-codex" => "openai",
+        other => other,
+    };
+
     match provider {
         "openai" | "codex" | "openai-codex" => {
             if device {
@@ -710,22 +717,40 @@ fn run_login(provider: &str, device: bool) -> anyhow::Result<()> {
             } else {
                 arcan_provider::oauth::pkce_login_openai().map_err(|e| anyhow::anyhow!("{e}"))?;
             }
-            Ok(())
         }
-        _ => Err(anyhow::anyhow!(
-            "Unknown provider '{provider}'. Supported: openai"
-        )),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown provider '{provider}'. Supported: openai"
+            ));
+        }
     }
+
+    // Set the provider as the new default after successful login.
+    let mut file_config = config::load_config(data_dir);
+    file_config.set_key("provider", canonical).ok();
+    config::save_config(data_dir, &file_config)?;
+    eprintln!("Default provider set to '{canonical}'");
+
+    Ok(())
 }
 
 #[allow(clippy::print_stderr)]
-fn run_logout(provider: &str) -> anyhow::Result<()> {
+fn run_logout(provider: &str, data_dir: &Path) -> anyhow::Result<()> {
     // Normalize provider name for credential lookup.
     let normalized = match provider {
         "codex" | "openai-codex" => "openai",
         other => other,
     };
     arcan_provider::oauth::remove_tokens(normalized).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Clear the default provider if it matches the one being logged out.
+    let mut file_config = config::load_config(data_dir);
+    if file_config.defaults.provider.as_deref() == Some(normalized) {
+        file_config.defaults.provider = None;
+        config::save_config(data_dir, &file_config)?;
+        eprintln!("Default provider cleared");
+    }
+
     eprintln!("Logged out of {provider}");
     Ok(())
 }
@@ -782,8 +807,8 @@ fn main() -> anyhow::Result<()> {
                 .build()?;
             runtime.block_on(run_chat(data_dir, &resolved, session, url))
         }
-        Some(Command::Login { provider, device }) => run_login(&provider, device),
-        Some(Command::Logout { provider }) => run_logout(&provider),
+        Some(Command::Login { provider, device }) => run_login(&provider, device, &data_dir),
+        Some(Command::Logout { provider }) => run_logout(&provider, &data_dir),
         Some(Command::Run {
             message,
             session,
