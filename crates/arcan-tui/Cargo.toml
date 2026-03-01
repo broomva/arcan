@@ -2,6 +2,7 @@
 name = "arcan-tui"
 version = "0.2.0"
 edition = "2024"
+license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
