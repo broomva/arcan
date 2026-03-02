@@ -13,6 +13,8 @@ pub enum TuiEvent {
     Network(AgentEvent),
     /// Terminal resize event.
     Resize(u16, u16),
+    /// The SSE connection was lost (stream ended or errored out).
+    ConnectionLost,
 }
 
 /// Spawn background producers that merge terminal input, network events,
@@ -57,15 +59,18 @@ pub fn event_pump(
         }
     });
 
-    // Forward network events into the unified channel
+    // Forward network events into the unified channel.
+    // When the network receiver closes (SSE listener died), emit ConnectionLost.
     let net_tx = tx.clone();
     tokio::spawn(async move {
         let mut network_rx = network_rx;
         while let Some(agent_event) = network_rx.recv().await {
             if net_tx.send(TuiEvent::Network(agent_event)).await.is_err() {
-                break;
+                return; // main loop gone, nothing to notify
             }
         }
+        // Channel closed → SSE listener ended
+        let _ = net_tx.send(TuiEvent::ConnectionLost).await;
     });
 
     (rx, tx)

@@ -126,6 +126,9 @@ pub trait AgentClientPort: Send + Sync + 'static {
     /// The current session ID.
     fn session_id(&self) -> String;
 
+    /// The base URL of the connected daemon (e.g. `http://localhost:3000`).
+    fn base_url(&self) -> String;
+
     /// Switch to a different session. Returns a new event receiver wired to
     /// the new session's event stream.
     async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>>;

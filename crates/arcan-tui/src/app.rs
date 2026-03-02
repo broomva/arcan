@@ -42,7 +42,10 @@ impl App {
         // Merge terminal + network + ticks into a single event stream
         let (events, event_tx) = event_pump(network_rx, Duration::from_millis(50));
 
-        Self {
+        let base_url = client.base_url();
+        let session_id = client.session_id();
+
+        let mut app = Self {
             state: AppState::new(),
             input_bar: InputBarState::new(),
             should_quit: false,
@@ -53,7 +56,12 @@ impl App {
             show_panels: false,
             events,
             event_tx,
-        }
+        };
+
+        app.state.session_id = Some(session_id.clone());
+        app.push_system_alert(format!("Arcan TUI | {base_url} | Session: {session_id}"));
+
+        app
     }
 
     fn push_system_alert(&mut self, text: impl Into<String>) {
@@ -61,6 +69,7 @@ impl App {
             text: text.into(),
             timestamp: Utc::now(),
         });
+        self.state.scroll.scroll_to_bottom();
     }
 
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()>
@@ -82,6 +91,17 @@ impl App {
                 TuiEvent::Tick => {
                     self.state
                         .clear_expired_errors(chrono::Duration::seconds(5));
+                }
+                TuiEvent::ConnectionLost => {
+                    self.state.connection_status = ConnectionStatus::Disconnected;
+                    self.state.flash_error("Connection to daemon lost");
+                    if self.state.is_busy {
+                        self.state.is_busy = false;
+                        self.push_system_alert(
+                            "Connection lost while waiting for response. \
+                             Restart the daemon and try again.",
+                        );
+                    }
                 }
                 TuiEvent::Resize(_, _) => {
                     // Will redraw below
@@ -272,17 +292,21 @@ impl App {
 
     async fn execute_model_command(&mut self, subcmd: ModelSubcommand) {
         match subcmd {
-            ModelSubcommand::ShowCurrent => match self.client.get_model().await {
-                Ok(model) => self.push_system_alert(format!("Current model: {model}")),
-                Err(err) => self.push_system_alert(format!("Failed to fetch model: {err}")),
-            },
+            ModelSubcommand::ShowCurrent => {
+                self.push_system_alert(
+                    "Model info: check ARCAN_PROVIDER env var or use `arcan status` \
+                     in another terminal. The /model command is not yet wired to the daemon API.",
+                );
+            }
             ModelSubcommand::Set { provider, model } => {
-                match self.client.set_model(&provider, model.as_deref()).await {
-                    Ok(active_model) => {
-                        self.push_system_alert(format!("Switched model: {active_model}"))
-                    }
-                    Err(err) => self.push_system_alert(format!("Failed to switch model: {err}")),
-                }
+                let requested = match model {
+                    Some(ref m) => format!("{provider}:{m}"),
+                    None => provider.clone(),
+                };
+                self.push_system_alert(format!(
+                    "Model switching ({requested}) is not yet available via the TUI. \
+                     Set ARCAN_PROVIDER before starting the daemon.",
+                ));
             }
         }
     }
@@ -296,21 +320,42 @@ impl App {
         self.state.scroll.scroll_to_bottom();
 
         let submit_client = self.client.clone();
+        let tx = self.event_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = submit_client.submit_run(&text, None).await {
                 tracing::error!("Submit error: {}", e);
+                // Surface the error back to the UI so is_busy resets and user sees feedback
+                let _ = tx
+                    .send(TuiEvent::Network(
+                        arcan_core::protocol::AgentEvent::RunErrored {
+                            run_id: "submit".to_string(),
+                            session_id: String::new(),
+                            error: format!("Failed to send message: {e}"),
+                        },
+                    ))
+                    .await;
             }
         });
     }
 
     fn submit_approval(&mut self, approval_id: String, decision: String, reason: Option<String>) {
         let submit_client = self.client.clone();
+        let tx = self.event_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = submit_client
                 .submit_approval(&approval_id, &decision, reason.as_deref())
                 .await
             {
                 tracing::error!("Submit approval error: {}", e);
+                let _ = tx
+                    .send(TuiEvent::Network(
+                        arcan_core::protocol::AgentEvent::RunErrored {
+                            run_id: "approval".to_string(),
+                            session_id: String::new(),
+                            error: format!("Approval failed: {e}"),
+                        },
+                    ))
+                    .await;
             }
         });
     }

@@ -62,9 +62,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  console:
+    name: Console Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/arcan-console/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: TypeScript check
+        run: bun run lint
+      - name: Unit tests
+        run: bun run test
+      - name: Production build
+        run: bun run build
+
   build:
     name: Build Release
-    needs: [test]
+    needs: [test, console]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +92,12 @@ jobs:
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
       - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: Swatinem/rust-cache@v2
+      - name: Install console deps
+        run: cd crates/arcan-console/frontend && bun install --frozen-lockfile
       - run: cargo build --workspace --release
 
   msrv:

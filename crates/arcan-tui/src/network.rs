@@ -368,6 +368,10 @@ impl AgentClientPort for HttpAgentClient {
             .unwrap_or_default()
     }
 
+    fn base_url(&self) -> String {
+        self.base_url.clone()
+    }
+
     async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
         // Update the session ID
         {

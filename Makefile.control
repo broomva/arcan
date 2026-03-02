@@ -1,0 +1,61 @@
+CONSOLE_DIR := crates/arcan-console/frontend
+
+.PHONY: smoke check test console-check console-test console-build recover hooks-install audit ci
+
+# ── Rust gates ──────────────────────────────────────────────────────────────
+
+smoke:
+	@echo "==> smoke: format + build check"
+	@cargo fmt --all -- --check
+	@cargo check --workspace
+
+check: smoke console-check
+	@echo "==> check: lint + typecheck"
+	@cargo clippy --workspace --all-targets -- -D warnings
+
+test: check console-test
+	@echo "==> test: full test suite"
+	@cargo test --workspace
+
+# ── Console frontend gates ──────────────────────────────────────────────────
+
+console-check:
+	@echo "==> console-check: typecheck + lint"
+	@if [ -f $(CONSOLE_DIR)/package.json ]; then \
+		cd $(CONSOLE_DIR) && bun run lint; \
+	fi
+
+console-test:
+	@echo "==> console-test: vitest"
+	@if [ -f $(CONSOLE_DIR)/package.json ]; then \
+		cd $(CONSOLE_DIR) && bun run test; \
+	fi
+
+console-build:
+	@echo "==> console-build: production build"
+	@if [ -f $(CONSOLE_DIR)/package.json ]; then \
+		cd $(CONSOLE_DIR) && bun install && bun run build; \
+	fi
+
+# ── Recovery & hooks ────────────────────────────────────────────────────────
+
+recover:
+	@echo "==> recover: clean + rebuild"
+	@cargo clean
+	@if [ -d $(CONSOLE_DIR)/node_modules ]; then rm -rf $(CONSOLE_DIR)/node_modules; fi
+	@cargo build --workspace
+
+hooks-install:
+	@./scripts/setup-hooks.sh
+
+# ── Audit (validate governance) ─────────────────────────────────────────────
+
+audit:
+	@echo "==> audit: workspace build + console build"
+	@cargo build --workspace
+	@$(MAKE) console-build
+
+# ── CI entrypoint ───────────────────────────────────────────────────────────
+
+ci: test console-build
+	@echo "==> CI: all gates passed"

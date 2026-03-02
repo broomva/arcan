@@ -3,13 +3,15 @@
   "private": true,
   "version": "0.2.1",
   "type": "module",
+  "packageManager": "bun",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsc --noEmit && vitest run"
   },
   "dependencies": {
     "clsx": "^2.1.1",

@@ -7,20 +7,39 @@ set -e
 
 echo "==> Running pre-commit checks..."
 
-# Check formatting
-echo "  Checking formatting..."
+# ── Rust ────────────────────────────────────────────────────────────────
+
+echo "  Checking Rust formatting..."
 if ! cargo fmt --all -- --check 2>/dev/null; then
     echo ""
     echo "ERROR: Code is not formatted. Run 'cargo fmt' and re-stage."
     exit 1
 fi
 
-# Type check
-echo "  Checking compilation..."
+echo "  Checking Rust compilation..."
 if ! cargo check --workspace 2>/dev/null; then
     echo ""
     echo "ERROR: Code does not compile. Fix errors and re-stage."
     exit 1
+fi
+
+# ── Console frontend ────────────────────────────────────────────────────
+
+CONSOLE_DIR="crates/arcan-console/frontend"
+if [ -f "$CONSOLE_DIR/package.json" ] && command -v bun >/dev/null 2>&1; then
+    echo "  Checking console TypeScript..."
+    if ! (cd "$CONSOLE_DIR" && bun run lint 2>/dev/null); then
+        echo ""
+        echo "ERROR: Console TypeScript errors. Run 'cd $CONSOLE_DIR && bun run lint' to see details."
+        exit 1
+    fi
+
+    echo "  Running console tests..."
+    if ! (cd "$CONSOLE_DIR" && bun run test 2>/dev/null); then
+        echo ""
+        echo "ERROR: Console tests failing. Run 'cd $CONSOLE_DIR && bun run test' to see details."
+        exit 1
+    fi
 fi
 
 echo "==> All pre-commit checks passed."
