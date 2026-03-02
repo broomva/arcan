@@ -1,10 +1,11 @@
 use crate::client::AgentClientPort;
-use crate::command::{self, Command, ModelSubcommand};
+use crate::command::{self, COMMANDS, Command, ModelSubcommand};
 use crate::event::{ScrollDirection, TuiEvent, event_pump};
 use crate::focus::FocusTarget;
 use crate::models::state::{AppState, ConnectionStatus};
 use crate::models::ui_block::UiBlock;
 use crate::ui;
+use crate::widgets::autocomplete::AutocompleteState;
 use crate::widgets::input_bar::InputBarState;
 use crate::widgets::markdown::MarkdownRenderer;
 use crate::widgets::session_browser::{SessionBrowserState, SessionEntry};
@@ -27,6 +28,8 @@ pub struct App {
     pub markdown: MarkdownRenderer,
     /// Whether the side panels (session browser + state inspector) are visible.
     pub show_panels: bool,
+    /// Slash command autocomplete popup state.
+    pub autocomplete: AutocompleteState,
     pub(crate) events: mpsc::Receiver<TuiEvent>,
     /// Sender half of the unified event channel, used to inject network events
     /// after a session switch.
@@ -54,6 +57,7 @@ impl App {
             state_inspector: StateInspectorState::new(),
             markdown: MarkdownRenderer::new(),
             show_panels: false,
+            autocomplete: AutocompleteState::new(),
             events,
             event_tx,
         };
@@ -114,6 +118,10 @@ impl App {
                 TuiEvent::Resize(_, _) => {
                     // Will redraw below
                 }
+                TuiEvent::OAuthResult { result, .. } => match result {
+                    Ok(msg) => self.push_system_alert(msg),
+                    Err(msg) => self.push_system_alert(msg),
+                },
                 _ => {}
             }
 
@@ -131,7 +139,11 @@ impl App {
         // Focus-independent keys
         match key.code {
             KeyCode::Esc => {
-                // If panels are shown, close them first; otherwise quit
+                // Dismiss autocomplete first, then panels, then quit
+                if self.autocomplete.active {
+                    self.autocomplete.dismiss();
+                    return;
+                }
                 if self.show_panels {
                     self.show_panels = false;
                     self.state.focus = FocusTarget::InputBar;
@@ -182,8 +194,58 @@ impl App {
     }
 
     async fn handle_input_key(&mut self, key: KeyEvent) {
+        // When autocomplete is active, intercept navigation keys
+        if self.autocomplete.active {
+            match key.code {
+                KeyCode::Up => {
+                    self.autocomplete.previous();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.autocomplete.next();
+                    return;
+                }
+                KeyCode::Tab => {
+                    if let Some(command_name) = self.autocomplete.accept() {
+                        self.input_bar.clear();
+                        for ch in command_name.chars() {
+                            self.input_bar
+                                .input(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                        }
+                        self.input_bar
+                            .input(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                    }
+                    return;
+                }
+                KeyCode::Enter => {
+                    // If there's an exact match or single suggestion, accept it;
+                    // otherwise fall through to normal submit
+                    if self.autocomplete.suggestions.len() == 1 {
+                        if let Some(command_name) = self.autocomplete.accept() {
+                            self.input_bar.clear();
+                            for ch in command_name.chars() {
+                                self.input_bar
+                                    .input(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+                            }
+                            self.input_bar
+                                .input(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                            return;
+                        }
+                    }
+                    // Multiple suggestions: dismiss and submit as typed
+                    self.autocomplete.dismiss();
+                    self.handle_submit().await;
+                    return;
+                }
+                _ => {
+                    // Fall through to normal input handling, then update autocomplete
+                }
+            }
+        }
+
         match key.code {
             KeyCode::Enter => {
+                self.autocomplete.dismiss();
                 self.handle_submit().await;
             }
             KeyCode::Up => {
@@ -196,6 +258,8 @@ impl App {
             KeyCode::PageDown => self.state.scroll.page_down(),
             _ => {
                 self.input_bar.input(key);
+                // Update autocomplete after every keystroke
+                self.autocomplete.update(self.input_bar.text());
             }
         }
     }
@@ -258,16 +322,30 @@ impl App {
         // Sync to input_buffer for backward compat
         self.state.input_buffer.clear();
 
-        match command::parse(&trimmed) {
+        let parsed = command::parse(&trimmed);
+
+        // Echo slash commands in the chat log so the user sees what they typed.
+        // Skip for /clear (about to wipe the log) and plain messages (echoed by submit_message).
+        if trimmed.starts_with('/') && !matches!(parsed, Ok(Command::Clear)) {
+            self.state.blocks.push(UiBlock::HumanMessage {
+                text: trimmed.clone(),
+                timestamp: Utc::now(),
+            });
+            self.state.scroll.scroll_to_bottom();
+        }
+
+        match parsed {
             Ok(Command::Clear) => {
                 self.state.blocks.clear();
                 self.state.streaming_text = None;
                 self.state.is_busy = false;
             }
             Ok(Command::Help) => {
-                self.push_system_alert(
-                    "Commands: /clear, /model, /approve <id> <yes|no>, /sessions, /state, /help",
-                );
+                let lines: Vec<String> = COMMANDS
+                    .iter()
+                    .map(|c| format!("  {:<12} {}", c.name, c.description))
+                    .collect();
+                self.push_system_alert(format!("Available commands:\n{}", lines.join("\n")));
             }
             Ok(Command::Model(subcmd)) => {
                 self.execute_model_command(subcmd).await;
@@ -288,6 +366,18 @@ impl App {
                 self.show_panels = true;
                 self.state.focus = FocusTarget::StateInspector;
                 self.fetch_state().await;
+            }
+            Ok(Command::Login { provider, device }) => {
+                self.execute_login(provider, device);
+            }
+            Ok(Command::Logout { provider }) => {
+                self.execute_logout(provider);
+            }
+            Ok(Command::Provider { name: None }) => {
+                self.show_provider_status();
+            }
+            Ok(Command::Provider { name: Some(name) }) => {
+                self.set_provider(&name);
             }
             Ok(Command::SendMessage(text)) => {
                 self.submit_message(text);
@@ -315,6 +405,218 @@ impl App {
                     "Model switching ({requested}) is not yet available via the TUI. \
                      Set ARCAN_PROVIDER before starting the daemon.",
                 ));
+            }
+        }
+    }
+
+    fn execute_login(&mut self, provider: String, device: bool) {
+        let canonical = match provider.as_str() {
+            "codex" | "openai-codex" => "openai",
+            other => other,
+        };
+
+        match canonical {
+            "openai" => {
+                if device {
+                    self.push_system_alert(
+                        "Starting device code authentication for OpenAI...\n\
+                         Requesting verification code...",
+                    );
+                } else {
+                    self.push_system_alert(
+                        "Starting browser-based authentication for OpenAI...\n\
+                         Your browser should open automatically.",
+                    );
+                }
+
+                let tx = self.event_tx.clone();
+                let canonical = canonical.to_string();
+
+                // OAuth flows use blocking HTTP + eprintln! output that would corrupt
+                // the TUI alternate screen. Run on a dedicated OS thread with stderr
+                // redirected to /dev/null.
+                std::thread::spawn(move || {
+                    // Redirect stderr to suppress eprintln! from the OAuth module.
+                    // The TUI shows its own alerts instead.
+                    let stderr_suppressed = suppress_stderr();
+
+                    let result = if device {
+                        arcan_provider::oauth::device_login_openai()
+                    } else {
+                        arcan_provider::oauth::pkce_login_openai()
+                    };
+
+                    // Capture any stderr output before restoring, then restore stderr
+                    let captured = restore_stderr(stderr_suppressed);
+
+                    let oauth_result = match result {
+                        Ok(_tokens) => {
+                            // Update config to set default provider
+                            let mut config = crate::config::load_global_config();
+                            if config.set_key("provider", &canonical).is_ok() {
+                                let _ = crate::config::save_global_config(&config);
+                            }
+                            Ok(format!(
+                                "Successfully authenticated with {canonical}. \
+                                 Restart the daemon to use OAuth credentials."
+                            ))
+                        }
+                        Err(e) => Err(format!("Login failed: {e}")),
+                    };
+
+                    // If device flow, extract user code from captured stderr and
+                    // send it as a separate alert so the user can see it in the TUI.
+                    if device {
+                        if let Some(ref captured) = captured {
+                            // Look for "Enter code: XXXX" in captured output
+                            for line in captured.lines() {
+                                if line.contains("Enter code:") || line.contains("visit:") {
+                                    let _ = tx.blocking_send(TuiEvent::OAuthResult {
+                                        provider: canonical.clone(),
+                                        result: Ok(line.trim().to_string()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = tx.blocking_send(TuiEvent::OAuthResult {
+                        provider: canonical,
+                        result: oauth_result,
+                    });
+                });
+            }
+            _ => {
+                self.push_system_alert(format!("Unknown provider '{provider}'. Supported: openai"));
+            }
+        }
+    }
+
+    fn execute_logout(&mut self, provider: String) {
+        let canonical = match provider.as_str() {
+            "codex" | "openai-codex" => "openai",
+            other => other,
+        };
+
+        match arcan_provider::oauth::remove_tokens(canonical) {
+            Ok(()) => {
+                // Clear default provider if it matches
+                let mut config = crate::config::load_global_config();
+                if config.defaults.provider.as_deref() == Some(canonical) {
+                    config.defaults.provider = None;
+                    let _ = crate::config::save_global_config(&config);
+                }
+                self.push_system_alert(format!(
+                    "Logged out from {canonical}. Credentials removed."
+                ));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Logout failed: {e}"));
+            }
+        }
+    }
+
+    fn show_provider_status(&mut self) {
+        let config = crate::config::load_global_config();
+        let configured = config.defaults.provider.as_deref().unwrap_or("");
+
+        // Detect what credentials are available
+        let has_openai_oauth = arcan_provider::oauth::load_tokens("openai").is_ok();
+        let openai_oauth_expired = arcan_provider::oauth::load_tokens("openai")
+            .map(|t| t.is_expired())
+            .unwrap_or(false);
+        let has_openai_key = std::env::var("OPENAI_API_KEY").is_ok();
+        let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
+
+        // Determine what the daemon is actually using (mirrors build_provider logic)
+        let active = match configured {
+            "openai" | "codex" | "openai-codex" => {
+                if has_openai_oauth && !openai_oauth_expired {
+                    "openai via OAuth (device login)"
+                } else if has_openai_key {
+                    "openai via API key (OPENAI_API_KEY)"
+                } else {
+                    "openai (no credentials found)"
+                }
+            }
+            "anthropic" => {
+                if has_anthropic_key {
+                    "anthropic via API key (ANTHROPIC_API_KEY)"
+                } else {
+                    "anthropic (no credentials found)"
+                }
+            }
+            "mock" => "mock (no LLM calls)",
+            "" => {
+                // Auto-detect order: anthropic key > openai oauth > openai key > mock
+                if has_anthropic_key {
+                    "anthropic via API key (auto-detected)"
+                } else if has_openai_oauth && !openai_oauth_expired {
+                    "openai via OAuth (auto-detected)"
+                } else if has_openai_key {
+                    "openai via API key (auto-detected)"
+                } else {
+                    "mock (no credentials found)"
+                }
+            }
+            other => other,
+        };
+
+        let mut lines = vec![format!("  Active:  {active}")];
+
+        // Show all available credentials
+        lines.push("  Credentials found:".to_string());
+        if has_openai_oauth {
+            let status = if openai_oauth_expired {
+                "expired"
+            } else {
+                "valid"
+            };
+            lines.push(format!("    openai OAuth  [{status}]"));
+        }
+        if has_openai_key {
+            lines.push("    openai API key  [OPENAI_API_KEY]".to_string());
+        }
+        if has_anthropic_key {
+            lines.push("    anthropic API key  [ANTHROPIC_API_KEY]".to_string());
+        }
+        if !has_openai_oauth && !has_openai_key && !has_anthropic_key {
+            lines.push("    (none)".to_string());
+        }
+
+        if !configured.is_empty() {
+            lines.push(format!("  Config:  provider = \"{configured}\""));
+        }
+
+        lines.push(
+            "  Note: daemon uses credentials from startup. Restart after /login.".to_string(),
+        );
+
+        self.push_system_alert(format!("Provider status:\n{}", lines.join("\n")));
+    }
+
+    fn set_provider(&mut self, name: &str) {
+        let valid = ["openai", "anthropic", "ollama", "mock"];
+        if !valid.contains(&name) {
+            self.push_system_alert(format!(
+                "Unknown provider \"{name}\". Options: {}",
+                valid.join(", ")
+            ));
+            return;
+        }
+
+        let mut config = crate::config::load_global_config();
+        if config.set_key("provider", name).is_ok() {
+            match crate::config::save_global_config(&config) {
+                Ok(()) => {
+                    self.push_system_alert(format!(
+                        "Default provider set to \"{name}\".\n\
+                         Restart the daemon to apply."
+                    ));
+                }
+                Err(e) => {
+                    self.push_system_alert(format!("Failed to save config: {e}"));
+                }
             }
         }
     }
@@ -423,6 +725,64 @@ impl App {
             }
         }
     }
+}
+
+/// Redirect stderr to a pipe so `eprintln!` output doesn't corrupt the TUI.
+/// Returns the saved file descriptor and the read-end of the pipe, or None on failure.
+#[cfg(unix)]
+fn suppress_stderr() -> Option<(i32, i32)> {
+    unsafe {
+        let saved = libc::dup(2); // save original stderr fd
+        if saved < 0 {
+            return None;
+        }
+        let mut pipe_fds = [0i32; 2];
+        if libc::pipe(pipe_fds.as_mut_ptr()) < 0 {
+            libc::close(saved);
+            return None;
+        }
+        // Redirect stderr (fd 2) to the write-end of the pipe
+        libc::dup2(pipe_fds[1], 2);
+        libc::close(pipe_fds[1]);
+        Some((saved, pipe_fds[0])) // (saved_stderr, read_end)
+    }
+}
+
+#[cfg(not(unix))]
+fn suppress_stderr() -> Option<(i32, i32)> {
+    None // On non-Unix, skip suppression
+}
+
+/// Restore stderr and return captured output.
+#[cfg(unix)]
+fn restore_stderr(state: Option<(i32, i32)>) -> Option<String> {
+    let (saved, read_end) = state?;
+    unsafe {
+        // Restore original stderr
+        libc::dup2(saved, 2);
+        libc::close(saved);
+
+        // Read captured output from pipe (non-blocking)
+        let mut buf = vec![0u8; 4096];
+        // Set pipe to non-blocking so read doesn't hang
+        let flags = libc::fcntl(read_end, libc::F_GETFL);
+        libc::fcntl(read_end, libc::F_SETFL, flags | libc::O_NONBLOCK);
+
+        let n = libc::read(read_end, buf.as_mut_ptr().cast(), buf.len());
+        libc::close(read_end);
+
+        if n > 0 {
+            buf.truncate(n as usize);
+            Some(String::from_utf8_lossy(&buf).to_string())
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_stderr(_state: Option<(i32, i32)>) -> Option<String> {
+    None
 }
 
 // Command parsing tests are now in command.rs

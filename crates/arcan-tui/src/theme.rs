@@ -21,6 +21,9 @@ pub struct Theme {
     pub error_flash: Style,
     pub timestamp: Style,
     pub spinner: Style,
+    pub autocomplete_selected: Style,
+    pub autocomplete_normal: Style,
+    pub autocomplete_description: Style,
 }
 
 impl Default for Theme {
@@ -50,6 +53,9 @@ impl Default for Theme {
             error_flash: Style::default().fg(Color::White).bg(Color::Red),
             timestamp: Style::default().fg(Color::DarkGray),
             spinner: Style::default().fg(Color::Cyan),
+            autocomplete_selected: Style::default().fg(Color::Black).bg(Color::Cyan),
+            autocomplete_normal: Style::default().fg(Color::White),
+            autocomplete_description: Style::default().fg(Color::DarkGray),
         }
     }
 }

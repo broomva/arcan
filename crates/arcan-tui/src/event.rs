@@ -24,6 +24,11 @@ pub enum TuiEvent {
     ConnectionLost,
     /// Mouse scroll (wheel or touch swipe mapped to scroll by the terminal).
     MouseScroll(ScrollDirection),
+    /// OAuth login flow completed (success or failure).
+    OAuthResult {
+        provider: String,
+        result: Result<String, String>,
+    },
 }
 
 /// Spawn background producers that merge terminal input, network events,

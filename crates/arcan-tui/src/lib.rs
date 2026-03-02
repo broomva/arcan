@@ -1,6 +1,7 @@
 pub mod app;
 pub mod client;
 pub mod command;
+pub mod config;
 pub mod event;
 pub mod focus;
 pub mod history;

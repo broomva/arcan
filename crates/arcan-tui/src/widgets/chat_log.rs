@@ -66,11 +66,20 @@ pub fn render(
             }
             UiBlock::SystemAlert { text, timestamp } => {
                 let ts = timestamp.format("%H:%M");
-                lines.push(Line::from(vec![
-                    Span::styled(format!("[{ts}] "), theme.timestamp),
-                    Span::styled("System: ", theme.system_label),
-                    Span::styled(text.clone(), theme.system_label),
-                ]));
+                for (i, line_text) in text.split('\n').enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("[{ts}] "), theme.timestamp),
+                            Span::styled("System: ", theme.system_label),
+                            Span::styled(line_text.to_string(), theme.system_label),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("        "),
+                            Span::styled(line_text.to_string(), theme.system_label),
+                        ]));
+                    }
+                }
             }
         }
     }

@@ -1,3 +1,68 @@
+/// Metadata for a slash command, used by autocomplete and `/help`.
+#[derive(Debug, Clone)]
+pub struct CommandInfo {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub usage: &'static str,
+}
+
+/// All available slash commands with descriptions (single source of truth).
+pub const COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        name: "/approve",
+        description: "Submit approval decision",
+        usage: "/approve <id> <yes|no> [reason]",
+    },
+    CommandInfo {
+        name: "/clear",
+        description: "Clear conversation",
+        usage: "/clear",
+    },
+    CommandInfo {
+        name: "/help",
+        description: "Show available commands",
+        usage: "/help",
+    },
+    CommandInfo {
+        name: "/login",
+        description: "Login to provider (device code)",
+        usage: "/login [openai] [--browser]",
+    },
+    CommandInfo {
+        name: "/logout",
+        description: "Logout from provider",
+        usage: "/logout [openai]",
+    },
+    CommandInfo {
+        name: "/model",
+        description: "Show or set model",
+        usage: "/model [provider[:model]]",
+    },
+    CommandInfo {
+        name: "/provider",
+        description: "Show or set provider",
+        usage: "/provider [name]",
+    },
+    CommandInfo {
+        name: "/sessions",
+        description: "Browse sessions",
+        usage: "/sessions",
+    },
+    CommandInfo {
+        name: "/state",
+        description: "Inspect agent state",
+        usage: "/state",
+    },
+];
+
+/// Filter commands whose name starts with the given prefix.
+pub fn filter_commands(prefix: &str) -> Vec<&'static CommandInfo> {
+    COMMANDS
+        .iter()
+        .filter(|cmd| cmd.name.starts_with(prefix))
+        .collect()
+}
+
 /// Parsed TUI command from user input.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -13,6 +78,12 @@ pub enum Command {
         decision: String,
         reason: Option<String>,
     },
+    /// Authenticate with a provider via OAuth.
+    Login { provider: String, device: bool },
+    /// Remove stored credentials for a provider.
+    Logout { provider: String },
+    /// Show or set the active provider.
+    Provider { name: Option<String> },
     /// Toggle or browse sessions.
     Sessions,
     /// Fetch and display agent state.
@@ -56,6 +127,12 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "/help" => Ok(Command::Help),
         "/model" => parse_model(args),
         "/approve" => parse_approve(args),
+        "/login" => parse_login(args),
+        "/logout" => parse_logout(args),
+        "/provider" => {
+            let name = args.split_whitespace().next().map(|s| s.to_string());
+            Ok(Command::Provider { name })
+        }
         "/sessions" => Ok(Command::Sessions),
         "/state" => Ok(Command::State),
         unknown => Err(format!(
@@ -117,6 +194,29 @@ fn parse_approve(args: &str) -> Result<Command, String> {
         decision,
         reason,
     })
+}
+
+fn parse_login(args: &str) -> Result<Command, String> {
+    let parts: Vec<&str> = args.split_whitespace().collect();
+    let provider = parts
+        .iter()
+        .find(|p| !p.starts_with("--"))
+        .copied()
+        .unwrap_or("openai")
+        .to_string();
+    // Default to device code flow in TUI (no browser needed).
+    // Use --browser to opt into PKCE browser flow.
+    let device = !parts.contains(&"--browser");
+    Ok(Command::Login { provider, device })
+}
+
+fn parse_logout(args: &str) -> Result<Command, String> {
+    let provider = args
+        .split_whitespace()
+        .next()
+        .unwrap_or("openai")
+        .to_string();
+    Ok(Command::Logout { provider })
 }
 
 #[cfg(test)]
@@ -239,5 +339,104 @@ mod tests {
     #[test]
     fn state_command() {
         assert_eq!(parse("/state").unwrap(), Command::State);
+    }
+
+    #[test]
+    fn login_default_uses_device_flow() {
+        assert_eq!(
+            parse("/login").unwrap(),
+            Command::Login {
+                provider: "openai".to_string(),
+                device: true,
+            }
+        );
+    }
+
+    #[test]
+    fn login_explicit_provider() {
+        assert_eq!(
+            parse("/login openai").unwrap(),
+            Command::Login {
+                provider: "openai".to_string(),
+                device: true,
+            }
+        );
+    }
+
+    #[test]
+    fn login_browser_flag() {
+        assert_eq!(
+            parse("/login openai --browser").unwrap(),
+            Command::Login {
+                provider: "openai".to_string(),
+                device: false,
+            }
+        );
+    }
+
+    #[test]
+    fn logout_default_provider() {
+        assert_eq!(
+            parse("/logout").unwrap(),
+            Command::Logout {
+                provider: "openai".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn logout_explicit_provider() {
+        assert_eq!(
+            parse("/logout openai").unwrap(),
+            Command::Logout {
+                provider: "openai".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn provider_command() {
+        assert_eq!(
+            parse("/provider").unwrap(),
+            Command::Provider { name: None }
+        );
+    }
+
+    #[test]
+    fn provider_set() {
+        assert_eq!(
+            parse("/provider ollama").unwrap(),
+            Command::Provider {
+                name: Some("ollama".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn filter_commands_all() {
+        let all = filter_commands("/");
+        assert_eq!(all.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn filter_commands_prefix() {
+        let filtered = filter_commands("/cl");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "/clear");
+    }
+
+    #[test]
+    fn filter_commands_multiple_matches() {
+        let filtered = filter_commands("/s");
+        assert_eq!(filtered.len(), 2);
+        let names: Vec<&str> = filtered.iter().map(|c| c.name).collect();
+        assert!(names.contains(&"/sessions"));
+        assert!(names.contains(&"/state"));
+    }
+
+    #[test]
+    fn filter_commands_no_match() {
+        let filtered = filter_commands("/xyz");
+        assert!(filtered.is_empty());
     }
 }

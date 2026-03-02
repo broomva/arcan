@@ -70,8 +70,9 @@ mod tests {
         type_text(&mut app, "/help");
         app.handle_key(press(KeyCode::Enter)).await;
 
-        assert_eq!(app.state.blocks.len(), initial_blocks + 1);
-        match &app.state.blocks[initial_blocks] {
+        // +2: echoed command + system alert response
+        assert_eq!(app.state.blocks.len(), initial_blocks + 2);
+        match &app.state.blocks[initial_blocks + 1] {
             UiBlock::SystemAlert { text, .. } => {
                 assert!(text.contains("/clear"), "help text should mention /clear");
             }
@@ -98,8 +99,9 @@ mod tests {
         type_text(&mut app, "/model");
         app.handle_key(press(KeyCode::Enter)).await;
 
-        assert_eq!(app.state.blocks.len(), initial_blocks + 1);
-        match &app.state.blocks[initial_blocks] {
+        // +2: echoed command + system alert response
+        assert_eq!(app.state.blocks.len(), initial_blocks + 2);
+        match &app.state.blocks[initial_blocks + 1] {
             UiBlock::SystemAlert { text, .. } => {
                 assert!(
                     text.contains("ARCAN_PROVIDER"),

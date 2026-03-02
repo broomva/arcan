@@ -62,14 +62,20 @@ fn draw_main(f: &mut Frame, area: ratatui::layout::Rect, app: &mut App, theme: &
     idx += 1;
 
     // Input area
+    let input_area = chunks[idx];
     widgets::input_bar::render(
         f,
-        chunks[idx],
+        input_area,
         &app.input_bar,
         app.state.focus,
         has_approval,
         theme,
     );
+
+    // Autocomplete popup (rendered last = on top of everything)
+    if app.autocomplete.active {
+        widgets::autocomplete::render(f, input_area, &app.autocomplete, theme);
+    }
 }
 
 /// Draw with side panels (session browser + state inspector).
