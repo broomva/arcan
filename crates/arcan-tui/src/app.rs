@@ -1,6 +1,6 @@
 use crate::command::{self, Command, ModelSubcommand};
 use crate::event::{TuiEvent, event_pump};
-use crate::models::state::AppState;
+use crate::models::state::{AppState, ConnectionStatus};
 use crate::models::ui_block::UiBlock;
 use crate::network::{NetworkClient, NetworkConfig};
 use crate::ui;
@@ -65,6 +65,7 @@ impl App {
                     self.handle_key(key).await;
                 }
                 TuiEvent::Network(agent_event) => {
+                    self.state.connection_status = ConnectionStatus::Connected;
                     self.state.apply_event(agent_event);
                 }
                 TuiEvent::Tick => {
@@ -176,30 +177,10 @@ impl App {
                 decision,
                 reason,
             }) => {
-                let submit_client = self.client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = submit_client
-                        .submit_approval(&approval_id, &decision, reason.as_deref())
-                        .await
-                    {
-                        tracing::error!("Submit approval error: {}", e);
-                    }
-                });
+                self.submit_approval(approval_id, decision, reason);
             }
             Ok(Command::SendMessage(text)) => {
-                self.state.is_busy = true;
-                self.state.blocks.push(UiBlock::HumanMessage {
-                    text: text.clone(),
-                    timestamp: Utc::now(),
-                });
-                self.state.scroll.scroll_to_bottom();
-
-                let submit_client = self.client.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = submit_client.submit_run(&text, None).await {
-                        tracing::error!("Submit error: {}", e);
-                    }
-                });
+                self.submit_message(text);
             }
             Err(err) => {
                 self.push_system_alert(err);
@@ -222,6 +203,34 @@ impl App {
                 }
             }
         }
+    }
+
+    fn submit_message(&mut self, text: String) {
+        self.state.is_busy = true;
+        self.state.blocks.push(UiBlock::HumanMessage {
+            text: text.clone(),
+            timestamp: Utc::now(),
+        });
+        self.state.scroll.scroll_to_bottom();
+
+        let submit_client = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = submit_client.submit_run(&text, None).await {
+                tracing::error!("Submit error: {}", e);
+            }
+        });
+    }
+
+    fn submit_approval(&mut self, approval_id: String, decision: String, reason: Option<String>) {
+        let submit_client = self.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = submit_client
+                .submit_approval(&approval_id, &decision, reason.as_deref())
+                .await
+            {
+                tracing::error!("Submit approval error: {}", e);
+            }
+        });
     }
 }
 
