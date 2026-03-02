@@ -1,7 +1,9 @@
 use crate::focus::FocusTarget;
 use crate::models::state::AppState;
-use crate::models::ui_block::{ToolStatus, UiBlock};
+use crate::models::ui_block::UiBlock;
 use crate::theme::Theme;
+use crate::widgets::markdown::MarkdownRenderer;
+use crate::widgets::tool_panel;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -10,7 +12,18 @@ use ratatui::{
 };
 
 /// Render the chat log into the given area, respecting scroll state.
-pub fn render(f: &mut Frame, area: Rect, state: &mut AppState, theme: &Theme) {
+///
+/// Assistant messages are rendered through the `MarkdownRenderer` for rich
+/// formatting (bold, italic, code blocks with syntax highlighting, lists, etc.).
+/// Tool executions are rendered through the `tool_panel` module showing
+/// arguments and results inline.
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    state: &mut AppState,
+    theme: &Theme,
+    md: &mut MarkdownRenderer,
+) {
     let mut lines: Vec<Line> = Vec::new();
 
     for block in &state.blocks {
@@ -25,30 +38,31 @@ pub fn render(f: &mut Frame, area: Rect, state: &mut AppState, theme: &Theme) {
             }
             UiBlock::AssistantMessage { text, timestamp } => {
                 let ts = timestamp.format("%H:%M");
+                // Label line
                 lines.push(Line::from(vec![
                     Span::styled(format!("[{ts}] "), theme.timestamp),
-                    Span::styled("Assistant: ", theme.assistant_label),
-                    Span::raw(text.clone()),
+                    Span::styled("Assistant:", theme.assistant_label),
                 ]));
+                // Render markdown content (or plain text for short messages)
+                if MarkdownRenderer::has_markdown(text) {
+                    let md_lines = md.render(text);
+                    lines.extend(md_lines);
+                } else {
+                    lines.push(Line::from(Span::raw(text.clone())));
+                }
             }
             UiBlock::ToolExecution {
                 tool_name,
                 status,
+                arguments,
+                result,
                 timestamp,
                 ..
             } => {
-                let ts = timestamp.format("%H:%M");
-                let (status_str, status_style) = match status {
-                    ToolStatus::Running => ("(Running...)", theme.tool_label),
-                    ToolStatus::Success => ("[OK]", theme.tool_success),
-                    ToolStatus::Error(_) => ("[ERR]", theme.tool_error),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("[{ts}] "), theme.timestamp),
-                    Span::styled("Tool ", theme.tool_label),
-                    Span::styled(format!("{tool_name} "), theme.tool_label),
-                    Span::styled(status_str, status_style),
-                ]));
+                let tool_lines = tool_panel::render_tool_lines(
+                    tool_name, status, arguments, result, timestamp, theme,
+                );
+                lines.extend(tool_lines);
             }
             UiBlock::SystemAlert { text, timestamp } => {
                 let ts = timestamp.format("%H:%M");

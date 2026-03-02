@@ -47,8 +47,8 @@ fn draw_main(f: &mut Frame, area: ratatui::layout::Rect, app: &mut App, theme: &
 
     let mut idx = 0;
 
-    // Chat log (scrollable)
-    widgets::chat_log::render(f, chunks[idx], &mut app.state, theme);
+    // Chat log (scrollable, with markdown rendering)
+    widgets::chat_log::render(f, chunks[idx], &mut app.state, theme, &mut app.markdown);
     idx += 1;
 
     // Approval banner (conditional)

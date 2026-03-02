@@ -37,6 +37,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 clap = { workspace = true }
 
+# Markdown & Syntax Highlighting
+tui-markdown = { version = "0.3", features = ["highlight-code"] }
+
 # Domain Types
 aios-protocol = { workspace = true }
 arcan-core = { path = "../arcan-core", version = "0.2.1" }

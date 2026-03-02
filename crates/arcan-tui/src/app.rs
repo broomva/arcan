@@ -6,6 +6,7 @@ use crate::models::ui_block::UiBlock;
 use crate::network::{NetworkClient, NetworkConfig};
 use crate::ui;
 use crate::widgets::input_bar::InputBarState;
+use crate::widgets::markdown::MarkdownRenderer;
 use crate::widgets::session_browser::{SessionBrowserState, SessionEntry};
 use crate::widgets::state_inspector::{AgentStateSnapshot, StateInspectorState};
 use chrono::Utc;
@@ -22,6 +23,8 @@ pub struct App {
     pub client: Arc<NetworkClient>,
     pub session_browser: SessionBrowserState,
     pub state_inspector: StateInspectorState,
+    /// Markdown renderer with caching for assistant message formatting.
+    pub markdown: MarkdownRenderer,
     /// Whether the side panels (session browser + state inspector) are visible.
     pub show_panels: bool,
     events: mpsc::Receiver<TuiEvent>,
@@ -50,6 +53,7 @@ impl App {
             client,
             session_browser: SessionBrowserState::new(),
             state_inspector: StateInspectorState::new(),
+            markdown: MarkdownRenderer::new(),
             show_panels: false,
             events,
         }
