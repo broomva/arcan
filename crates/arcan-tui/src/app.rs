@@ -1,9 +1,10 @@
-use crate::models::{AppState, UiBlock};
+use crate::event::{TuiEvent, event_pump};
+use crate::models::state::AppState;
+use crate::models::ui_block::UiBlock;
 use crate::network::{NetworkClient, NetworkConfig};
 use crate::ui;
-use arcan_core::protocol::AgentEvent;
 use chrono::Utc;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{Terminal, backend::Backend};
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +54,7 @@ pub struct App {
     pub state: AppState,
     pub should_quit: bool,
     pub client: Arc<NetworkClient>,
-    pub event_rx: mpsc::Receiver<AgentEvent>,
+    events: mpsc::Receiver<TuiEvent>,
 }
 
 impl App {
@@ -69,11 +70,14 @@ impl App {
             }
         });
 
+        // Merge terminal + network + ticks into a single event stream
+        let events = event_pump(rx, Duration::from_millis(50));
+
         Self {
             state: AppState::new(),
             should_quit: false,
             client,
-            event_rx: rx,
+            events,
         }
     }
 
@@ -119,118 +123,169 @@ impl App {
     where
         B::Error: Send + Sync + 'static,
     {
-        loop {
-            // Draw UI
-            terminal.draw(|f| ui::draw(f, &self.state))?;
+        // Initial draw
+        terminal.draw(|f| ui::draw(f, &mut self.state))?;
 
-            // Process external AgentEvents non-blocking
-            while let Ok(event) = self.event_rx.try_recv() {
-                self.state.apply_event(event);
-            }
-
-            // Handle UI events non-blocking
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        match key.code {
-                            KeyCode::Esc => self.should_quit = true,
-                            KeyCode::Char('c')
-                                if key
-                                    .modifiers
-                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                            {
-                                self.should_quit = true;
-                            }
-                            KeyCode::Char(c) => {
-                                self.state.input_buffer.push(c);
-                            }
-                            KeyCode::Backspace => {
-                                self.state.input_buffer.pop();
-                            }
-                            KeyCode::Enter => {
-                                let msg = self.state.input_buffer.trim().to_string();
-                                if !msg.is_empty() {
-                                    if msg == "/clear" {
-                                        self.state.blocks.clear();
-                                        self.state.streaming_text = None;
-                                        self.state.is_busy = false;
-                                    } else if self.handle_model_command(&msg).await {
-                                    } else if msg.starts_with("/approve") {
-                                        let parts: Vec<&str> = msg.split_whitespace().collect();
-                                        if parts.len() >= 3 {
-                                            let approval_id = parts[1].to_string();
-                                            let decision = match parts[2]
-                                                .to_ascii_lowercase()
-                                                .as_str()
-                                            {
-                                                "yes" | "y" | "approved" | "approve" => {
-                                                    "approved".to_string()
-                                                }
-                                                "no" | "n" | "denied" | "deny" => {
-                                                    "denied".to_string()
-                                                }
-                                                invalid => {
-                                                    tracing::warn!(
-                                                        "Invalid approval decision '{}'. Use yes/no.",
-                                                        invalid
-                                                    );
-                                                    self.state.input_buffer.clear();
-                                                    continue;
-                                                }
-                                            };
-                                            let reason = if parts.len() > 3 {
-                                                Some(parts[3..].join(" "))
-                                            } else {
-                                                None
-                                            };
-
-                                            let submit_client = self.client.clone();
-                                            tokio::spawn(async move {
-                                                if let Err(e) = submit_client
-                                                    .submit_approval(
-                                                        &approval_id,
-                                                        &decision,
-                                                        reason.as_deref(),
-                                                    )
-                                                    .await
-                                                {
-                                                    tracing::error!("Submit approval error: {}", e);
-                                                }
-                                            });
-                                        } else {
-                                            tracing::warn!(
-                                                "Invalid /approve syntax. Use: /approve <id> <yes|no> [reason]"
-                                            );
-                                        }
-                                    } else {
-                                        self.state.is_busy = true;
-                                        self.state.blocks.push(UiBlock::HumanMessage {
-                                            text: msg.clone(),
-                                            timestamp: Utc::now(),
-                                        });
-                                        let submit_client = self.client.clone();
-                                        tokio::spawn(async move {
-                                            if let Err(e) =
-                                                submit_client.submit_run(&msg, None).await
-                                            {
-                                                tracing::error!("Submit error: {}", e);
-                                            }
-                                        });
-                                    }
-                                    self.state.input_buffer.clear();
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+        while let Some(event) = self.events.recv().await {
+            match event {
+                TuiEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                    self.handle_key(key.code, key.modifiers).await;
                 }
+                TuiEvent::Network(agent_event) => {
+                    self.state.apply_event(agent_event);
+                }
+                TuiEvent::Tick => {
+                    // Clear expired error flashes (5 second TTL)
+                    self.state
+                        .clear_expired_errors(chrono::Duration::seconds(5));
+                }
+                TuiEvent::Resize(_, _) => {
+                    // Will redraw below
+                }
+                _ => {}
             }
+
+            // Redraw after every event
+            terminal.draw(|f| ui::draw(f, &mut self.state))?;
 
             if self.should_quit {
                 break;
             }
         }
+
         Ok(())
+    }
+
+    async fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        // Focus-independent keys
+        match code {
+            KeyCode::Esc => {
+                self.should_quit = true;
+                return;
+            }
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+                return;
+            }
+            KeyCode::Tab => {
+                self.state.focus = self.state.focus.next();
+                return;
+            }
+            _ => {}
+        }
+
+        // Focus-dependent key handling
+        match self.state.focus {
+            crate::focus::FocusTarget::ChatLog => self.handle_scroll_key(code),
+            crate::focus::FocusTarget::InputBar => self.handle_input_key(code).await,
+        }
+    }
+
+    fn handle_scroll_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.state.scroll.scroll_up(1),
+            KeyCode::Down | KeyCode::Char('j') => self.state.scroll.scroll_down(1),
+            KeyCode::PageUp => self.state.scroll.page_up(),
+            KeyCode::PageDown => self.state.scroll.page_down(),
+            KeyCode::Home | KeyCode::Char('g') => {
+                let max = self.state.scroll.total_lines;
+                self.state.scroll.scroll_up(max);
+            }
+            KeyCode::End | KeyCode::Char('G') => self.state.scroll.scroll_to_bottom(),
+            _ => {}
+        }
+    }
+
+    async fn handle_input_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char(c) => {
+                self.state.input_buffer.push(c);
+            }
+            KeyCode::Backspace => {
+                self.state.input_buffer.pop();
+            }
+            KeyCode::Enter => {
+                self.handle_submit().await;
+            }
+            // Allow PageUp/PageDown even in input mode for convenience
+            KeyCode::PageUp => self.state.scroll.page_up(),
+            KeyCode::PageDown => self.state.scroll.scroll_to_bottom(),
+            _ => {}
+        }
+    }
+
+    async fn handle_submit(&mut self) {
+        let msg = self.state.input_buffer.trim().to_string();
+        if msg.is_empty() {
+            return;
+        }
+
+        if msg == "/clear" {
+            self.state.blocks.clear();
+            self.state.streaming_text = None;
+            self.state.is_busy = false;
+        } else if msg == "/help" {
+            self.push_system_alert(
+                "Commands: /clear, /model [provider[:model]], /approve <id> <yes|no> [reason], /help",
+            );
+        } else if self.handle_model_command(&msg).await {
+            // handled
+        } else if msg.starts_with("/approve") {
+            self.handle_approve_command(&msg);
+        } else {
+            // Normal message — submit run
+            self.state.is_busy = true;
+            self.state.blocks.push(UiBlock::HumanMessage {
+                text: msg.clone(),
+                timestamp: Utc::now(),
+            });
+
+            // Auto-follow on new message
+            self.state.scroll.scroll_to_bottom();
+
+            let submit_client = self.client.clone();
+            tokio::spawn(async move {
+                if let Err(e) = submit_client.submit_run(&msg, None).await {
+                    tracing::error!("Submit error: {}", e);
+                }
+            });
+        }
+        self.state.input_buffer.clear();
+    }
+
+    fn handle_approve_command(&mut self, msg: &str) {
+        let parts: Vec<&str> = msg.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let approval_id = parts[1].to_string();
+            let decision = match parts[2].to_ascii_lowercase().as_str() {
+                "yes" | "y" | "approved" | "approve" => "approved".to_string(),
+                "no" | "n" | "denied" | "deny" => "denied".to_string(),
+                invalid => {
+                    self.push_system_alert(format!(
+                        "Invalid approval decision '{}'. Use yes/no.",
+                        invalid
+                    ));
+                    return;
+                }
+            };
+            let reason = if parts.len() > 3 {
+                Some(parts[3..].join(" "))
+            } else {
+                None
+            };
+
+            let submit_client = self.client.clone();
+            tokio::spawn(async move {
+                if let Err(e) = submit_client
+                    .submit_approval(&approval_id, &decision, reason.as_deref())
+                    .await
+                {
+                    tracing::error!("Submit approval error: {}", e);
+                }
+            });
+        } else {
+            self.push_system_alert("Usage: /approve <id> <yes|no> [reason]");
+        }
     }
 }
 

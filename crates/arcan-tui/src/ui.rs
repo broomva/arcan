@@ -1,96 +1,68 @@
-use crate::models::{AppState, UiBlock};
+use crate::focus::FocusTarget;
+use crate::models::state::AppState;
+use crate::theme::Theme;
+use crate::widgets;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    layout::{Constraint, Direction, Layout, Rect},
+    text::Line,
+    widgets::{Block, Borders, Paragraph},
 };
 
-pub fn draw(f: &mut Frame, state: &AppState) {
+/// Top-level draw function. Orchestrates the three-chunk layout:
+/// chat log, status bar, and input box.
+pub fn draw(f: &mut Frame, state: &mut AppState) {
+    let theme = Theme::new();
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
             Constraint::Min(3),    // Chat log
+            Constraint::Length(1), // Status bar
             Constraint::Length(3), // Input box
         ])
         .split(f.area());
 
-    // Messages Area
-    let mut message_lines = Vec::new();
-    for block in &state.blocks {
-        match block {
-            UiBlock::HumanMessage { text, timestamp: _ } => {
-                message_lines.push(Line::from(vec![
-                    Span::styled("You: ", Style::default().fg(Color::Blue)),
-                    Span::raw(text.clone()),
-                ]));
-            }
-            UiBlock::AssistantMessage { text, timestamp: _ } => {
-                message_lines.push(Line::from(vec![
-                    Span::styled("Assistant: ", Style::default().fg(Color::Green)),
-                    Span::raw(text.clone()),
-                ]));
-            }
-            UiBlock::ToolExecution {
-                tool_name, status, ..
-            } => {
-                let status_str = match status {
-                    crate::models::ToolStatus::Running => "(Running...)",
-                    crate::models::ToolStatus::Success => "[OK]",
-                    crate::models::ToolStatus::Error(_) => "[ERR]",
-                };
-                message_lines.push(Line::from(vec![
-                    Span::styled("Tool ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        format!("{} {}", tool_name, status_str),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                ]));
-            }
-            UiBlock::SystemAlert { text, .. } => {
-                message_lines.push(Line::from(vec![
-                    Span::styled("System: ", Style::default().fg(Color::Red)),
-                    Span::styled(text.clone(), Style::default().fg(Color::Red)),
-                ]));
-            }
-        }
-    }
+    // Chat log (scrollable)
+    widgets::chat_log::render(f, chunks[0], state, &theme);
 
-    if let Some(streaming) = &state.streaming_text {
-        message_lines.push(Line::from(vec![
-            Span::styled("Assistant: ", Style::default().fg(Color::Green)),
-            Span::raw(streaming.clone()),
-            Span::styled(" █", Style::default().fg(Color::Gray)),
-        ]));
-    }
+    // Status bar
+    widgets::status_bar::render(f, chunks[1], state, &theme);
 
-    let messages_block = Paragraph::new(message_lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Session Log "),
-        )
-        .wrap(Wrap { trim: false });
-    f.render_widget(messages_block, chunks[0]);
+    // Input area
+    render_input(f, chunks[2], state, &theme);
+}
 
-    // Input Area
+fn render_input(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let prompt = if let Some(approval) = &state.pending_approval {
         format!(
             "Approval Req for {}: (yes/no) > {}",
             approval.tool_name, state.input_buffer
         )
     } else {
-        format!("❯ {}", state.input_buffer)
+        format!("\u{276f} {}", state.input_buffer) // ❯
     };
 
-    let input_block = Paragraph::new(prompt)
-        .block(Block::default().borders(Borders::ALL).title(" Input "))
-        .style(if state.pending_approval.is_some() {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default().fg(Color::White)
-        });
-    f.render_widget(input_block, chunks[1]);
+    let style = if state.pending_approval.is_some() {
+        theme.input_approval
+    } else {
+        theme.input_normal
+    };
+
+    let border_style = if state.focus == FocusTarget::InputBar {
+        theme.title
+    } else {
+        theme.border
+    };
+
+    let input_block = Paragraph::new(Line::from(prompt))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(" Input "),
+        )
+        .style(style);
+    f.render_widget(input_block, area);
 }

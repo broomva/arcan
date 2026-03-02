@@ -1,9 +1,13 @@
 pub mod app;
+pub mod event;
+pub mod focus;
 pub mod models;
 #[cfg(test)]
 mod models_test;
 pub mod network;
+pub mod theme;
 pub mod ui;
+pub mod widgets;
 
 use app::App;
 use crossterm::{
