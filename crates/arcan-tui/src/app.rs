@@ -374,10 +374,10 @@ impl App {
                 self.execute_logout(provider);
             }
             Ok(Command::Provider { name: None }) => {
-                self.show_provider_status();
+                self.show_provider_status().await;
             }
             Ok(Command::Provider { name: Some(name) }) => {
-                self.set_provider(&name);
+                self.set_provider(&name).await;
             }
             Ok(Command::SendMessage(text)) => {
                 self.submit_message(text);
@@ -390,21 +390,23 @@ impl App {
 
     async fn execute_model_command(&mut self, subcmd: ModelSubcommand) {
         match subcmd {
-            ModelSubcommand::ShowCurrent => {
-                self.push_system_alert(
-                    "Model info: check ARCAN_PROVIDER env var or use `arcan status` \
-                     in another terminal. The /model command is not yet wired to the daemon API.",
-                );
-            }
+            ModelSubcommand::ShowCurrent => match self.client.get_model().await {
+                Ok(provider) => {
+                    self.push_system_alert(format!("Active provider: {provider}"));
+                }
+                Err(e) => {
+                    self.push_system_alert(format!("Failed to query provider: {e}"));
+                }
+            },
             ModelSubcommand::Set { provider, model } => {
-                let requested = match model {
-                    Some(ref m) => format!("{provider}:{m}"),
-                    None => provider.clone(),
-                };
-                self.push_system_alert(format!(
-                    "Model switching ({requested}) is not yet available via the TUI. \
-                     Set ARCAN_PROVIDER before starting the daemon.",
-                ));
+                match self.client.set_model(&provider, model.as_deref()).await {
+                    Ok(new_provider) => {
+                        self.push_system_alert(format!("Provider switched to: {new_provider}"));
+                    }
+                    Err(e) => {
+                        self.push_system_alert(format!("Failed to switch provider: {e}"));
+                    }
+                }
             }
         }
     }
@@ -516,107 +518,58 @@ impl App {
         }
     }
 
-    fn show_provider_status(&mut self) {
-        let config = crate::config::load_global_config();
-        let configured = config.defaults.provider.as_deref().unwrap_or("");
+    async fn show_provider_status(&mut self) {
+        // Query the daemon for live provider status
+        match self.client.get_model().await {
+            Ok(provider) => {
+                let mut lines = vec![format!("  Active:  {provider} (from daemon)")];
 
-        // Detect what credentials are available
-        let has_openai_oauth = arcan_provider::oauth::load_tokens("openai").is_ok();
-        let openai_oauth_expired = arcan_provider::oauth::load_tokens("openai")
-            .map(|t| t.is_expired())
-            .unwrap_or(false);
-        let has_openai_key = std::env::var("OPENAI_API_KEY").is_ok();
-        let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
+                // Also show local credential info
+                let has_openai_oauth = arcan_provider::oauth::load_tokens("openai").is_ok();
+                let openai_oauth_expired = arcan_provider::oauth::load_tokens("openai")
+                    .map(|t| t.is_expired())
+                    .unwrap_or(false);
+                let has_openai_key = std::env::var("OPENAI_API_KEY").is_ok();
+                let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
 
-        // Determine what the daemon is actually using (mirrors build_provider logic)
-        let active = match configured {
-            "openai" | "codex" | "openai-codex" => {
-                if has_openai_oauth && !openai_oauth_expired {
-                    "openai via OAuth (device login)"
-                } else if has_openai_key {
-                    "openai via API key (OPENAI_API_KEY)"
-                } else {
-                    "openai (no credentials found)"
+                lines.push("  Credentials found:".to_string());
+                if has_openai_oauth {
+                    let status = if openai_oauth_expired {
+                        "expired"
+                    } else {
+                        "valid"
+                    };
+                    lines.push(format!("    openai OAuth  [{status}]"));
                 }
-            }
-            "anthropic" => {
+                if has_openai_key {
+                    lines.push("    openai API key  [OPENAI_API_KEY]".to_string());
+                }
                 if has_anthropic_key {
-                    "anthropic via API key (ANTHROPIC_API_KEY)"
-                } else {
-                    "anthropic (no credentials found)"
+                    lines.push("    anthropic API key  [ANTHROPIC_API_KEY]".to_string());
                 }
-            }
-            "mock" => "mock (no LLM calls)",
-            "" => {
-                // Auto-detect order: anthropic key > openai oauth > openai key > mock
-                if has_anthropic_key {
-                    "anthropic via API key (auto-detected)"
-                } else if has_openai_oauth && !openai_oauth_expired {
-                    "openai via OAuth (auto-detected)"
-                } else if has_openai_key {
-                    "openai via API key (auto-detected)"
-                } else {
-                    "mock (no credentials found)"
+                if !has_openai_oauth && !has_openai_key && !has_anthropic_key {
+                    lines.push("    (none)".to_string());
                 }
+
+                lines.push(
+                    "  Use /provider <name> to switch live (e.g. /provider mock)".to_string(),
+                );
+
+                self.push_system_alert(format!("Provider status:\n{}", lines.join("\n")));
             }
-            other => other,
-        };
-
-        let mut lines = vec![format!("  Active:  {active}")];
-
-        // Show all available credentials
-        lines.push("  Credentials found:".to_string());
-        if has_openai_oauth {
-            let status = if openai_oauth_expired {
-                "expired"
-            } else {
-                "valid"
-            };
-            lines.push(format!("    openai OAuth  [{status}]"));
+            Err(e) => {
+                self.push_system_alert(format!("Failed to query provider from daemon: {e}"));
+            }
         }
-        if has_openai_key {
-            lines.push("    openai API key  [OPENAI_API_KEY]".to_string());
-        }
-        if has_anthropic_key {
-            lines.push("    anthropic API key  [ANTHROPIC_API_KEY]".to_string());
-        }
-        if !has_openai_oauth && !has_openai_key && !has_anthropic_key {
-            lines.push("    (none)".to_string());
-        }
-
-        if !configured.is_empty() {
-            lines.push(format!("  Config:  provider = \"{configured}\""));
-        }
-
-        lines.push(
-            "  Note: daemon uses credentials from startup. Restart after /login.".to_string(),
-        );
-
-        self.push_system_alert(format!("Provider status:\n{}", lines.join("\n")));
     }
 
-    fn set_provider(&mut self, name: &str) {
-        let valid = ["openai", "anthropic", "ollama", "mock"];
-        if !valid.contains(&name) {
-            self.push_system_alert(format!(
-                "Unknown provider \"{name}\". Options: {}",
-                valid.join(", ")
-            ));
-            return;
-        }
-
-        let mut config = crate::config::load_global_config();
-        if config.set_key("provider", name).is_ok() {
-            match crate::config::save_global_config(&config) {
-                Ok(()) => {
-                    self.push_system_alert(format!(
-                        "Default provider set to \"{name}\".\n\
-                         Restart the daemon to apply."
-                    ));
-                }
-                Err(e) => {
-                    self.push_system_alert(format!("Failed to save config: {e}"));
-                }
+    async fn set_provider(&mut self, name: &str) {
+        match self.client.set_model(name, None).await {
+            Ok(new_provider) => {
+                self.push_system_alert(format!("Provider switched to: {new_provider}"));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Failed to switch provider: {e}"));
             }
         }
     }

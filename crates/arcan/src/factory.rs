@@ -1,0 +1,53 @@
+use arcan_core::error::CoreError;
+use arcan_core::runtime::{Provider, ProviderFactory};
+use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
+use arcan_provider::openai::{OpenAiCompatibleProvider, OpenAiConfig};
+use arcand::mock::MockProvider;
+use std::sync::Arc;
+
+/// Default provider factory for the daemon binary.
+///
+/// Delegates to existing provider configs. Parses specs like
+/// `"anthropic"`, `"ollama:llama3.2"`, `"openai:gpt-4o"`, `"mock"`.
+pub struct ArcanProviderFactory;
+
+impl ProviderFactory for ArcanProviderFactory {
+    fn build(&self, spec: &str) -> Result<Arc<dyn Provider>, CoreError> {
+        let (provider_name, model_override) = match spec.split_once(':') {
+            Some((name, model)) => (name, Some(model)),
+            None => (spec, None),
+        };
+
+        match provider_name {
+            "mock" => {
+                tracing::info!("Provider switched to: mock");
+                Ok(Arc::new(MockProvider))
+            }
+            "anthropic" => {
+                let config = AnthropicConfig::from_resolved(model_override, None, None)
+                    .map_err(|e| CoreError::Provider(e.to_string()))?;
+                tracing::info!(model = %config.model, "Provider switched to: anthropic");
+                Ok(Arc::new(AnthropicProvider::new(config)))
+            }
+            "openai" | "codex" | "openai-codex" => {
+                let config = OpenAiConfig::openai_from_resolved(model_override, None, None)
+                    .map_err(|e| CoreError::Provider(e.to_string()))?;
+                tracing::info!(model = %config.model, "Provider switched to: openai");
+                Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
+            }
+            "ollama" => {
+                let config = OpenAiConfig::ollama_from_resolved(model_override, None, None, None)
+                    .map_err(|e| CoreError::Provider(e.to_string()))?;
+                tracing::info!(model = %config.model, base_url = %config.base_url, "Provider switched to: ollama");
+                Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
+            }
+            _ => Err(CoreError::Provider(format!(
+                "unknown provider: \"{provider_name}\". Available: anthropic, openai, ollama, mock"
+            ))),
+        }
+    }
+
+    fn available_providers(&self) -> Vec<&str> {
+        vec!["anthropic", "openai", "ollama", "mock"]
+    }
+}

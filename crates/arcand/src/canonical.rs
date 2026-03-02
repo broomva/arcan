@@ -5,6 +5,7 @@ use aios_protocol::{
     ModelRouting, OperatingMode, PolicySet, SessionId, ToolCall,
 };
 use aios_runtime::{KernelRuntime, TickInput};
+use arcan_core::runtime::{ProviderFactory, SwappableProviderHandle};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -175,6 +176,8 @@ struct EventRecordSchema {
 #[derive(Clone)]
 struct CanonicalState {
     runtime: Arc<KernelRuntime>,
+    provider_handle: SwappableProviderHandle,
+    provider_factory: Arc<dyn ProviderFactory>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -252,6 +255,20 @@ struct ResolveApprovalRequest {
     approved: bool,
     /// Actor resolving the approval (defaults to "api")
     actor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct SetProviderRequest {
+    /// Provider spec: `"provider_name"` or `"provider_name:model"`.
+    provider: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct ProviderResponse {
+    /// Currently active provider name.
+    provider: String,
+    /// Available provider names that can be switched to.
+    available: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -340,6 +357,8 @@ struct ErrorResponse {
         list_branches,
         merge_branch,
         resolve_approval,
+        get_provider,
+        set_provider,
     ),
     components(schemas(
         // Request / response types
@@ -355,6 +374,8 @@ struct ErrorResponse {
         CreateBranchRequest,
         MergeBranchRequest,
         ResolveApprovalRequest,
+        SetProviderRequest,
+        ProviderResponse,
         ErrorResponse,
         // Mirror schemas for external aios-protocol types
         OperatingModeSchema,
@@ -375,6 +396,7 @@ struct ErrorResponse {
         (name = "events", description = "Event log and streaming"),
         (name = "branches", description = "Branch management"),
         (name = "approvals", description = "Approval workflow"),
+        (name = "provider", description = "Live provider switching"),
     )
 )]
 struct ApiDoc;
@@ -390,8 +412,16 @@ async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 
-pub fn create_canonical_router(runtime: Arc<KernelRuntime>) -> Router {
-    let state = CanonicalState { runtime };
+pub fn create_canonical_router(
+    runtime: Arc<KernelRuntime>,
+    provider_handle: SwappableProviderHandle,
+    provider_factory: Arc<dyn ProviderFactory>,
+) -> Router {
+    let state = CanonicalState {
+        runtime,
+        provider_handle,
+        provider_factory,
+    };
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_json))
@@ -413,6 +443,7 @@ pub fn create_canonical_router(runtime: Arc<KernelRuntime>) -> Router {
             "/sessions/{session_id}/approvals/{approval_id}",
             post(resolve_approval),
         )
+        .route("/provider", get(get_provider).put(set_provider))
         .with_state(state)
 }
 
@@ -877,6 +908,78 @@ async fn resolve_approval(
     Ok((StatusCode::NO_CONTENT, Json(json!({}))))
 }
 
+// ─── Provider switching ──────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/provider",
+    tag = "provider",
+    responses(
+        (status = 200, description = "Current provider info", body = ProviderResponse)
+    )
+)]
+async fn get_provider(State(state): State<CanonicalState>) -> Json<ProviderResponse> {
+    let provider_name = state
+        .provider_handle
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .name()
+        .to_owned();
+    let available = state
+        .provider_factory
+        .available_providers()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    Json(ProviderResponse {
+        provider: provider_name,
+        available,
+    })
+}
+
+#[utoipa::path(
+    put,
+    path = "/provider",
+    tag = "provider",
+    request_body = SetProviderRequest,
+    responses(
+        (status = 200, description = "Provider switched", body = ProviderResponse),
+        (status = 400, description = "Invalid provider spec", body = ErrorResponse)
+    )
+)]
+async fn set_provider(
+    State(state): State<CanonicalState>,
+    Json(request): Json<SetProviderRequest>,
+) -> Result<Json<ProviderResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let new_provider = state
+        .provider_factory
+        .build(&request.provider)
+        .map_err(bad_request)?;
+
+    let new_name = new_provider.name().to_owned();
+    {
+        let mut guard = state
+            .provider_handle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = new_provider;
+    }
+
+    let available = state
+        .provider_factory
+        .available_providers()
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    tracing::info!(provider = %new_name, spec = %request.provider, "Provider switched via API");
+
+    Ok(Json(ProviderResponse {
+        provider: new_name,
+        available,
+    }))
+}
+
 // ─── Error helpers ───────────────────────────────────────────────────────────
 
 fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
@@ -938,6 +1041,7 @@ mod tests {
             paths.contains_key("/sessions/{session_id}/approvals/{approval_id}"),
             "missing approval path"
         );
+        assert!(paths.contains_key("/provider"), "missing provider path");
 
         // Verify typed schemas exist (not just Object)
         let schemas = json["components"]["schemas"]

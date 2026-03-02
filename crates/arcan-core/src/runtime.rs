@@ -9,6 +9,24 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// A shared, swappable provider handle.
+///
+/// Uses `std::sync::RwLock` (not tokio) because providers use blocking I/O
+/// via `spawn_blocking`. Multiple readers can access concurrently; writes
+/// only hold the lock for the instant of swapping the inner `Arc`.
+pub type SwappableProviderHandle = Arc<std::sync::RwLock<Arc<dyn Provider>>>;
+
+/// Factory for building providers from a spec string at runtime.
+///
+/// The spec format is `"provider_name"` or `"provider_name:model"`.
+pub trait ProviderFactory: Send + Sync {
+    /// Build a new provider from a spec like `"anthropic"` or `"ollama:llama3.2"`.
+    fn build(&self, spec: &str) -> Result<Arc<dyn Provider>, CoreError>;
+
+    /// List the available provider names (e.g. `["anthropic", "openai", "ollama", "mock"]`).
+    fn available_providers(&self) -> Vec<&str>;
+}
+
 /// Hook trait for approval gates, allowing the agent loop to wire event handlers
 /// into the gate without depending on the concrete `ApprovalGate` type.
 pub trait ApprovalGateHook: Send + Sync {
@@ -1203,6 +1221,43 @@ mod tests {
         assert_eq!(output.reason, RunStopReason::Cancelled);
         // Should not have a final answer since we cancelled
         assert!(output.final_answer.is_none());
+    }
+
+    #[test]
+    fn swappable_provider_handle_swap() {
+        struct ProviderA;
+        impl Provider for ProviderA {
+            fn name(&self) -> &str {
+                "provider-a"
+            }
+            fn complete(&self, _: &ProviderRequest) -> Result<ModelTurn, CoreError> {
+                unimplemented!()
+            }
+        }
+
+        struct ProviderB;
+        impl Provider for ProviderB {
+            fn name(&self) -> &str {
+                "provider-b"
+            }
+            fn complete(&self, _: &ProviderRequest) -> Result<ModelTurn, CoreError> {
+                unimplemented!()
+            }
+        }
+
+        let handle: SwappableProviderHandle = Arc::new(std::sync::RwLock::new(Arc::new(ProviderA)));
+
+        // Read returns provider-a
+        assert_eq!(handle.read().unwrap().name(), "provider-a");
+
+        // Swap to provider-b
+        {
+            let mut guard = handle.write().unwrap();
+            *guard = Arc::new(ProviderB);
+        }
+
+        // Read returns provider-b
+        assert_eq!(handle.read().unwrap().name(), "provider-b");
     }
 
     #[test]

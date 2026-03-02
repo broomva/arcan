@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_command_shows_helpful_message() {
+    async fn model_command_shows_active_provider() {
         let (mut app, _) = make_app();
         let initial_blocks = app.state.blocks.len();
 
@@ -104,8 +104,8 @@ mod tests {
         match &app.state.blocks[initial_blocks + 1] {
             UiBlock::SystemAlert { text, .. } => {
                 assert!(
-                    text.contains("ARCAN_PROVIDER"),
-                    "model command should mention env var: {text}"
+                    text.contains("Active provider:"),
+                    "model command should show active provider: {text}"
                 );
             }
             other => panic!("expected SystemAlert, got {other:?}"),

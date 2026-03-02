@@ -7,7 +7,7 @@ use aios_protocol::{
 use arcan_core::protocol::{
     ChatMessage, ModelDirective as ArcanDirective, ModelStopReason as ArcanStopReason,
 };
-use arcan_core::runtime::{Provider, ProviderRequest};
+use arcan_core::runtime::{Provider, ProviderRequest, SwappableProviderHandle};
 use arcan_core::state::AppState;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -19,19 +19,34 @@ pub type StreamingSenderHandle = Arc<std::sync::Mutex<Option<broadcast::Sender<E
 
 #[derive(Clone)]
 pub struct ArcanProviderAdapter {
-    provider: Arc<dyn Provider>,
+    handle: SwappableProviderHandle,
     tools: Vec<arcan_core::protocol::ToolDefinition>,
     streaming_sender: StreamingSenderHandle,
 }
 
 impl ArcanProviderAdapter {
+    /// Create from a plain provider Arc (backward compatible).
+    /// Wraps it in a SwappableProviderHandle internally.
     pub fn new(
         provider: Arc<dyn Provider>,
         tools: Vec<arcan_core::protocol::ToolDefinition>,
         streaming_sender: StreamingSenderHandle,
     ) -> Self {
         Self {
-            provider,
+            handle: Arc::new(std::sync::RwLock::new(provider)),
+            tools,
+            streaming_sender,
+        }
+    }
+
+    /// Create from a pre-built swappable handle (for live provider switching).
+    pub fn from_handle(
+        handle: SwappableProviderHandle,
+        tools: Vec<arcan_core::protocol::ToolDefinition>,
+        streaming_sender: StreamingSenderHandle,
+    ) -> Self {
+        Self {
+            handle,
             tools,
             streaming_sender,
         }
@@ -64,7 +79,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
             state: AppState::default(),
         };
 
-        let provider = self.provider.clone();
+        let provider = self
+            .handle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let provider_name = provider.name().to_owned();
         let use_streaming = provider.supports_streaming();
         let sender = self
             .streaming_sender
@@ -146,8 +166,8 @@ impl ModelProviderPort for ArcanProviderAdapter {
         });
 
         Ok(ModelCompletion {
-            provider: self.provider.name().to_owned(),
-            model: self.provider.name().to_owned(),
+            provider: provider_name.clone(),
+            model: provider_name,
             directives,
             stop_reason: to_stop_reason(turn.stop_reason),
             usage,

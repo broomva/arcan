@@ -1,6 +1,7 @@
 mod cli_run;
 mod config;
 mod daemon;
+mod factory;
 
 use aios_protocol::{
     ApprovalPort, EventStorePort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
@@ -465,13 +466,19 @@ fn run_serve(
     // --- Provider ---
     let provider = build_provider(resolved)?;
 
+    // Swappable handle for live provider switching
+    let provider_handle: arcan_core::runtime::SwappableProviderHandle =
+        Arc::new(std::sync::RwLock::new(provider));
+    let provider_factory: Arc<dyn arcan_core::runtime::ProviderFactory> =
+        Arc::new(factory::ArcanProviderFactory);
+
     // --- Canonical aiOS runtime adapters ---
     let event_store: Arc<dyn EventStorePort> =
         Arc::new(LagoAiosEventStoreAdapter::new(journal.clone()));
     // Shared handle: starts empty, filled after runtime creation.
     let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
-    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(ArcanProviderAdapter::new(
-        provider,
+    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(ArcanProviderAdapter::from_handle(
+        provider_handle.clone(),
         registry.definitions(),
         streaming_sender.clone(),
     ));
@@ -507,7 +514,7 @@ fn run_serve(
 
     tokio_runtime.block_on(async move {
         // --- HTTP Server ---
-        let mut router = create_canonical_router(runtime);
+        let mut router = create_canonical_router(runtime, provider_handle, provider_factory);
 
         // --- Console UI ---
         #[cfg(feature = "console")]

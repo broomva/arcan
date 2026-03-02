@@ -11,11 +11,48 @@ use aios_protocol::{
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
 use aios_tools::{ToolDispatcher, ToolRegistry};
+use arcan_core::error::CoreError;
+use arcan_core::runtime::{Provider, ProviderFactory, SwappableProviderHandle};
 use arcand::canonical::{create_canonical_router, openapi_spec};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde_json::json;
 use tokio_stream::StreamExt;
+
+/// Minimal arcan-core Provider impl for test handle.
+struct StubProvider;
+impl Provider for StubProvider {
+    fn name(&self) -> &str {
+        "test-stub"
+    }
+    fn complete(
+        &self,
+        _: &arcan_core::runtime::ProviderRequest,
+    ) -> Result<arcan_core::protocol::ModelTurn, CoreError> {
+        unimplemented!()
+    }
+}
+
+/// Minimal ProviderFactory for tests.
+struct StubFactory;
+impl ProviderFactory for StubFactory {
+    fn build(&self, _spec: &str) -> Result<Arc<dyn Provider>, CoreError> {
+        Ok(Arc::new(StubProvider))
+    }
+    fn available_providers(&self) -> Vec<&str> {
+        vec!["test-stub"]
+    }
+}
+
+fn test_provider_handle() -> SwappableProviderHandle {
+    Arc::new(std::sync::RwLock::new(
+        Arc::new(StubProvider) as Arc<dyn Provider>
+    ))
+}
+
+fn test_provider_factory() -> Arc<dyn ProviderFactory> {
+    Arc::new(StubFactory)
+}
 
 #[derive(Debug, Default)]
 struct TestProvider;
@@ -77,7 +114,7 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
 #[tokio::test]
 async fn canonical_session_api_round_trip() {
     let runtime = build_runtime(unique_root("arcand-canonical"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -159,7 +196,7 @@ async fn canonical_session_api_round_trip() {
 #[tokio::test]
 async fn canonical_runs_auto_create_named_sessions() {
     let runtime = build_runtime(unique_root("arcand-canonical-auto-create"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -194,7 +231,7 @@ async fn canonical_runs_auto_create_named_sessions() {
 #[tokio::test]
 async fn canonical_stream_vercel_v6_replays_protocol_events() {
     let runtime = build_runtime(unique_root("arcand-canonical-v6-stream"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -271,7 +308,7 @@ async fn canonical_stream_vercel_v6_replays_protocol_events() {
 #[tokio::test]
 async fn canonical_stream_cursor_past_head() {
     let runtime = build_runtime(unique_root("arcand-cursor-past-head"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -335,7 +372,7 @@ async fn canonical_stream_cursor_past_head() {
 #[tokio::test]
 async fn canonical_stream_cursor_zero_replays_all() {
     let runtime = build_runtime(unique_root("arcand-cursor-zero"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -416,7 +453,7 @@ async fn canonical_stream_cursor_zero_replays_all() {
 #[tokio::test]
 async fn canonical_stream_branch_isolation() {
     let runtime = build_runtime(unique_root("arcand-branch-isolation"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -500,7 +537,7 @@ async fn canonical_stream_branch_isolation() {
 #[tokio::test]
 async fn canonical_merge_branch_round_trip() {
     let runtime = build_runtime(unique_root("arcand-merge-branch"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -610,7 +647,7 @@ fn openapi_spec_contains_all_paths() {
 #[tokio::test]
 async fn openapi_json_endpoint_returns_valid_spec() {
     let runtime = build_runtime(unique_root("arcand-openapi-json"));
-    let router = create_canonical_router(runtime);
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

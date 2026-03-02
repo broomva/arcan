@@ -334,15 +334,38 @@ impl AgentClientPort for HttpAgentClient {
     }
 
     async fn get_model(&self) -> anyhow::Result<String> {
-        anyhow::bail!("Model inspection is not exposed in the canonical session API")
+        let url = format!("{}/provider", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to get provider: {}", error_text);
+        }
+        let body: Value = res.json().await?;
+        Ok(body
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string())
     }
 
     async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
-        let requested = match model {
-            Some(model) => format!("{provider}:{model}"),
+        let spec = match model {
+            Some(m) => format!("{provider}:{m}"),
             None => provider.to_string(),
         };
-        anyhow::bail!("Model switching ({requested}) is not exposed in the canonical session API")
+        let url = format!("{}/provider", self.base_url);
+        let body = json!({ "provider": spec });
+        let res = self.client.put(&url).json(&body).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to switch provider: {}", error_text);
+        }
+        let resp: Value = res.json().await?;
+        Ok(resp
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string())
     }
 
     fn subscribe_events(&self) -> mpsc::Receiver<AgentEvent> {
@@ -668,6 +691,73 @@ mod tests {
             .submit_approval("ap-42", "yes", Some("looks good"))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_model_returns_provider_name() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/provider"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "provider": "anthropic",
+                "available": ["anthropic", "openai", "ollama", "mock"]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let model = client.get_model().await.unwrap();
+        assert_eq!(model, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn set_model_sends_spec_and_returns_new_provider() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/provider"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "provider": "ollama",
+                "available": ["anthropic", "openai", "ollama", "mock"]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let result = client.set_model("ollama", Some("llama3.2")).await.unwrap();
+        assert_eq!(result, "ollama");
+    }
+
+    #[tokio::test]
+    async fn set_model_returns_error_on_invalid_provider() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/provider"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(json!({"error": "unknown provider: \"nope\""})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let result = client.set_model("nope", None).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
