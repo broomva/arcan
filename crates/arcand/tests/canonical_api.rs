@@ -370,7 +370,7 @@ async fn canonical_stream_cursor_zero_replays_all() {
     let events_payload: serde_json::Value = events_response.json().await.unwrap();
     let event_count = events_payload["events"]
         .as_array()
-        .map(|a| a.len())
+        .map(Vec::len)
         .unwrap_or(0);
     assert!(event_count > 0, "should have generated events");
 
