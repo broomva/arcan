@@ -299,6 +299,79 @@ mod tests {
         assert_eq!(bar.cursor, 1);
     }
 
+    #[test]
+    fn ctrl_left_word_boundary() {
+        let mut bar = InputBarState::new();
+        bar.buffer = "hello world test".to_string();
+        bar.cursor = 16; // end of "test"
+
+        // Ctrl+Left from end → start of "test"
+        bar.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 12);
+
+        // Ctrl+Left → start of "world"
+        bar.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 6);
+
+        // Ctrl+Left → start of "hello"
+        bar.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 0);
+
+        // Ctrl+Left at start stays at 0
+        bar.input(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 0);
+    }
+
+    #[test]
+    fn ctrl_right_word_boundary() {
+        let mut bar = InputBarState::new();
+        bar.buffer = "hello world test".to_string();
+        bar.cursor = 0;
+
+        // Ctrl+Right → start of "world"
+        bar.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 6);
+
+        // Ctrl+Right → start of "test"
+        bar.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 12);
+
+        // Ctrl+Right → end of buffer
+        bar.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 16);
+    }
+
+    #[test]
+    fn word_boundary_with_multiple_spaces() {
+        let mut bar = InputBarState::new();
+        bar.buffer = "hello    world".to_string();
+        bar.cursor = 0;
+
+        // Ctrl+Right skips multiple spaces → start of "world"
+        bar.input(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(bar.cursor, 9);
+    }
+
+    #[test]
+    fn delete_key_removes_char_after_cursor() {
+        let mut bar = InputBarState::new();
+        bar.buffer = "abcd".to_string();
+        bar.cursor = 1; // after 'a'
+
+        bar.input(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(bar.text(), "acd");
+        assert_eq!(bar.cursor, 1); // cursor stays
+    }
+
+    #[test]
+    fn cursor_col_counts_chars_not_bytes() {
+        let mut bar = InputBarState::new();
+        // 'é' is 2 bytes in UTF-8
+        bar.buffer = "café".to_string();
+        bar.cursor = bar.buffer.len(); // byte offset at end
+        assert_eq!(bar.cursor_col(), 4); // 4 characters
+    }
+
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }

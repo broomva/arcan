@@ -552,13 +552,15 @@ impl NetworkClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_canonical_event, parse_vercel_v6_part};
+    use super::*;
     use aios_protocol::{
         BranchId as ProtocolBranchId, EventKind as ProtocolEventKind,
         EventRecord as ProtocolEventRecord, SessionId as ProtocolSessionId,
     };
     use arcan_core::protocol::AgentEvent;
     use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn parses_assistant_delta_event() {
@@ -671,5 +673,155 @@ mod tests {
             }
             _ => panic!("expected TextDelta"),
         }
+    }
+
+    // --- HTTP client tests with wiremock ---
+
+    #[tokio::test]
+    async fn list_sessions_returns_parsed_sessions() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/sessions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"session_id": "s1", "owner": "alice", "created_at": "2026-03-01T00:00:00Z"},
+                {"session_id": "s2", "owner": "bob", "created_at": "2026-02-28T00:00:00Z"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let sessions = client.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0]["session_id"], "s1");
+        assert_eq!(sessions[1]["owner"], "bob");
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_error_on_failure() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/sessions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let result = client.list_sessions().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_session_state_returns_state_snapshot() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/sessions/sess-123/state"))
+            .and(query_param("branch", "main"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "session_id": "sess-123",
+                "branch": "main",
+                "mode": "Explore",
+                "state": {
+                    "progress": 0.5,
+                    "uncertainty": 0.2,
+                    "risk_level": "Low",
+                    "error_streak": 0,
+                    "budget": {
+                        "tokens_remaining": 100000,
+                        "tool_calls_remaining": 50
+                    }
+                },
+                "version": 42
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "sess-123".to_string(),
+        });
+
+        let state = client.get_session_state(None).await.unwrap();
+        assert_eq!(state["session_id"], "sess-123");
+        assert_eq!(state["mode"], "Explore");
+        assert_eq!(state["state"]["progress"], 0.5);
+        assert_eq!(state["version"], 42);
+    }
+
+    #[tokio::test]
+    async fn get_session_state_with_custom_branch() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/sessions/sess-123/state"))
+            .and(query_param("branch", "feature"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "session_id": "sess-123",
+                "branch": "feature",
+                "mode": "Execute",
+                "state": {},
+                "version": 1
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "sess-123".to_string(),
+        });
+
+        let state = client.get_session_state(Some("feature")).await.unwrap();
+        assert_eq!(state["branch"], "feature");
+    }
+
+    #[tokio::test]
+    async fn submit_run_sends_correct_payload() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/sessions/sess-1/runs"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "sess-1".to_string(),
+        });
+
+        client.submit_run("hello agent", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn submit_approval_sends_correct_payload() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/sessions/sess-1/approvals/ap-42"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = NetworkClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "sess-1".to_string(),
+        });
+
+        client
+            .submit_approval("ap-42", "yes", Some("looks good"))
+            .await
+            .unwrap();
     }
 }

@@ -225,3 +225,55 @@ impl AppState {
             .is_some_and(|last| last == text)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flash_error_sets_message() {
+        let mut state = AppState::new();
+        assert!(state.last_error.is_none());
+
+        state.flash_error("something went wrong");
+        assert!(state.last_error.is_some());
+        assert_eq!(
+            state.last_error.as_ref().unwrap().message,
+            "something went wrong"
+        );
+    }
+
+    #[test]
+    fn clear_expired_errors_removes_old_flash() {
+        let mut state = AppState::new();
+        // Set an error flash with a timestamp in the past
+        state.last_error = Some(ErrorFlash {
+            message: "old error".to_string(),
+            timestamp: Utc::now() - chrono::Duration::seconds(10),
+        });
+
+        // TTL of 5 seconds → should clear the 10s-old error
+        state.clear_expired_errors(chrono::Duration::seconds(5));
+        assert!(state.last_error.is_none());
+    }
+
+    #[test]
+    fn clear_expired_errors_keeps_fresh_flash() {
+        let mut state = AppState::new();
+        state.flash_error("fresh error");
+
+        // TTL of 5 seconds → just-created error should survive
+        state.clear_expired_errors(chrono::Duration::seconds(5));
+        assert!(state.last_error.is_some());
+    }
+
+    #[test]
+    fn new_state_has_sensible_defaults() {
+        let state = AppState::new();
+        assert_eq!(state.current_branch, "main");
+        assert!(state.blocks.is_empty());
+        assert!(!state.is_busy);
+        assert_eq!(state.connection_status, ConnectionStatus::Connecting);
+        assert_eq!(state.focus, FocusTarget::InputBar);
+    }
+}
