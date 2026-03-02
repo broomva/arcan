@@ -1,17 +1,15 @@
-use crate::focus::FocusTarget;
 use crate::models::state::AppState;
 use crate::theme::Theme;
 use crate::widgets;
+use crate::widgets::input_bar::InputBarState;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    text::Line,
-    widgets::{Block, Borders, Paragraph},
+    layout::{Constraint, Direction, Layout},
 };
 
 /// Top-level draw function. Orchestrates the three-chunk layout:
 /// chat log, status bar, and input box.
-pub fn draw(f: &mut Frame, state: &mut AppState) {
+pub fn draw(f: &mut Frame, state: &mut AppState, input_bar: &InputBarState) {
     let theme = Theme::new();
 
     let chunks = Layout::default()
@@ -30,39 +28,7 @@ pub fn draw(f: &mut Frame, state: &mut AppState) {
     // Status bar
     widgets::status_bar::render(f, chunks[1], state, &theme);
 
-    // Input area
-    render_input(f, chunks[2], state, &theme);
-}
-
-fn render_input(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
-    let prompt = if let Some(approval) = &state.pending_approval {
-        format!(
-            "Approval Req for {}: (yes/no) > {}",
-            approval.tool_name, state.input_buffer
-        )
-    } else {
-        format!("\u{276f} {}", state.input_buffer) // ❯
-    };
-
-    let style = if state.pending_approval.is_some() {
-        theme.input_approval
-    } else {
-        theme.input_normal
-    };
-
-    let border_style = if state.focus == FocusTarget::InputBar {
-        theme.title
-    } else {
-        theme.border
-    };
-
-    let input_block = Paragraph::new(Line::from(prompt))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(" Input "),
-        )
-        .style(style);
-    f.render_widget(input_block, area);
+    // Input area (tui-textarea)
+    let has_approval = state.pending_approval.is_some();
+    widgets::input_bar::render(f, chunks[2], input_bar, state.focus, has_approval, &theme);
 }

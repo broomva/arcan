@@ -1,6 +1,8 @@
 pub mod app;
+pub mod command;
 pub mod event;
 pub mod focus;
+pub mod history;
 pub mod models;
 #[cfg(test)]
 mod models_test;
