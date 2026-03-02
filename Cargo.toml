@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/arcan-console",
   "crates/arcan-core",
   "crates/arcan-harness",
   "crates/arcan-aios-adapters",

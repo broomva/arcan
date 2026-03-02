@@ -141,6 +141,10 @@ struct Cli {
     #[arg(long, global = true)]
     port: Option<u16>,
 
+    /// Serve console assets from a local directory (dev mode)
+    #[arg(long, global = true)]
+    console_dir: Option<PathBuf>,
+
     /// LLM provider (anthropic, openai, ollama, mock)
     #[arg(long, global = true)]
     provider: Option<String>,
@@ -395,7 +399,11 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
     }
 }
 
-fn run_serve(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Result<()> {
+fn run_serve(
+    data_dir: &Path,
+    resolved: &ResolvedConfig,
+    console_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
@@ -499,7 +507,21 @@ fn run_serve(data_dir: &Path, resolved: &ResolvedConfig) -> anyhow::Result<()> {
 
     tokio_runtime.block_on(async move {
         // --- HTTP Server ---
-        let router = create_canonical_router(runtime);
+        let mut router = create_canonical_router(runtime);
+
+        // --- Console UI ---
+        #[cfg(feature = "console")]
+        {
+            let console_config = arcan_console::ConsoleConfig {
+                override_dir: console_dir,
+            };
+            router = router.nest("/console", arcan_console::console_router(console_config));
+        }
+
+        // --- CORS (for dev mode with separate Vite server) ---
+        let cors = tower_http::cors::CorsLayer::permissive();
+        let router = router.layer(cors);
+
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
 
@@ -842,7 +864,7 @@ fn main() -> anyhow::Result<()> {
                 approval_timeout,
             );
 
-            run_serve(&data_dir, &resolved)
+            run_serve(&data_dir, &resolved, cli.console_dir)
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)
