@@ -85,6 +85,8 @@ dirs = "6"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-scalar = { version = "0.3", features = ["axum"] }
 
 # Agent OS protocol (canonical contract)
 aios-protocol = { path = "../aiOS/crates/aios-protocol", version = "0.1.0" }

@@ -212,6 +212,16 @@ enum Command {
         /// Provider to log out of (e.g. "openai")
         provider: String,
     },
+    /// Open the interactive API docs (Scalar UI) in the browser
+    Api {
+        /// Daemon URL (skip auto-start, connect to existing)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Write the OpenAPI spec JSON to a file instead of opening the browser
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -734,6 +744,57 @@ fn run_login(provider: &str, device: bool, data_dir: &Path) -> anyhow::Result<()
     Ok(())
 }
 
+#[allow(clippy::print_stdout)]
+async fn run_api(
+    data_dir: PathBuf,
+    resolved: &ResolvedConfig,
+    url: Option<String>,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    // If --output is given, write the spec to a file and exit.
+    if let Some(path) = output {
+        let spec = arcand::canonical::openapi_spec();
+        let json = serde_json::to_string_pretty(&spec)?;
+        std::fs::write(&path, &json)?;
+        println!("OpenAPI spec written to {}", path.display());
+        return Ok(());
+    }
+
+    // Ensure daemon is running.
+    let base_url = match url {
+        Some(u) => u,
+        None => {
+            daemon::ensure_daemon(
+                &data_dir,
+                resolved.port,
+                Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
+                resolved.model.as_deref(),
+            )
+            .await?
+        }
+    };
+
+    let docs_url = format!("{base_url}/docs");
+    println!("API docs available at: {docs_url}");
+
+    // Try to open the browser.
+    let opened = std::process::Command::new("open")
+        .arg(&docs_url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+
+    if !opened {
+        println!("Open the URL above in your browser to explore the API.");
+    }
+
+    println!();
+    println!("Raw spec: {base_url}/openapi.json");
+
+    Ok(())
+}
+
 #[allow(clippy::print_stderr)]
 fn run_logout(provider: &str, data_dir: &Path) -> anyhow::Result<()> {
     // Normalize provider name for credential lookup.
@@ -809,6 +870,21 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Login { provider, device }) => run_login(&provider, device, &data_dir),
         Some(Command::Logout { provider }) => run_logout(&provider, &data_dir),
+        Some(Command::Api { url, output }) => {
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+            );
+
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_api(data_dir, &resolved, url, output))
+        }
         Some(Command::Run {
             message,
             session,

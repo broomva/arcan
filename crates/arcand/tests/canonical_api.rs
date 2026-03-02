@@ -11,7 +11,7 @@ use aios_protocol::{
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
 use aios_tools::{ToolDispatcher, ToolRegistry};
-use arcand::canonical::create_canonical_router;
+use arcand::canonical::{create_canonical_router, openapi_spec};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde_json::json;
@@ -262,6 +262,377 @@ async fn canonical_stream_vercel_v6_replays_protocol_events() {
             || body.contains("\"type\":\"RunFinished\""),
         "expected canonical event payload in stream, body: {body}"
     );
+
+    server.abort();
+}
+
+// ─── stream cursor/replay invariants ────────────────────────────────────────
+
+#[tokio::test]
+async fn canonical_stream_cursor_past_head() {
+    let runtime = build_runtime(unique_root("arcand-cursor-past-head"));
+    let router = create_canonical_router(runtime);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let session_id = "cursor-past-head";
+
+    // Create session and run to generate events
+    let _ = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({ "session_id": session_id }))
+        .send()
+        .await
+        .unwrap();
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "seed events" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Open stream with cursor far past head — should get no replay events
+    let response = client
+        .get(format!(
+            "{base}/sessions/{session_id}/events/stream?branch=main&cursor=999999&replay_limit=64"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Try reading for a short window — no data events should arrive (only keepalive or nothing)
+    let mut stream = response.bytes_stream();
+    let mut body = String::new();
+    for _ in 0..3 {
+        let next = tokio::time::timeout(Duration::from_millis(200), stream.next())
+            .await
+            .ok()
+            .flatten();
+        let Some(Ok(chunk)) = next else {
+            continue;
+        };
+        body.push_str(&String::from_utf8_lossy(&chunk));
+    }
+
+    // No event data should have been replayed
+    assert!(
+        !body.contains("\"type\":\"SessionCreated\"")
+            && !body.contains("\"type\":\"RunStarted\"")
+            && !body.contains("\"type\":\"Message\""),
+        "cursor past head should replay no events, but got: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn canonical_stream_cursor_zero_replays_all() {
+    let runtime = build_runtime(unique_root("arcand-cursor-zero"));
+    let router = create_canonical_router(runtime);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let session_id = "cursor-zero";
+
+    // Create session and run
+    let _ = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({ "session_id": session_id }))
+        .send()
+        .await
+        .unwrap();
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "generate events for replay" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Get event count for reference
+    let events_response = client
+        .get(format!("{base}/sessions/{session_id}/events"))
+        .send()
+        .await
+        .unwrap();
+    let events_payload: serde_json::Value = events_response.json().await.unwrap();
+    let event_count = events_payload["events"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(event_count > 0, "should have generated events");
+
+    // Stream with cursor=0 should replay all events
+    let response = client
+        .get(format!(
+            "{base}/sessions/{session_id}/events/stream?branch=main&cursor=0&replay_limit=64"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut stream = response.bytes_stream();
+    let mut body = String::new();
+    for _ in 0..20 {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .ok()
+            .flatten();
+        let Some(Ok(chunk)) = next else {
+            continue;
+        };
+        body.push_str(&String::from_utf8_lossy(&chunk));
+        if body.contains("\"type\":\"RunFinished\"") {
+            break;
+        }
+    }
+
+    // cursor=0 should have replayed SessionCreated and run lifecycle events
+    assert!(
+        body.contains("\"type\":\"SessionCreated\""),
+        "cursor=0 should replay SessionCreated, body: {body}"
+    );
+    assert!(
+        body.contains("\"type\":\"RunStarted\"") || body.contains("\"type\":\"RunFinished\""),
+        "cursor=0 should replay run events, body: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn canonical_stream_branch_isolation() {
+    let runtime = build_runtime(unique_root("arcand-branch-isolation"));
+    let router = create_canonical_router(runtime);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let session_id = "branch-isolation";
+
+    // Create session and run on main
+    let _ = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({ "session_id": session_id }))
+        .send()
+        .await
+        .unwrap();
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "main branch work" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create a second branch and run on it
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/branches"))
+        .json(&json!({ "branch": "feature-b" }))
+        .send()
+        .await
+        .unwrap();
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "feature-b branch work", "branch": "feature-b" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Stream main branch only
+    let response = client
+        .get(format!(
+            "{base}/sessions/{session_id}/events/stream?branch=main&cursor=0&replay_limit=64"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut stream = response.bytes_stream();
+    let mut body = String::new();
+    for _ in 0..20 {
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .ok()
+            .flatten();
+        let Some(Ok(chunk)) = next else {
+            continue;
+        };
+        body.push_str(&String::from_utf8_lossy(&chunk));
+        if body.contains("\"type\":\"RunFinished\"") {
+            break;
+        }
+    }
+
+    // Main branch stream should contain main-branch events
+    assert!(
+        body.contains("main branch work") || body.contains("\"type\":\"SessionCreated\""),
+        "main branch stream should contain main events, body: {body}"
+    );
+
+    // Main branch stream should NOT contain feature-b objective
+    assert!(
+        !body.contains("feature-b branch work"),
+        "main branch stream should not contain feature-b events, body: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn canonical_merge_branch_round_trip() {
+    let runtime = build_runtime(unique_root("arcand-merge-branch"));
+    let router = create_canonical_router(runtime);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let session_id = "merge-test";
+
+    // Create session and run on main
+    let _ = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({ "session_id": session_id }))
+        .send()
+        .await
+        .unwrap();
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "main work" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create branch and run on it
+    let create_branch_resp = client
+        .post(format!("{base}/sessions/{session_id}/branches"))
+        .json(&json!({ "branch": "feature-merge" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_branch_resp.status(), StatusCode::OK);
+
+    let _ = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "feature work", "branch": "feature-merge" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Merge feature-merge into main
+    let merge_response = client
+        .post(format!(
+            "{base}/sessions/{session_id}/branches/feature-merge/merge"
+        ))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(merge_response.status(), StatusCode::OK);
+
+    let merge_payload: serde_json::Value = merge_response.json().await.unwrap();
+    assert_eq!(merge_payload["session_id"], session_id);
+    assert_eq!(
+        merge_payload["result"]["source_branch"], "feature-merge",
+        "merge result should identify source branch"
+    );
+    assert_eq!(
+        merge_payload["result"]["target_branch"], "main",
+        "merge result should identify target branch"
+    );
+    assert!(
+        merge_payload["result"]["source_head_sequence"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "source head sequence should be > 0"
+    );
+    assert!(
+        merge_payload["result"]["target_head_sequence"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0,
+        "target head sequence should be > 0"
+    );
+
+    server.abort();
+}
+
+// ─── OpenAPI spec tests ──────────────────────────────────────────────────────
+
+#[test]
+fn openapi_spec_contains_all_paths() {
+    let spec = openapi_spec();
+    let json = serde_json::to_value(&spec).expect("spec should serialize");
+    let paths = json["paths"]
+        .as_object()
+        .expect("paths should be an object");
+
+    let expected = [
+        "/health",
+        "/sessions",
+        "/sessions/{session_id}/runs",
+        "/sessions/{session_id}/state",
+        "/sessions/{session_id}/events",
+        "/sessions/{session_id}/events/stream",
+        "/sessions/{session_id}/branches",
+        "/sessions/{session_id}/branches/{branch_id}/merge",
+        "/sessions/{session_id}/approvals/{approval_id}",
+    ];
+    for path in expected {
+        assert!(paths.contains_key(path), "missing path: {path}");
+    }
+}
+
+#[tokio::test]
+async fn openapi_json_endpoint_returns_valid_spec() {
+    let runtime = build_runtime(unique_root("arcand-openapi-json"));
+    let router = create_canonical_router(runtime);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let response = client
+        .get(format!("{base}/openapi.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let spec: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(spec["info"]["title"], "Arcan Agent Runtime API");
+    assert_eq!(spec["info"]["version"], "0.2.1");
+    assert!(spec["paths"].as_object().is_some());
+    assert!(spec["components"]["schemas"].as_object().is_some());
 
     server.abort();
 }
