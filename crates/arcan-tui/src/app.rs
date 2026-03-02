@@ -1,10 +1,13 @@
 use crate::command::{self, Command, ModelSubcommand};
 use crate::event::{TuiEvent, event_pump};
+use crate::focus::FocusTarget;
 use crate::models::state::{AppState, ConnectionStatus};
 use crate::models::ui_block::UiBlock;
 use crate::network::{NetworkClient, NetworkConfig};
 use crate::ui;
 use crate::widgets::input_bar::InputBarState;
+use crate::widgets::session_browser::{SessionBrowserState, SessionEntry};
+use crate::widgets::state_inspector::{AgentStateSnapshot, StateInspectorState};
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{Terminal, backend::Backend};
@@ -17,6 +20,10 @@ pub struct App {
     pub input_bar: InputBarState,
     pub should_quit: bool,
     pub client: Arc<NetworkClient>,
+    pub session_browser: SessionBrowserState,
+    pub state_inspector: StateInspectorState,
+    /// Whether the side panels (session browser + state inspector) are visible.
+    pub show_panels: bool,
     events: mpsc::Receiver<TuiEvent>,
 }
 
@@ -41,6 +48,9 @@ impl App {
             input_bar: InputBarState::new(),
             should_quit: false,
             client,
+            session_browser: SessionBrowserState::new(),
+            state_inspector: StateInspectorState::new(),
+            show_panels: false,
             events,
         }
     }
@@ -57,7 +67,7 @@ impl App {
         B::Error: Send + Sync + 'static,
     {
         // Initial draw
-        terminal.draw(|f| ui::draw(f, &mut self.state, &self.input_bar))?;
+        terminal.draw(|f| ui::draw(f, self))?;
 
         while let Some(event) = self.events.recv().await {
             match event {
@@ -78,7 +88,7 @@ impl App {
                 _ => {}
             }
 
-            terminal.draw(|f| ui::draw(f, &mut self.state, &self.input_bar))?;
+            terminal.draw(|f| ui::draw(f, self))?;
 
             if self.should_quit {
                 break;
@@ -92,6 +102,12 @@ impl App {
         // Focus-independent keys
         match key.code {
             KeyCode::Esc => {
+                // If panels are shown, close them first; otherwise quit
+                if self.show_panels {
+                    self.show_panels = false;
+                    self.state.focus = FocusTarget::InputBar;
+                    return;
+                }
                 self.should_quit = true;
                 return;
             }
@@ -100,7 +116,11 @@ impl App {
                 return;
             }
             KeyCode::Tab => {
-                self.state.focus = self.state.focus.next();
+                if self.show_panels && key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.state.focus = self.state.focus.next_all();
+                } else {
+                    self.state.focus = self.state.focus.next();
+                }
                 return;
             }
             _ => {}
@@ -108,8 +128,12 @@ impl App {
 
         // Focus-dependent key handling
         match self.state.focus {
-            crate::focus::FocusTarget::ChatLog => self.handle_scroll_key(key.code),
-            crate::focus::FocusTarget::InputBar => self.handle_input_key(key).await,
+            FocusTarget::ChatLog => self.handle_scroll_key(key.code),
+            FocusTarget::InputBar => self.handle_input_key(key).await,
+            FocusTarget::SessionBrowser => self.handle_session_browser_key(key.code).await,
+            FocusTarget::StateInspector => {
+                // State inspector is read-only; scroll keys could be added later
+            }
         }
     }
 
@@ -142,9 +166,28 @@ impl App {
             KeyCode::PageUp => self.state.scroll.page_up(),
             KeyCode::PageDown => self.state.scroll.scroll_to_bottom(),
             _ => {
-                // Forward all other keys to tui-textarea
                 self.input_bar.input(key);
             }
+        }
+    }
+
+    async fn handle_session_browser_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.session_browser.previous(),
+            KeyCode::Down | KeyCode::Char('j') => self.session_browser.next(),
+            KeyCode::Enter => {
+                // Switch to selected session
+                if let Some(id) = self.session_browser.selected_session_id() {
+                    let id = id.to_string();
+                    self.push_system_alert(format!("Selected session: {id}"));
+                    // Could wire up session switching here in the future
+                }
+            }
+            KeyCode::Char('r') => {
+                // Refresh session list
+                self.fetch_sessions().await;
+            }
+            _ => {}
         }
     }
 
@@ -166,7 +209,7 @@ impl App {
             }
             Ok(Command::Help) => {
                 self.push_system_alert(
-                    "Commands: /clear, /model [provider[:model]], /approve <id> <yes|no> [reason], /help",
+                    "Commands: /clear, /model, /approve <id> <yes|no>, /sessions, /state, /help",
                 );
             }
             Ok(Command::Model(subcmd)) => {
@@ -178,6 +221,16 @@ impl App {
                 reason,
             }) => {
                 self.submit_approval(approval_id, decision, reason);
+            }
+            Ok(Command::Sessions) => {
+                self.show_panels = true;
+                self.state.focus = FocusTarget::SessionBrowser;
+                self.fetch_sessions().await;
+            }
+            Ok(Command::State) => {
+                self.show_panels = true;
+                self.state.focus = FocusTarget::StateInspector;
+                self.fetch_state().await;
             }
             Ok(Command::SendMessage(text)) => {
                 self.submit_message(text);
@@ -231,6 +284,120 @@ impl App {
                 tracing::error!("Submit approval error: {}", e);
             }
         });
+    }
+
+    async fn fetch_sessions(&mut self) {
+        self.session_browser.set_loading();
+        let client = self.client.clone();
+        match client.list_sessions().await {
+            Ok(sessions) => {
+                let entries: Vec<SessionEntry> = sessions
+                    .into_iter()
+                    .filter_map(|v| {
+                        Some(SessionEntry {
+                            session_id: v.get("session_id")?.as_str()?.to_string(),
+                            owner: v
+                                .get("owner")
+                                .and_then(|o| o.as_str())
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            created_at: v
+                                .get("created_at")
+                                .and_then(|t| t.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or_else(Utc::now),
+                        })
+                    })
+                    .collect();
+                self.session_browser.set_sessions(entries);
+            }
+            Err(e) => {
+                self.session_browser.set_error(e.to_string());
+            }
+        }
+    }
+
+    async fn fetch_state(&mut self) {
+        self.state_inspector.set_loading();
+        let client = self.client.clone();
+        match client.get_session_state(None).await {
+            Ok(v) => {
+                let state_obj = v.get("state").cloned().unwrap_or_default();
+                let budget = state_obj.get("budget").cloned().unwrap_or_default();
+
+                let snapshot = AgentStateSnapshot {
+                    session_id: v
+                        .get("session_id")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    branch: v
+                        .get("branch")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("main")
+                        .to_string(),
+                    mode: v
+                        .get("mode")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                    progress: state_obj
+                        .get("progress")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    uncertainty: state_obj
+                        .get("uncertainty")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    risk_level: state_obj
+                        .get("risk_level")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("Low")
+                        .to_string(),
+                    error_streak: state_obj
+                        .get("error_streak")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0) as u32,
+                    context_pressure: state_obj
+                        .get("context_pressure")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    side_effect_pressure: state_obj
+                        .get("side_effect_pressure")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    human_dependency: state_obj
+                        .get("human_dependency")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    tokens_remaining: budget
+                        .get("tokens_remaining")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0),
+                    time_remaining_ms: budget
+                        .get("time_remaining_ms")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0),
+                    cost_remaining_usd: budget
+                        .get("cost_remaining_usd")
+                        .and_then(|n| n.as_f64())
+                        .unwrap_or(0.0),
+                    tool_calls_remaining: budget
+                        .get("tool_calls_remaining")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0) as u32,
+                    error_budget_remaining: budget
+                        .get("error_budget_remaining")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0) as u32,
+                    version: v.get("version").and_then(|n| n.as_u64()).unwrap_or(0),
+                };
+                self.state_inspector.set_snapshot(snapshot);
+            }
+            Err(e) => {
+                self.state_inspector.set_error(e.to_string());
+            }
+        }
     }
 }
 

@@ -454,6 +454,37 @@ impl NetworkClient {
         Ok(())
     }
 
+    /// Fetches all sessions from the daemon.
+    pub async fn list_sessions(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let url = format!("{}/sessions", self.config.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to list sessions: {}", error_text);
+        }
+        let sessions: Vec<serde_json::Value> = res.json().await?;
+        Ok(sessions)
+    }
+
+    /// Fetches the agent state for the current session.
+    pub async fn get_session_state(
+        &self,
+        branch: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let branch_param = branch.unwrap_or("main");
+        let url = format!(
+            "{}/sessions/{}/state?branch={}",
+            self.config.base_url, self.config.session_id, branch_param
+        );
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to get state: {}", error_text);
+        }
+        let state: serde_json::Value = res.json().await?;
+        Ok(state)
+    }
+
     /// Fetches the currently selected model from the daemon.
     pub async fn get_model(&self) -> anyhow::Result<String> {
         anyhow::bail!("Model inspection is not exposed in the canonical session API")

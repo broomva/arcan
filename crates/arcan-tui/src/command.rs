@@ -13,6 +13,10 @@ pub enum Command {
         decision: String,
         reason: Option<String>,
     },
+    /// Toggle or browse sessions.
+    Sessions,
+    /// Fetch and display agent state.
+    State,
     /// Send a plain message to the agent.
     SendMessage(String),
 }
@@ -52,6 +56,8 @@ pub fn parse(input: &str) -> Result<Command, String> {
         "/help" => Ok(Command::Help),
         "/model" => parse_model(args),
         "/approve" => parse_approve(args),
+        "/sessions" => Ok(Command::Sessions),
+        "/state" => Ok(Command::State),
         unknown => Err(format!(
             "Unknown command: {unknown}. Type /help for available commands."
         )),
@@ -223,5 +229,15 @@ mod tests {
     fn empty_input() {
         assert!(parse("").is_err());
         assert!(parse("   ").is_err());
+    }
+
+    #[test]
+    fn sessions_command() {
+        assert_eq!(parse("/sessions").unwrap(), Command::Sessions);
+    }
+
+    #[test]
+    fn state_command() {
+        assert_eq!(parse("/state").unwrap(), Command::State);
     }
 }
