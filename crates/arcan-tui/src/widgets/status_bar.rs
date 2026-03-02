@@ -12,7 +12,6 @@ use ratatui::{
 /// Displays connection indicator, session ID, branch, mode (busy/approval/idle),
 /// and an optional error flash.
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
-    let session_str = state.session_id.as_deref().unwrap_or("no session");
     let branch_str = &state.current_branch;
 
     let (conn_dot, conn_style) = match state.connection_status {
@@ -29,13 +28,23 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         "idle"
     };
 
+    let provider_str = state.provider.as_deref().unwrap_or("?");
+    // Show first 8 chars of session ID to save space on narrow terminals
+    let session_short = state
+        .session_id
+        .as_deref()
+        .map(|s| if s.len() > 8 { &s[..8] } else { s })
+        .unwrap_or("--");
+
     let mut spans = vec![
         Span::styled(format!(" {conn_dot} "), conn_style),
-        Span::styled(session_str.to_string(), theme.status_bar_bg),
+        Span::styled(provider_str.to_string(), theme.status_bar_bg),
         Span::styled(" \u{2502} ", theme.status_bar_bg), // │
         Span::styled(format!("\u{2387} {branch_str}"), theme.status_bar_bg), // ⎇
         Span::styled(" \u{2502} ", theme.status_bar_bg),
-        Span::styled(mode_str, theme.status_bar_bg),
+        Span::styled(mode_str.to_string(), theme.status_bar_bg),
+        Span::styled(" \u{2502} ", theme.status_bar_bg),
+        Span::styled(session_short.to_string(), theme.status_bar_bg),
     ];
 
     // Error flash

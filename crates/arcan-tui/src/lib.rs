@@ -4,6 +4,10 @@ pub mod command;
 pub mod event;
 pub mod focus;
 pub mod history;
+#[cfg(test)]
+mod integration_test;
+#[cfg(test)]
+pub mod mock_client;
 pub mod models;
 #[cfg(test)]
 mod models_test;

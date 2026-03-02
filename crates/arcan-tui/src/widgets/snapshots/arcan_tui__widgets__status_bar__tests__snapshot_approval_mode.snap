@@ -3,4 +3,4 @@ source: crates/arcan-tui/src/widgets/status_bar.rs
 assertion_line: 133
 expression: output
 ---
- ● sess-004 │ ⎇ main │ approval
+ ● ? │ ⎇ main │ approval │ sess-004

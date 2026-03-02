@@ -1,6 +1,6 @@
 use crate::client::AgentClientPort;
 use crate::command::{self, Command, ModelSubcommand};
-use crate::event::{TuiEvent, event_pump};
+use crate::event::{ScrollDirection, TuiEvent, event_pump};
 use crate::focus::FocusTarget;
 use crate::models::state::{AppState, ConnectionStatus};
 use crate::models::ui_block::UiBlock;
@@ -27,10 +27,10 @@ pub struct App {
     pub markdown: MarkdownRenderer,
     /// Whether the side panels (session browser + state inspector) are visible.
     pub show_panels: bool,
-    events: mpsc::Receiver<TuiEvent>,
+    pub(crate) events: mpsc::Receiver<TuiEvent>,
     /// Sender half of the unified event channel, used to inject network events
     /// after a session switch.
-    event_tx: mpsc::Sender<TuiEvent>,
+    pub(crate) event_tx: mpsc::Sender<TuiEvent>,
 }
 
 impl App {
@@ -64,7 +64,7 @@ impl App {
         app
     }
 
-    fn push_system_alert(&mut self, text: impl Into<String>) {
+    pub(crate) fn push_system_alert(&mut self, text: impl Into<String>) {
         self.state.blocks.push(UiBlock::SystemAlert {
             text: text.into(),
             timestamp: Utc::now(),
@@ -103,6 +103,14 @@ impl App {
                         );
                     }
                 }
+                TuiEvent::MouseScroll(direction) => {
+                    // Mouse scroll works regardless of focus — always scrolls chat log.
+                    // 3 lines per scroll tick feels natural on mobile and desktop.
+                    match direction {
+                        ScrollDirection::Up => self.state.scroll.scroll_up(3),
+                        ScrollDirection::Down => self.state.scroll.scroll_down(3),
+                    }
+                }
                 TuiEvent::Resize(_, _) => {
                     // Will redraw below
                 }
@@ -119,7 +127,7 @@ impl App {
         Ok(())
     }
 
-    async fn handle_key(&mut self, key: KeyEvent) {
+    pub(crate) async fn handle_key(&mut self, key: KeyEvent) {
         // Focus-independent keys
         match key.code {
             KeyCode::Esc => {
@@ -185,7 +193,7 @@ impl App {
                 self.input_bar.history_down();
             }
             KeyCode::PageUp => self.state.scroll.page_up(),
-            KeyCode::PageDown => self.state.scroll.scroll_to_bottom(),
+            KeyCode::PageDown => self.state.scroll.page_down(),
             _ => {
                 self.input_bar.input(key);
             }

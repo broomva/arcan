@@ -3,4 +3,4 @@ source: crates/arcan-tui/src/widgets/status_bar.rs
 assertion_line: 113
 expression: output
 ---
- ● sess-003 │ ⎇ main │ idle │ ⚠ timeout
+ ● ? │ ⎇ main │ idle │ sess-003 │ ⚠ timeout

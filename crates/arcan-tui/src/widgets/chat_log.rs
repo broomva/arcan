@@ -94,7 +94,20 @@ pub fn render(
 
     // Update scroll dimensions (viewport = area minus 2 border rows)
     let inner_height = area.height.saturating_sub(2) as usize;
-    let total_lines = lines.len();
+    let inner_width = area.width.saturating_sub(2) as usize;
+    // Count visual lines after wrapping: each logical line may wrap into
+    // multiple visual lines depending on its width vs the viewport width.
+    let total_lines: usize = lines
+        .iter()
+        .map(|line| {
+            let w = line.width();
+            if w == 0 || inner_width == 0 {
+                1
+            } else {
+                w.div_ceil(inner_width)
+            }
+        })
+        .sum();
     state.scroll.update_dimensions(total_lines, inner_height);
     let scroll_pos = state.scroll.compute_scroll_position();
 

@@ -1,7 +1,14 @@
 use arcan_core::protocol::AgentEvent;
-use crossterm::event::{self, Event, KeyEvent};
+use crossterm::event::{self, Event, KeyEvent, MouseEventKind};
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Mouse scroll direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollDirection {
+    Up,
+    Down,
+}
 
 /// Unified TUI event type merging terminal, network, and timer events.
 pub enum TuiEvent {
@@ -15,6 +22,8 @@ pub enum TuiEvent {
     Resize(u16, u16),
     /// The SSE connection was lost (stream ended or errored out).
     ConnectionLost,
+    /// Mouse scroll (wheel or touch swipe mapped to scroll by the terminal).
+    MouseScroll(ScrollDirection),
 }
 
 /// Spawn background producers that merge terminal input, network events,
@@ -48,6 +57,25 @@ pub fn event_pump(
                             break;
                         }
                     }
+                    Ok(Event::Mouse(mouse)) => match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            if term_tx
+                                .blocking_send(TuiEvent::MouseScroll(ScrollDirection::Up))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if term_tx
+                                .blocking_send(TuiEvent::MouseScroll(ScrollDirection::Down))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             } else {

@@ -3,6 +3,7 @@ use super::ui_block::{ApprovalRequest, ToolStatus, UiBlock};
 use crate::focus::FocusTarget;
 use arcan_core::protocol::AgentEvent;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 
 /// Connection status for the daemon.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -53,6 +54,9 @@ pub struct AppState {
 
     /// Transient error shown in the status bar
     pub last_error: Option<ErrorFlash>,
+
+    /// Last known provider name (from RunStarted events).
+    pub provider: Option<String>,
 }
 
 impl Default for AppState {
@@ -75,6 +79,7 @@ impl AppState {
             focus: FocusTarget::InputBar,
             connection_status: ConnectionStatus::Connecting,
             last_error: None,
+            provider: None,
         }
     }
 
@@ -92,6 +97,7 @@ impl AppState {
         self.is_busy = false;
         self.scroll = super::scroll::ScrollState::new();
         self.last_error = None;
+        self.provider = None;
     }
 
     /// Set an error flash that will be displayed in the status bar.
@@ -115,9 +121,10 @@ impl AppState {
     pub fn apply_event(&mut self, event: AgentEvent) {
         let now = Utc::now();
         match event {
-            AgentEvent::RunStarted { .. } => {
+            AgentEvent::RunStarted { provider, .. } => {
                 self.is_busy = true;
                 self.streaming_text = None;
+                self.provider = Some(provider);
             }
             AgentEvent::TextDelta { delta, .. } => {
                 if let Some(mut text) = self.streaming_text.take() {
@@ -130,10 +137,7 @@ impl AppState {
             AgentEvent::ToolCallRequested { call, .. } => {
                 // Flush streaming text if it exists (model stopped reasoning, started acting)
                 if let Some(text) = self.streaming_text.take() {
-                    self.blocks.push(UiBlock::AssistantMessage {
-                        text,
-                        timestamp: now,
-                    });
+                    self.push_assistant_or_error(text, now);
                 }
 
                 self.blocks.push(UiBlock::ToolExecution {
@@ -177,19 +181,9 @@ impl AppState {
             }
             AgentEvent::RunFinished { final_answer, .. } => {
                 if let Some(text) = self.streaming_text.take() {
-                    if !self.last_assistant_message_matches(&text) {
-                        self.blocks.push(UiBlock::AssistantMessage {
-                            text,
-                            timestamp: now,
-                        });
-                    }
+                    self.push_assistant_or_error(text, now);
                 } else if let Some(ans) = final_answer {
-                    if !self.last_assistant_message_matches(&ans) {
-                        self.blocks.push(UiBlock::AssistantMessage {
-                            text: ans,
-                            timestamp: now,
-                        });
-                    }
+                    self.push_assistant_or_error(ans, now);
                 }
                 self.is_busy = false;
             }
@@ -240,6 +234,71 @@ impl AppState {
             })
             .is_some_and(|last| last == text)
     }
+
+    /// Push text as either an `AssistantMessage` or a `SystemAlert` if the text
+    /// looks like a JSON API error response (OpenAI, Anthropic, etc.).
+    fn push_assistant_or_error(&mut self, text: String, timestamp: DateTime<Utc>) {
+        if self.last_assistant_message_matches(&text) {
+            return; // deduplicate
+        }
+
+        if let Some(error_msg) = extract_api_error(&text) {
+            let provider = self.provider.as_deref().unwrap_or("provider");
+            self.blocks.push(UiBlock::SystemAlert {
+                text: format!("API Error ({provider}): {error_msg}"),
+                timestamp,
+            });
+        } else {
+            self.blocks
+                .push(UiBlock::AssistantMessage { text, timestamp });
+        }
+    }
+}
+
+/// Try to extract a human-readable error message from a JSON API error response.
+///
+/// Recognizes common patterns from OpenAI, Anthropic, and generic `{"error": ...}` responses.
+fn extract_api_error(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+
+    let value: Value = serde_json::from_str(trimmed).ok()?;
+    let obj = value.as_object()?;
+
+    // Pattern 1: {"error": {"message": "...", "type": "...", "code": "..."}}
+    // Used by OpenAI, many OpenAI-compatible APIs
+    if let Some(error) = obj.get("error") {
+        if let Some(msg) = error.get("message").and_then(Value::as_str) {
+            let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
+            return Some(format!("{error_type}: {msg}"));
+        }
+        // {"error": "string message"}
+        if let Some(msg) = error.as_str() {
+            return Some(msg.to_string());
+        }
+    }
+
+    // Pattern 2: {"type": "error", "error": {"type": "...", "message": "..."}}
+    // Used by Anthropic
+    if obj.get("type").and_then(Value::as_str) == Some("error") {
+        if let Some(error) = obj.get("error") {
+            if let Some(msg) = error.get("message").and_then(Value::as_str) {
+                let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
+                return Some(format!("{error_type}: {msg}"));
+            }
+        }
+    }
+
+    // Pattern 3: {"message": "...", "status": 4xx/5xx}
+    if let Some(msg) = obj.get("message").and_then(Value::as_str) {
+        if obj.get("status").and_then(Value::as_u64).unwrap_or(0) >= 400 {
+            return Some(msg.to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

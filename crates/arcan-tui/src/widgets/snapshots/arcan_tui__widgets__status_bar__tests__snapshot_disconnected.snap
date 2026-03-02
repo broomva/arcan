@@ -3,4 +3,4 @@ source: crates/arcan-tui/src/widgets/status_bar.rs
 assertion_line: 85
 expression: output
 ---
- ○ sess-002 │ ⎇ main │ idle
+ ○ ? │ ⎇ main │ idle │ sess-002

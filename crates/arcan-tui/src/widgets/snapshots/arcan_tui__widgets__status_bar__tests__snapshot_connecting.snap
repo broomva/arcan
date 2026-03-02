@@ -3,4 +3,4 @@ source: crates/arcan-tui/src/widgets/status_bar.rs
 assertion_line: 96
 expression: output
 ---
- ◌ no session │ ⎇ main │ idle
+ ◌ ? │ ⎇ main │ idle │ --
