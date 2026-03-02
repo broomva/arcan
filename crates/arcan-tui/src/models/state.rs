@@ -78,6 +78,22 @@ impl AppState {
         }
     }
 
+    /// Reset UI state for switching to a new session.
+    ///
+    /// Clears conversation blocks, streaming text, pending approval, scroll,
+    /// error flash, and sets the new session ID. Preserves focus and connection status.
+    pub fn reset_for_session_switch(&mut self, new_session_id: String) {
+        self.session_id = Some(new_session_id);
+        self.current_branch = "main".to_string();
+        self.blocks.clear();
+        self.streaming_text = None;
+        self.input_buffer.clear();
+        self.pending_approval = None;
+        self.is_busy = false;
+        self.scroll = super::scroll::ScrollState::new();
+        self.last_error = None;
+    }
+
     /// Set an error flash that will be displayed in the status bar.
     pub fn flash_error(&mut self, message: impl Into<String>) {
         self.last_error = Some(ErrorFlash {
@@ -275,5 +291,38 @@ mod tests {
         assert!(!state.is_busy);
         assert_eq!(state.connection_status, ConnectionStatus::Connecting);
         assert_eq!(state.focus, FocusTarget::InputBar);
+    }
+
+    #[test]
+    fn reset_for_session_switch_clears_state() {
+        let mut state = AppState::new();
+        // Populate with some data
+        state.session_id = Some("old-session".to_string());
+        state.current_branch = "feature".to_string();
+        state.blocks.push(UiBlock::SystemAlert {
+            text: "hello".to_string(),
+            timestamp: Utc::now(),
+        });
+        state.streaming_text = Some("partial...".to_string());
+        state.is_busy = true;
+        state.pending_approval = Some(ApprovalRequest {
+            approval_id: "ap-1".to_string(),
+            call_id: "c-1".to_string(),
+            tool_name: "shell".to_string(),
+            arguments: serde_json::json!({}),
+            risk_level: "high".to_string(),
+        });
+        state.flash_error("some error");
+
+        // Reset
+        state.reset_for_session_switch("new-session".to_string());
+
+        assert_eq!(state.session_id, Some("new-session".to_string()));
+        assert_eq!(state.current_branch, "main");
+        assert!(state.blocks.is_empty());
+        assert!(state.streaming_text.is_none());
+        assert!(!state.is_busy);
+        assert!(state.pending_approval.is_none());
+        assert!(state.last_error.is_none());
     }
 }

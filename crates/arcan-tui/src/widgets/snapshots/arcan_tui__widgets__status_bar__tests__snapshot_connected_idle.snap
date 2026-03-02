@@ -1,0 +1,6 @@
+---
+source: crates/arcan-tui/src/widgets/status_bar.rs
+assertion_line: 72
+expression: output
+---
+ ● sess-001 │ ⎇ main │ idle

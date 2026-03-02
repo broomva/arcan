@@ -375,4 +375,32 @@ mod tests {
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
+
+    #[test]
+    fn snapshot_normal_input() {
+        use crate::test_utils::render_to_string;
+
+        let mut bar = InputBarState::new();
+        bar.buffer = "hello world".to_string();
+        bar.cursor = 11;
+        let theme = Theme::new();
+
+        let output = render_to_string(40, 3, |f, area| {
+            render(f, area, &bar, FocusTarget::InputBar, false, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_approval_mode_input() {
+        use crate::test_utils::render_to_string;
+
+        let bar = InputBarState::new();
+        let theme = Theme::new();
+
+        let output = render_to_string(40, 3, |f, area| {
+            render(f, area, &bar, FocusTarget::InputBar, true, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
 }

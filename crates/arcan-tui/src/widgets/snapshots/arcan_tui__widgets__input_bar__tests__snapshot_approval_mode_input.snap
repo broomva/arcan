@@ -1,0 +1,8 @@
+---
+source: crates/arcan-tui/src/widgets/input_bar.rs
+assertion_line: 404
+expression: output
+---
+┌ Approval (yes/no) ───────────────────┐
+│❯                                     │
+└──────────────────────────────────────┘

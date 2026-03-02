@@ -1,9 +1,9 @@
+use crate::client::AgentClientPort;
 use crate::command::{self, Command, ModelSubcommand};
 use crate::event::{TuiEvent, event_pump};
 use crate::focus::FocusTarget;
 use crate::models::state::{AppState, ConnectionStatus};
 use crate::models::ui_block::UiBlock;
-use crate::network::{NetworkClient, NetworkConfig};
 use crate::ui;
 use crate::widgets::input_bar::InputBarState;
 use crate::widgets::markdown::MarkdownRenderer;
@@ -20,7 +20,7 @@ pub struct App {
     pub state: AppState,
     pub input_bar: InputBarState,
     pub should_quit: bool,
-    pub client: Arc<NetworkClient>,
+    pub client: Arc<dyn AgentClientPort>,
     pub session_browser: SessionBrowserState,
     pub state_inspector: StateInspectorState,
     /// Markdown renderer with caching for assistant message formatting.
@@ -28,23 +28,19 @@ pub struct App {
     /// Whether the side panels (session browser + state inspector) are visible.
     pub show_panels: bool,
     events: mpsc::Receiver<TuiEvent>,
+    /// Sender half of the unified event channel, used to inject network events
+    /// after a session switch.
+    event_tx: mpsc::Sender<TuiEvent>,
 }
 
 impl App {
-    pub fn new(config: NetworkConfig) -> Self {
-        let client = Arc::new(NetworkClient::new(config));
-        let (tx, rx) = mpsc::channel(100);
-
-        // Spawn network listener
-        let listener_client = client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = listener_client.listen_events(tx).await {
-                tracing::error!("Event listener ended: {}", e);
-            }
-        });
+    /// Create a new `App` from a pre-built client. The client's `subscribe_events`
+    /// method is called to obtain the initial event stream.
+    pub fn new(client: Arc<dyn AgentClientPort>) -> Self {
+        let network_rx = client.subscribe_events();
 
         // Merge terminal + network + ticks into a single event stream
-        let events = event_pump(rx, Duration::from_millis(50));
+        let (events, event_tx) = event_pump(network_rx, Duration::from_millis(50));
 
         Self {
             state: AppState::new(),
@@ -56,6 +52,7 @@ impl App {
             markdown: MarkdownRenderer::new(),
             show_panels: false,
             events,
+            event_tx,
         }
     }
 
@@ -182,9 +179,8 @@ impl App {
             KeyCode::Enter => {
                 // Switch to selected session
                 if let Some(id) = self.session_browser.selected_session_id() {
-                    let id = id.to_string();
-                    self.push_system_alert(format!("Selected session: {id}"));
-                    // Could wire up session switching here in the future
+                    let new_id = id.to_string();
+                    self.switch_to_session(new_id).await;
                 }
             }
             KeyCode::Char('r') => {
@@ -192,6 +188,35 @@ impl App {
                 self.fetch_sessions().await;
             }
             _ => {}
+        }
+    }
+
+    async fn switch_to_session(&mut self, new_id: String) {
+        match self.client.switch_session(&new_id).await {
+            Ok(new_rx) => {
+                // Spawn a forwarding task from the new receiver to our event channel
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    let mut rx = new_rx;
+                    while let Some(agent_event) = rx.recv().await {
+                        if tx.send(TuiEvent::Network(agent_event)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                // Reset state for the new session
+                self.state.reset_for_session_switch(new_id.clone());
+
+                // Close panels, focus input
+                self.show_panels = false;
+                self.state.focus = FocusTarget::InputBar;
+
+                self.push_system_alert(format!("Switched to session: {new_id}"));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Failed to switch session: {e}"));
+            }
         }
     }
 
@@ -297,20 +322,14 @@ impl App {
             Ok(sessions) => {
                 let entries: Vec<SessionEntry> = sessions
                     .into_iter()
-                    .filter_map(|v| {
-                        Some(SessionEntry {
-                            session_id: v.get("session_id")?.as_str()?.to_string(),
-                            owner: v
-                                .get("owner")
-                                .and_then(|o| o.as_str())
-                                .unwrap_or("unknown")
-                                .to_string(),
-                            created_at: v
-                                .get("created_at")
-                                .and_then(|t| t.as_str())
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or_else(Utc::now),
-                        })
+                    .map(|s| SessionEntry {
+                        session_id: s.session_id,
+                        owner: s.owner,
+                        created_at: s
+                            .created_at
+                            .as_deref()
+                            .and_then(|ts| ts.parse().ok())
+                            .unwrap_or_else(Utc::now),
                     })
                     .collect();
                 self.session_browser.set_sessions(entries);
@@ -325,76 +344,24 @@ impl App {
         self.state_inspector.set_loading();
         let client = self.client.clone();
         match client.get_session_state(None).await {
-            Ok(v) => {
-                let state_obj = v.get("state").cloned().unwrap_or_default();
-                let budget = state_obj.get("budget").cloned().unwrap_or_default();
-
+            Ok(resp) => {
                 let snapshot = AgentStateSnapshot {
-                    session_id: v
-                        .get("session_id")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    branch: v
-                        .get("branch")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("main")
-                        .to_string(),
-                    mode: v
-                        .get("mode")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("Unknown")
-                        .to_string(),
-                    progress: state_obj
-                        .get("progress")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    uncertainty: state_obj
-                        .get("uncertainty")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    risk_level: state_obj
-                        .get("risk_level")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("Low")
-                        .to_string(),
-                    error_streak: state_obj
-                        .get("error_streak")
-                        .and_then(|n| n.as_u64())
-                        .unwrap_or(0) as u32,
-                    context_pressure: state_obj
-                        .get("context_pressure")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    side_effect_pressure: state_obj
-                        .get("side_effect_pressure")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    human_dependency: state_obj
-                        .get("human_dependency")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    tokens_remaining: budget
-                        .get("tokens_remaining")
-                        .and_then(|n| n.as_u64())
-                        .unwrap_or(0),
-                    time_remaining_ms: budget
-                        .get("time_remaining_ms")
-                        .and_then(|n| n.as_u64())
-                        .unwrap_or(0),
-                    cost_remaining_usd: budget
-                        .get("cost_remaining_usd")
-                        .and_then(|n| n.as_f64())
-                        .unwrap_or(0.0),
-                    tool_calls_remaining: budget
-                        .get("tool_calls_remaining")
-                        .and_then(|n| n.as_u64())
-                        .unwrap_or(0) as u32,
-                    error_budget_remaining: budget
-                        .get("error_budget_remaining")
-                        .and_then(|n| n.as_u64())
-                        .unwrap_or(0) as u32,
-                    version: v.get("version").and_then(|n| n.as_u64()).unwrap_or(0),
+                    session_id: resp.session_id,
+                    branch: resp.branch,
+                    mode: resp.mode,
+                    progress: resp.state.progress as f32,
+                    uncertainty: resp.state.uncertainty as f32,
+                    risk_level: resp.state.risk_level,
+                    error_streak: resp.state.error_streak as u32,
+                    context_pressure: resp.state.context_pressure as f32,
+                    side_effect_pressure: resp.state.side_effect_pressure as f32,
+                    human_dependency: resp.state.human_dependency as f32,
+                    tokens_remaining: resp.state.budget.tokens_remaining,
+                    time_remaining_ms: resp.state.budget.time_remaining_ms,
+                    cost_remaining_usd: resp.state.budget.cost_remaining_usd,
+                    tool_calls_remaining: resp.state.budget.tool_calls_remaining as u32,
+                    error_budget_remaining: resp.state.budget.error_budget_remaining as u32,
+                    version: resp.version,
                 };
                 self.state_inspector.set_snapshot(snapshot);
             }

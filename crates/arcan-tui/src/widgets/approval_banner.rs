@@ -77,6 +77,7 @@ fn risk_color(level: &str) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::render_to_string;
 
     #[test]
     fn risk_color_critical_has_red_bg() {
@@ -95,5 +96,48 @@ mod tests {
     fn risk_color_unknown_is_gray() {
         let style = risk_color("unknown-level");
         assert_eq!(style.fg, Some(Color::Gray));
+    }
+
+    fn make_approval(risk: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            approval_id: "ap-42".to_string(),
+            call_id: "call-7".to_string(),
+            tool_name: "shell.exec".to_string(),
+            arguments: serde_json::json!({"cmd": "rm -rf /tmp/test"}),
+            risk_level: risk.to_string(),
+        }
+    }
+
+    #[test]
+    fn snapshot_low_risk() {
+        let approval = make_approval("low");
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 8, |f, area| {
+            render(f, area, &approval, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_high_risk() {
+        let approval = make_approval("high");
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 8, |f, area| {
+            render(f, area, &approval, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_critical_risk() {
+        let approval = make_approval("critical");
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 8, |f, area| {
+            render(f, area, &approval, &theme);
+        });
+        insta::assert_snapshot!(output);
     }
 }

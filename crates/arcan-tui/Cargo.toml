@@ -26,6 +26,7 @@ reqwest = { workspace = true }
 reqwest-eventsource = "0.6"
 futures = "0.3"
 tokio-stream = { workspace = true }
+async-trait = { workspace = true }
 
 # Serialization & Utils
 serde = { workspace = true }
@@ -45,5 +46,6 @@ aios-protocol = { workspace = true }
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
 
 [dev-dependencies]
+insta = "1.39"
 mockall = "0.12"
 wiremock = "0.6"

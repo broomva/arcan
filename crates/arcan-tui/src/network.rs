@@ -1,26 +1,34 @@
-use aios_protocol::{
-    ApprovalDecision as ProtocolApprovalDecision, EventKind as ProtocolEventKind,
-    EventRecord as ProtocolEventRecord, RiskLevel as ProtocolRiskLevel,
-    SpanStatus as ProtocolSpanStatus,
+use crate::client::{
+    AgentClientPort, AgentStateResponse, SessionSummary, agent_event_from_protocol_record,
 };
-use arcan_core::protocol::{AgentEvent, RunStopReason, ToolCall, ToolResultSummary};
+use aios_protocol::EventRecord as ProtocolEventRecord;
+use arcan_core::protocol::AgentEvent;
+use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 use reqwest_eventsource::{Error as EventSourceError, Event, EventSource};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
-/// Configuration for the daemon connection
+/// Configuration for the daemon connection.
 pub struct NetworkConfig {
     pub base_url: String,
     pub session_id: String,
 }
 
-pub struct NetworkClient {
+/// HTTP/SSE-based implementation of `AgentClientPort`.
+///
+/// Connects to the Arcan daemon over HTTP for commands and SSE for streaming
+/// events. The session ID is held behind an `RwLock` to support switching.
+pub struct HttpAgentClient {
     client: Client,
-    config: NetworkConfig,
+    base_url: String,
+    session_id: Arc<RwLock<String>>,
 }
+
+// ── SSE parsing helpers (private) ───────────────────────────────────────────
 
 fn parse_protocol_record(data: &str) -> Option<AgentEvent> {
     let record: ProtocolEventRecord = serde_json::from_str(data).ok()?;
@@ -47,7 +55,7 @@ fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Opti
             Some(AgentEvent::RunFinished {
                 run_id,
                 session_id,
-                reason: RunStopReason::Completed,
+                reason: arcan_core::protocol::RunStopReason::Completed,
                 total_iterations: 0,
                 final_answer: Some(content),
             })
@@ -63,7 +71,7 @@ fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Opti
                 run_id,
                 session_id,
                 iteration: 0,
-                call: ToolCall {
+                call: arcan_core::protocol::ToolCall {
                     call_id,
                     tool_name,
                     input: arguments,
@@ -83,7 +91,7 @@ fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Opti
                     run_id,
                     session_id,
                     iteration: 0,
-                    result: ToolResultSummary {
+                    result: arcan_core::protocol::ToolResultSummary {
                         call_id,
                         tool_name,
                         output: payload.get("result").cloned().unwrap_or(Value::Null),
@@ -164,221 +172,6 @@ fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Opti
     }
 }
 
-fn risk_level_to_string(level: ProtocolRiskLevel) -> &'static str {
-    match level {
-        ProtocolRiskLevel::Low => "low",
-        ProtocolRiskLevel::Medium => "medium",
-        ProtocolRiskLevel::High => "high",
-        ProtocolRiskLevel::Critical => "critical",
-    }
-}
-
-fn approval_decision_to_string(decision: ProtocolApprovalDecision) -> &'static str {
-    match decision {
-        ProtocolApprovalDecision::Approved => "approved",
-        ProtocolApprovalDecision::Denied => "denied",
-        ProtocolApprovalDecision::Timeout => "timeout",
-    }
-}
-
-fn run_stop_reason_from_string(reason: &str) -> RunStopReason {
-    match reason {
-        "completed" => RunStopReason::Completed,
-        "needs_user" => RunStopReason::NeedsUser,
-        "blocked_by_policy" => RunStopReason::BlockedByPolicy,
-        "budget_exceeded" => RunStopReason::BudgetExceeded,
-        "cancelled" => RunStopReason::Cancelled,
-        _ => RunStopReason::Error,
-    }
-}
-
-fn agent_event_from_protocol_record(record: &ProtocolEventRecord) -> Option<AgentEvent> {
-    let run_id = "stream".to_string();
-    let session_id = record.session_id.to_string();
-
-    match &record.kind {
-        ProtocolEventKind::RunStarted {
-            provider,
-            max_iterations,
-        } => Some(AgentEvent::RunStarted {
-            run_id,
-            session_id,
-            provider: provider.clone(),
-            max_iterations: *max_iterations,
-        }),
-        ProtocolEventKind::StepStarted { index } => Some(AgentEvent::IterationStarted {
-            run_id,
-            session_id,
-            iteration: *index,
-        }),
-        ProtocolEventKind::StepFinished {
-            index,
-            stop_reason,
-            directive_count,
-        } => Some(AgentEvent::ModelOutput {
-            run_id,
-            session_id,
-            iteration: *index,
-            stop_reason: match stop_reason.as_str() {
-                "end_turn" => arcan_core::protocol::ModelStopReason::EndTurn,
-                "tool_use" => arcan_core::protocol::ModelStopReason::ToolUse,
-                "needs_user" => arcan_core::protocol::ModelStopReason::NeedsUser,
-                "max_tokens" => arcan_core::protocol::ModelStopReason::MaxTokens,
-                "safety" => arcan_core::protocol::ModelStopReason::Safety,
-                _ => arcan_core::protocol::ModelStopReason::Unknown,
-            },
-            directive_count: *directive_count,
-            usage: None,
-        }),
-        ProtocolEventKind::AssistantTextDelta { delta, index }
-        | ProtocolEventKind::TextDelta { delta, index } => Some(AgentEvent::TextDelta {
-            run_id,
-            session_id,
-            iteration: index.unwrap_or(0),
-            delta: delta.clone(),
-        }),
-        ProtocolEventKind::AssistantMessageCommitted { content, .. }
-        | ProtocolEventKind::Message { content, .. } => Some(AgentEvent::RunFinished {
-            run_id,
-            session_id,
-            reason: RunStopReason::Completed,
-            total_iterations: 0,
-            final_answer: Some(content.clone()),
-        }),
-        ProtocolEventKind::ToolCallRequested {
-            call_id,
-            tool_name,
-            arguments,
-            ..
-        } => Some(AgentEvent::ToolCallRequested {
-            run_id,
-            session_id,
-            iteration: 0,
-            call: ToolCall {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                input: arguments.clone(),
-            },
-        }),
-        ProtocolEventKind::ToolCallCompleted {
-            call_id,
-            tool_name,
-            result,
-            status,
-            ..
-        } => {
-            if *status == ProtocolSpanStatus::Ok {
-                Some(AgentEvent::ToolCallCompleted {
-                    run_id,
-                    session_id,
-                    iteration: 0,
-                    result: ToolResultSummary {
-                        call_id: call_id.clone().unwrap_or_default(),
-                        tool_name: tool_name.clone(),
-                        output: result.clone(),
-                    },
-                })
-            } else {
-                Some(AgentEvent::ToolCallFailed {
-                    run_id,
-                    session_id,
-                    iteration: 0,
-                    call_id: call_id.clone().unwrap_or_default(),
-                    tool_name: tool_name.clone(),
-                    error: result
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool call failed")
-                        .to_string(),
-                })
-            }
-        }
-        ProtocolEventKind::ToolCallFailed {
-            call_id,
-            tool_name,
-            error,
-        } => Some(AgentEvent::ToolCallFailed {
-            run_id,
-            session_id,
-            iteration: 0,
-            call_id: call_id.clone(),
-            tool_name: tool_name.clone(),
-            error: error.clone(),
-        }),
-        ProtocolEventKind::StatePatched {
-            index,
-            patch,
-            revision,
-        } => Some(AgentEvent::StatePatched {
-            run_id,
-            session_id,
-            iteration: index.unwrap_or(0),
-            patch: arcan_core::protocol::StatePatch {
-                format: arcan_core::protocol::StatePatchFormat::MergePatch,
-                patch: patch.clone(),
-                source: arcan_core::protocol::StatePatchSource::System,
-            },
-            revision: *revision,
-        }),
-        ProtocolEventKind::ContextCompacted {
-            dropped_count,
-            tokens_before,
-            tokens_after,
-        } => Some(AgentEvent::ContextCompacted {
-            run_id,
-            session_id,
-            iteration: 0,
-            dropped_count: *dropped_count,
-            tokens_before: *tokens_before,
-            tokens_after: *tokens_after,
-        }),
-        ProtocolEventKind::ApprovalRequested {
-            approval_id,
-            call_id,
-            tool_name,
-            arguments,
-            risk,
-        } => Some(AgentEvent::ApprovalRequested {
-            run_id,
-            session_id,
-            approval_id: approval_id.to_string(),
-            call_id: call_id.clone(),
-            tool_name: tool_name.clone(),
-            arguments: arguments.clone(),
-            risk: risk_level_to_string(*risk).to_string(),
-        }),
-        ProtocolEventKind::ApprovalResolved {
-            approval_id,
-            decision,
-            reason,
-        } => Some(AgentEvent::ApprovalResolved {
-            run_id,
-            session_id,
-            approval_id: approval_id.to_string(),
-            decision: approval_decision_to_string(*decision).to_string(),
-            reason: reason.clone(),
-        }),
-        ProtocolEventKind::RunFinished {
-            reason,
-            total_iterations,
-            final_answer,
-            ..
-        } => Some(AgentEvent::RunFinished {
-            run_id,
-            session_id,
-            reason: run_stop_reason_from_string(reason),
-            total_iterations: *total_iterations,
-            final_answer: final_answer.clone(),
-        }),
-        ProtocolEventKind::RunErrored { error } => Some(AgentEvent::RunErrored {
-            run_id,
-            session_id,
-            error: error.clone(),
-        }),
-        _ => None,
-    }
-}
-
 fn parse_vercel_v6_part(data: &str) -> Option<AgentEvent> {
     let value: Value = serde_json::from_str(data).ok()?;
     if value.get("type").and_then(Value::as_str) != Some("data-aios-event") {
@@ -389,23 +182,82 @@ fn parse_vercel_v6_part(data: &str) -> Option<AgentEvent> {
     agent_event_from_protocol_record(&record)
 }
 
-impl NetworkClient {
+/// Internal SSE listener. Continuously reads from the event stream and sends
+/// parsed events to the given channel.
+async fn listen_events(
+    base_url: &str,
+    session_id: &str,
+    sender: mpsc::Sender<AgentEvent>,
+) -> anyhow::Result<()> {
+    let url = format!(
+        "{base_url}/sessions/{session_id}/events/stream?branch=main&cursor=0&format=vercel_ai_sdk_v6"
+    );
+
+    let mut es = EventSource::get(url);
+
+    while let Some(event) = es.next().await {
+        match event {
+            Ok(Event::Open) => {
+                tracing::info!("SSE Connection Opened");
+            }
+            Ok(Event::Message(message)) => {
+                let event_name = message.event.as_str();
+                let data = message.data.trim();
+                if event_name == "done" || data == "[DONE]" || data == "{\"type\": \"done\"}" {
+                    continue;
+                }
+
+                if let Some(agent_event) =
+                    parse_protocol_record(data).or_else(|| parse_vercel_v6_part(data))
+                {
+                    if sender.send(agent_event).await.is_err() {
+                        break;
+                    }
+                } else if let Some(agent_event) =
+                    parse_canonical_event(event_name, data, session_id)
+                {
+                    if sender.send(agent_event).await.is_err() {
+                        break;
+                    }
+                } else {
+                    tracing::debug!("Ignored SSE event '{}': {}", event_name, data);
+                }
+            }
+            Err(EventSourceError::StreamEnded) => {
+                tracing::debug!("SSE stream ended; waiting for reconnect");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(e) => {
+                tracing::warn!("SSE stream error: {}", e);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Construction ────────────────────────────────────────────────────────────
+
+impl HttpAgentClient {
     pub fn new(config: NetworkConfig) -> Self {
         Self {
             client: Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap(),
-            config,
+            base_url: config.base_url,
+            session_id: Arc::new(RwLock::new(config.session_id)),
         }
     }
+}
 
-    /// Submits a message to the agent's run endpoint
-    pub async fn submit_run(&self, message: &str, branch: Option<&str>) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/sessions/{}/runs",
-            self.config.base_url, self.config.session_id
-        );
+// ── AgentClientPort implementation ──────────────────────────────────────────
+
+#[async_trait]
+impl AgentClientPort for HttpAgentClient {
+    async fn submit_run(&self, message: &str, branch: Option<&str>) -> anyhow::Result<()> {
+        let sid = self.session_id.read().await.clone();
+        let url = format!("{}/sessions/{}/runs", self.base_url, sid);
 
         let body = json!({
             "objective": message,
@@ -422,16 +274,16 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Submits an approval decision
-    pub async fn submit_approval(
+    async fn submit_approval(
         &self,
         approval_id: &str,
         decision: &str,
         reason: Option<&str>,
     ) -> anyhow::Result<()> {
+        let sid = self.session_id.read().await.clone();
         let url = format!(
             "{}/sessions/{}/approvals/{}",
-            self.config.base_url, self.config.session_id, approval_id
+            self.base_url, sid, approval_id
         );
         let approved = matches!(
             decision.to_ascii_lowercase().as_str(),
@@ -454,44 +306,38 @@ impl NetworkClient {
         Ok(())
     }
 
-    /// Fetches all sessions from the daemon.
-    pub async fn list_sessions(&self) -> anyhow::Result<Vec<serde_json::Value>> {
-        let url = format!("{}/sessions", self.config.base_url);
+    async fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
+        let url = format!("{}/sessions", self.base_url);
         let res = self.client.get(&url).send().await?;
         if !res.status().is_success() {
             let error_text = res.text().await?;
             anyhow::bail!("Failed to list sessions: {}", error_text);
         }
-        let sessions: Vec<serde_json::Value> = res.json().await?;
+        let sessions: Vec<SessionSummary> = res.json().await?;
         Ok(sessions)
     }
 
-    /// Fetches the agent state for the current session.
-    pub async fn get_session_state(
-        &self,
-        branch: Option<&str>,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn get_session_state(&self, branch: Option<&str>) -> anyhow::Result<AgentStateResponse> {
+        let sid = self.session_id.read().await.clone();
         let branch_param = branch.unwrap_or("main");
         let url = format!(
             "{}/sessions/{}/state?branch={}",
-            self.config.base_url, self.config.session_id, branch_param
+            self.base_url, sid, branch_param
         );
         let res = self.client.get(&url).send().await?;
         if !res.status().is_success() {
             let error_text = res.text().await?;
             anyhow::bail!("Failed to get state: {}", error_text);
         }
-        let state: serde_json::Value = res.json().await?;
+        let state: AgentStateResponse = res.json().await?;
         Ok(state)
     }
 
-    /// Fetches the currently selected model from the daemon.
-    pub async fn get_model(&self) -> anyhow::Result<String> {
+    async fn get_model(&self) -> anyhow::Result<String> {
         anyhow::bail!("Model inspection is not exposed in the canonical session API")
     }
 
-    /// Switches the active provider/model in the daemon.
-    pub async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
+    async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
         let requested = match model {
             Some(model) => format!("{provider}:{model}"),
             None => provider.to_string(),
@@ -499,54 +345,48 @@ impl NetworkClient {
         anyhow::bail!("Model switching ({requested}) is not exposed in the canonical session API")
     }
 
-    /// Continuously listens to the SSE stream and pushes parsed events to the channel
-    pub async fn listen_events(&self, sender: mpsc::Sender<AgentEvent>) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/sessions/{}/events/stream?branch=main&cursor=0&format=vercel_ai_sdk_v6",
-            self.config.base_url, self.config.session_id
-        );
+    fn subscribe_events(&self) -> mpsc::Receiver<AgentEvent> {
+        let (tx, rx) = mpsc::channel(256);
+        let base_url = self.base_url.clone();
+        let session_id = self.session_id.clone();
 
-        let mut es = EventSource::get(url);
-
-        while let Some(event) = es.next().await {
-            match event {
-                Ok(Event::Open) => {
-                    tracing::info!("SSE Connection Opened");
-                }
-                Ok(Event::Message(message)) => {
-                    let event_name = message.event.as_str();
-                    let data = message.data.trim();
-                    if event_name == "done" || data == "[DONE]" || data == "{\"type\": \"done\"}" {
-                        continue;
-                    }
-
-                    if let Some(agent_event) =
-                        parse_protocol_record(data).or_else(|| parse_vercel_v6_part(data))
-                    {
-                        if sender.send(agent_event).await.is_err() {
-                            break;
-                        }
-                    } else if let Some(agent_event) =
-                        parse_canonical_event(event_name, data, &self.config.session_id)
-                    {
-                        if sender.send(agent_event).await.is_err() {
-                            break;
-                        }
-                    } else {
-                        tracing::debug!("Ignored SSE event '{}': {}", event_name, data);
-                    }
-                }
-                Err(EventSourceError::StreamEnded) => {
-                    tracing::debug!("SSE stream ended; waiting for reconnect");
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                Err(e) => {
-                    tracing::warn!("SSE stream error: {}", e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+        tokio::spawn(async move {
+            let sid = session_id.read().await.clone();
+            if let Err(e) = listen_events(&base_url, &sid, tx).await {
+                tracing::error!("Event listener ended: {}", e);
             }
+        });
+
+        rx
+    }
+
+    fn session_id(&self) -> String {
+        // Use try_read to avoid blocking; fall back to empty string (rare).
+        self.session_id
+            .try_read()
+            .map(|s| s.clone())
+            .unwrap_or_default()
+    }
+
+    async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+        // Update the session ID
+        {
+            let mut sid = self.session_id.write().await;
+            *sid = new_id.to_string();
         }
-        Ok(())
+
+        // Spawn a new event listener for the new session
+        let (tx, rx) = mpsc::channel(256);
+        let base_url = self.base_url.clone();
+        let new_id = new_id.to_string();
+
+        tokio::spawn(async move {
+            if let Err(e) = listen_events(&base_url, &new_id, tx).await {
+                tracing::error!("Event listener ended after session switch: {}", e);
+            }
+        });
+
+        Ok(rx)
     }
 }
 
@@ -690,15 +530,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "test".to_string(),
         });
 
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0]["session_id"], "s1");
-        assert_eq!(sessions[1]["owner"], "bob");
+        assert_eq!(sessions[0].session_id, "s1");
+        assert_eq!(sessions[1].owner, "bob");
     }
 
     #[tokio::test]
@@ -711,7 +551,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "test".to_string(),
         });
@@ -721,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_session_state_returns_state_snapshot() {
+    async fn get_session_state_returns_typed_response() {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -746,16 +586,17 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "sess-123".to_string(),
         });
 
         let state = client.get_session_state(None).await.unwrap();
-        assert_eq!(state["session_id"], "sess-123");
-        assert_eq!(state["mode"], "Explore");
-        assert_eq!(state["state"]["progress"], 0.5);
-        assert_eq!(state["version"], 42);
+        assert_eq!(state.session_id, "sess-123");
+        assert_eq!(state.mode, "Explore");
+        assert!((state.state.progress - 0.5).abs() < f64::EPSILON);
+        assert_eq!(state.version, 42);
+        assert_eq!(state.state.budget.tokens_remaining, 100000);
     }
 
     #[tokio::test]
@@ -775,13 +616,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "sess-123".to_string(),
         });
 
         let state = client.get_session_state(Some("feature")).await.unwrap();
-        assert_eq!(state["branch"], "feature");
+        assert_eq!(state.branch, "feature");
     }
 
     #[tokio::test]
@@ -795,7 +636,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "sess-1".to_string(),
         });
@@ -814,7 +655,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetworkClient::new(NetworkConfig {
+        let client = HttpAgentClient::new(NetworkConfig {
             base_url: server.uri(),
             session_id: "sess-1".to_string(),
         });
@@ -823,5 +664,20 @@ mod tests {
             .submit_approval("ap-42", "yes", Some("looks good"))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn switch_session_updates_session_id() {
+        let server = MockServer::start().await;
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "old-session".to_string(),
+        });
+
+        assert_eq!(client.session_id(), "old-session");
+
+        // switch_session will fail to connect SSE (no mock), but session_id should update
+        let _rx = client.switch_session("new-session").await.unwrap();
+        assert_eq!(client.session_id(), "new-session");
     }
 }

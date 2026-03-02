@@ -1,0 +1,15 @@
+---
+source: crates/arcan-tui/src/widgets/chat_log.rs
+assertion_line: 140
+expression: output
+---
+┌ Session Log ─────────────────────────────────────────────┐
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘

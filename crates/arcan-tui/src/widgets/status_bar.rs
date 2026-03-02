@@ -8,6 +8,9 @@ use ratatui::{
 };
 
 /// Render the status bar showing session, branch, mode, and errors.
+///
+/// Displays connection indicator, session ID, branch, mode (busy/approval/idle),
+/// and an optional error flash.
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let session_str = state.session_id.as_deref().unwrap_or("no session");
     let branch_str = &state.current_branch;
@@ -46,4 +49,87 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 
     let status_line = Paragraph::new(Line::from(spans)).style(theme.status_bar_bg);
     f.render_widget(status_line, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::state::ErrorFlash;
+    use crate::models::ui_block::ApprovalRequest;
+    use crate::test_utils::render_to_string;
+    use chrono::Utc;
+
+    #[test]
+    fn snapshot_connected_idle() {
+        let mut state = AppState::new();
+        state.connection_status = ConnectionStatus::Connected;
+        state.session_id = Some("sess-001".to_string());
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 1, |f, area| {
+            render(f, area, &state, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_disconnected() {
+        let mut state = AppState::new();
+        state.connection_status = ConnectionStatus::Disconnected;
+        state.session_id = Some("sess-002".to_string());
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 1, |f, area| {
+            render(f, area, &state, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_connecting() {
+        let state = AppState::new();
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 1, |f, area| {
+            render(f, area, &state, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_connected_with_error() {
+        let mut state = AppState::new();
+        state.connection_status = ConnectionStatus::Connected;
+        state.session_id = Some("sess-003".to_string());
+        state.last_error = Some(ErrorFlash {
+            message: "timeout".to_string(),
+            timestamp: Utc::now(),
+        });
+        let theme = Theme::new();
+
+        let output = render_to_string(80, 1, |f, area| {
+            render(f, area, &state, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_approval_mode() {
+        let mut state = AppState::new();
+        state.connection_status = ConnectionStatus::Connected;
+        state.session_id = Some("sess-004".to_string());
+        state.pending_approval = Some(ApprovalRequest {
+            approval_id: "ap-1".to_string(),
+            call_id: "c-1".to_string(),
+            tool_name: "shell".to_string(),
+            arguments: serde_json::json!({}),
+            risk_level: "high".to_string(),
+        });
+        let theme = Theme::new();
+
+        let output = render_to_string(60, 1, |f, area| {
+            render(f, area, &state, &theme);
+        });
+        insta::assert_snapshot!(output);
+    }
 }

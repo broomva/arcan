@@ -18,13 +18,16 @@ pub enum TuiEvent {
 /// Spawn background producers that merge terminal input, network events,
 /// and periodic ticks into a single `mpsc::Receiver<TuiEvent>`.
 ///
+/// Returns both the receiver and sender, so that callers can inject additional
+/// network events (e.g. after a session switch rewires the event stream).
+///
 /// - Terminal events are read on a dedicated OS thread (crossterm is blocking).
 /// - Network events are forwarded from the given receiver.
 /// - Ticks are emitted whenever the crossterm poll times out.
 pub fn event_pump(
     network_rx: mpsc::Receiver<AgentEvent>,
     tick_rate: Duration,
-) -> mpsc::Receiver<TuiEvent> {
+) -> (mpsc::Receiver<TuiEvent>, mpsc::Sender<TuiEvent>) {
     let (tx, rx) = mpsc::channel(256);
 
     // Terminal events — must run on a dedicated OS thread (crossterm is blocking)
@@ -55,7 +58,7 @@ pub fn event_pump(
     });
 
     // Forward network events into the unified channel
-    let net_tx = tx;
+    let net_tx = tx.clone();
     tokio::spawn(async move {
         let mut network_rx = network_rx;
         while let Some(agent_event) = network_rx.recv().await {
@@ -65,5 +68,5 @@ pub fn event_pump(
         }
     });
 
-    rx
+    (rx, tx)
 }

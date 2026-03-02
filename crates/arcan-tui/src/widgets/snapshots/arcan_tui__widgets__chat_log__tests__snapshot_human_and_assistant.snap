@@ -1,0 +1,15 @@
+---
+source: crates/arcan-tui/src/widgets/chat_log.rs
+assertion_line: 160
+expression: output
+---
+┌ Session Log ─────────────────────────────────────────────┐
+│[12:30] You: Hello, agent!                                │
+│[12:30] Assistant:                                        │
+│Hi! How can I help you today?                             │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘

@@ -116,3 +116,80 @@ pub fn render(
 
     f.render_widget(chat_block, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ui_block::ToolStatus;
+    use crate::test_utils::render_to_string;
+    use chrono::TimeZone;
+
+    fn fixed_ts() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2026, 3, 1, 12, 30, 0).unwrap()
+    }
+
+    #[test]
+    fn snapshot_empty_chat() {
+        let mut state = AppState::new();
+        let theme = Theme::new();
+        let mut md = MarkdownRenderer::new();
+
+        let output = render_to_string(60, 10, |f, area| {
+            render(f, area, &mut state, &theme, &mut md);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_human_and_assistant() {
+        let mut state = AppState::new();
+        state.blocks.push(UiBlock::HumanMessage {
+            text: "Hello, agent!".to_string(),
+            timestamp: fixed_ts(),
+        });
+        state.blocks.push(UiBlock::AssistantMessage {
+            text: "Hi! How can I help you today?".to_string(),
+            timestamp: fixed_ts(),
+        });
+        let theme = Theme::new();
+        let mut md = MarkdownRenderer::new();
+
+        let output = render_to_string(60, 10, |f, area| {
+            render(f, area, &mut state, &theme, &mut md);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_tool_execution() {
+        let mut state = AppState::new();
+        state.blocks.push(UiBlock::ToolExecution {
+            call_id: "call-1".to_string(),
+            tool_name: "fs.read".to_string(),
+            arguments: serde_json::json!({"path": "main.rs"}),
+            status: ToolStatus::Success,
+            result: Some(serde_json::json!("file contents...")),
+            timestamp: fixed_ts(),
+        });
+        let theme = Theme::new();
+        let mut md = MarkdownRenderer::new();
+
+        let output = render_to_string(60, 10, |f, area| {
+            render(f, area, &mut state, &theme, &mut md);
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn snapshot_streaming_with_cursor() {
+        let mut state = AppState::new();
+        state.streaming_text = Some("Thinking about this...".to_string());
+        let theme = Theme::new();
+        let mut md = MarkdownRenderer::new();
+
+        let output = render_to_string(60, 10, |f, area| {
+            render(f, area, &mut state, &theme, &mut md);
+        });
+        insta::assert_snapshot!(output);
+    }
+}
