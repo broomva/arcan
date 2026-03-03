@@ -88,6 +88,14 @@ pub struct BudgetFields {
     pub error_budget_remaining: u64,
 }
 
+/// Provider info returned by the daemon's `GET /provider` endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderInfo {
+    pub provider: String,
+    #[serde(default)]
+    pub available: Vec<String>,
+}
+
 // ── AgentClientPort trait ───────────────────────────────────────────────────
 
 /// Transport-agnostic port for communicating with the agent runtime.
@@ -116,6 +124,9 @@ pub trait AgentClientPort: Send + Sync + 'static {
     /// Get the currently selected model identifier.
     async fn get_model(&self) -> anyhow::Result<String>;
 
+    /// Get the current provider and list of available providers.
+    async fn get_provider_info(&self) -> anyhow::Result<ProviderInfo>;
+
     /// Switch the active provider/model. Returns the new active model string.
     async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String>;
 
@@ -125,6 +136,9 @@ pub trait AgentClientPort: Send + Sync + 'static {
 
     /// The current session ID.
     fn session_id(&self) -> String;
+
+    /// Query the daemon version from the `/health` endpoint.
+    async fn get_daemon_version(&self) -> anyhow::Result<String>;
 
     /// The base URL of the connected daemon (e.g. `http://localhost:3000`).
     fn base_url(&self) -> String;
@@ -178,21 +192,22 @@ pub fn agent_event_from_protocol_record(record: &ProtocolEventRecord) -> Option<
             directive_count: *directive_count,
             usage: None,
         }),
-        ProtocolEventKind::AssistantTextDelta { delta, index }
-        | ProtocolEventKind::TextDelta { delta, index } => Some(AgentEvent::TextDelta {
+        ProtocolEventKind::AssistantTextDelta { delta, index } => Some(AgentEvent::TextDelta {
             run_id,
             session_id,
             iteration: index.unwrap_or(0),
             delta: delta.clone(),
         }),
-        ProtocolEventKind::AssistantMessageCommitted { content, .. }
-        | ProtocolEventKind::Message { content, .. } => Some(AgentEvent::RunFinished {
-            run_id,
-            session_id,
-            reason: RunStopReason::Completed,
-            total_iterations: 0,
-            final_answer: Some(content.clone()),
-        }),
+        // Persisted TextDelta is a duplicate of the ephemeral AssistantTextDelta
+        // that was already broadcast during streaming. Ignoring it prevents the
+        // TUI from accumulating the same content twice in streaming_text.
+        ProtocolEventKind::TextDelta { .. } => None,
+        // Message / AssistantMessageCommitted are redundant when RunFinished
+        // already carries final_answer. Converting both to RunFinished caused
+        // duplicate assistant messages in the TUI.
+        ProtocolEventKind::AssistantMessageCommitted { .. } | ProtocolEventKind::Message { .. } => {
+            None
+        }
         ProtocolEventKind::ToolCallRequested {
             call_id,
             tool_name,

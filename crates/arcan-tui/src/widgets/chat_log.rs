@@ -44,8 +44,9 @@ pub fn render(
                     Span::styled("Assistant:", theme.assistant_label),
                 ]));
                 // Render markdown content (or plain text for short messages)
+                let inner_width = area.width.saturating_sub(2);
                 if MarkdownRenderer::has_markdown(text) {
-                    let md_lines = md.render(text);
+                    let md_lines = md.render(text, inner_width);
                     lines.extend(md_lines);
                 } else {
                     lines.push(Line::from(Span::raw(text.clone())));

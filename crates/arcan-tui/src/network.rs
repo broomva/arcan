@@ -1,5 +1,6 @@
 use crate::client::{
-    AgentClientPort, AgentStateResponse, SessionSummary, agent_event_from_protocol_record,
+    AgentClientPort, AgentStateResponse, ProviderInfo, SessionSummary,
+    agent_event_from_protocol_record,
 };
 use aios_protocol::EventRecord as ProtocolEventRecord;
 use arcan_core::protocol::AgentEvent;
@@ -50,16 +51,9 @@ fn parse_canonical_event(event_name: &str, data: &str, session_id: &str) -> Opti
                 delta,
             })
         }
-        "assistant.message.committed" => {
-            let content = payload.get("content")?.as_str()?.to_string();
-            Some(AgentEvent::RunFinished {
-                run_id,
-                session_id,
-                reason: arcan_core::protocol::RunStopReason::Completed,
-                total_iterations: 0,
-                final_answer: Some(content),
-            })
-        }
+        // assistant.message.committed is redundant — RunFinished already
+        // carries the final_answer. Mapping it to RunFinished caused duplicates.
+        "assistant.message.committed" => None,
         "tool.started" => {
             let call_id = payload.get("intent_id")?.as_str()?.to_string();
             let tool_name = payload.get("tool_name")?.as_str()?.to_string();
@@ -334,18 +328,19 @@ impl AgentClientPort for HttpAgentClient {
     }
 
     async fn get_model(&self) -> anyhow::Result<String> {
+        let info = self.get_provider_info().await?;
+        Ok(info.provider)
+    }
+
+    async fn get_provider_info(&self) -> anyhow::Result<ProviderInfo> {
         let url = format!("{}/provider", self.base_url);
         let res = self.client.get(&url).send().await?;
         if !res.status().is_success() {
             let error_text = res.text().await?;
             anyhow::bail!("Failed to get provider: {}", error_text);
         }
-        let body: Value = res.json().await?;
-        Ok(body
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string())
+        let info: ProviderInfo = res.json().await?;
+        Ok(info)
     }
 
     async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
@@ -381,6 +376,19 @@ impl AgentClientPort for HttpAgentClient {
         });
 
         rx
+    }
+
+    async fn get_daemon_version(&self) -> anyhow::Result<String> {
+        let url = format!("{}/health", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            anyhow::bail!("Health endpoint returned {}", res.status());
+        }
+        let body: Value = res.json().await?;
+        body.get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("No version field in health response"))
     }
 
     fn session_id(&self) -> String {
@@ -716,6 +724,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_provider_info_returns_full_info() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/provider"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "provider": "anthropic",
+                "available": ["anthropic", "openai", "ollama", "mock"]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let info = client.get_provider_info().await.unwrap();
+        assert_eq!(info.provider, "anthropic");
+        assert_eq!(
+            info.available,
+            vec!["anthropic", "openai", "ollama", "mock"]
+        );
+    }
+
+    #[tokio::test]
     async fn set_model_sends_spec_and_returns_new_provider() {
         let server = MockServer::start().await;
 
@@ -757,6 +791,47 @@ mod tests {
         });
 
         let result = client.set_model("nope", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_daemon_version_returns_version_string() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"status": "ok", "version": "0.2.1"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let version = client.get_daemon_version().await.unwrap();
+        assert_eq!(version, "0.2.1");
+    }
+
+    #[tokio::test]
+    async fn get_daemon_version_errors_on_missing_field() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+            .mount(&server)
+            .await;
+
+        let client = HttpAgentClient::new(NetworkConfig {
+            base_url: server.uri(),
+            session_id: "test".to_string(),
+        });
+
+        let result = client.get_daemon_version().await;
         assert!(result.is_err());
     }
 

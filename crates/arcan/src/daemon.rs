@@ -4,12 +4,26 @@ use std::time::Duration;
 
 /// Check whether a daemon is already healthy at the given URL.
 async fn is_daemon_healthy(base_url: &str) -> bool {
+    daemon_health(base_url).await.is_some()
+}
+
+/// Probe the daemon's `/health` endpoint.
+/// Returns the reported version string on success, or `None` if unreachable.
+async fn daemon_health(base_url: &str) -> Option<String> {
     let url = format!("{base_url}/health");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
-        .build();
-    let Ok(client) = client else { return false };
-    matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    // Old daemons without a version field return None here — treated as outdated.
+    body.get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 /// Check if a PID file exists and the process is alive.
@@ -99,13 +113,14 @@ pub async fn stop_daemon(data_dir: &Path, port: u16) -> anyhow::Result<()> {
     anyhow::bail!("Daemon (PID {pid}) did not exit within 10 seconds");
 }
 
-/// Ensure a daemon is running on the given port.
+/// Ensure a daemon is running on the given port with a matching version.
 ///
-/// 1. Probe `GET /health`. If healthy, return immediately.
-/// 2. Check `daemon.pid` — if process alive but health fails, wait briefly.
-/// 3. If PID is stale, remove PID file and proceed.
-/// 4. Spawn `arcan serve` as a detached child process.
-/// 5. Poll `/health` until it succeeds (up to ~12 s).
+/// 1. Probe `GET /health`. If healthy **and** version matches, return immediately.
+/// 2. If healthy but version mismatches, stop the old daemon and respawn.
+/// 3. Check `daemon.pid` — if process alive but health fails, wait briefly.
+/// 4. If PID is stale, remove PID file and proceed.
+/// 5. Spawn `arcan serve` as a detached child process.
+/// 6. Poll `/health` until it succeeds (up to ~12 s).
 pub async fn ensure_daemon(
     data_dir: &Path,
     port: u16,
@@ -113,10 +128,28 @@ pub async fn ensure_daemon(
     model: Option<&str>,
 ) -> anyhow::Result<String> {
     let base_url = format!("http://127.0.0.1:{port}");
+    let current_version = env!("CARGO_PKG_VERSION");
 
-    if is_daemon_healthy(&base_url).await {
-        tracing::info!("Daemon already running on {base_url}");
-        return Ok(base_url);
+    if let Some(daemon_version) = daemon_health(&base_url).await {
+        if daemon_version == current_version {
+            tracing::info!("Daemon already running on {base_url} (v{daemon_version})");
+            return Ok(base_url);
+        }
+        // Version mismatch — restart the daemon.
+        tracing::warn!(
+            daemon_version,
+            current_version,
+            "Daemon version mismatch, restarting"
+        );
+        if let Err(e) = stop_daemon(data_dir, port).await {
+            tracing::warn!("Failed to stop outdated daemon: {e}, spawning anyway");
+        }
+    } else if is_daemon_healthy(&base_url).await {
+        // Healthy but no version field — old daemon without version support.
+        tracing::warn!("Daemon running without version info, restarting");
+        if let Err(e) = stop_daemon(data_dir, port).await {
+            tracing::warn!("Failed to stop old daemon: {e}, spawning anyway");
+        }
     }
 
     // Check PID file before spawning a new daemon.
@@ -126,15 +159,17 @@ pub async fn ensure_daemon(
         let delay = Duration::from_millis(200);
         for _ in 0..15 {
             tokio::time::sleep(delay).await;
-            if is_daemon_healthy(&base_url).await {
-                tracing::info!("Existing daemon became healthy on {base_url}");
-                return Ok(base_url);
+            if let Some(v) = daemon_health(&base_url).await {
+                if v == current_version {
+                    tracing::info!("Existing daemon became healthy on {base_url} (v{v})");
+                    return Ok(base_url);
+                }
             }
         }
         // Still not healthy after 3s — the process might be stuck.
         tracing::warn!(
             pid,
-            "Daemon process alive but not healthy after 3s, spawning new"
+            "Daemon process alive but not healthy/current after 3s, spawning new"
         );
     }
 

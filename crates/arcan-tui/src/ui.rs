@@ -72,9 +72,14 @@ fn draw_main(f: &mut Frame, area: ratatui::layout::Rect, app: &mut App, theme: &
         theme,
     );
 
-    // Autocomplete popup (rendered last = on top of everything)
+    // Autocomplete popup (rendered on top of normal content)
     if app.autocomplete.active {
         widgets::autocomplete::render(f, input_area, &app.autocomplete, theme);
+    }
+
+    // Provider picker popup (rendered last = highest z-order)
+    if app.provider_picker.active {
+        widgets::provider_picker::render(f, input_area, &app.provider_picker, theme);
     }
 }
 

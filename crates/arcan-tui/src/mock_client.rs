@@ -1,4 +1,6 @@
-use crate::client::{AgentClientPort, AgentStateFields, AgentStateResponse, SessionSummary};
+use crate::client::{
+    AgentClientPort, AgentStateFields, AgentStateResponse, ProviderInfo, SessionSummary,
+};
 use arcan_core::protocol::AgentEvent;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -93,6 +95,17 @@ impl AgentClientPort for MockAgentClient {
         Ok("mock".to_string())
     }
 
+    async fn get_provider_info(&self) -> anyhow::Result<ProviderInfo> {
+        Ok(ProviderInfo {
+            provider: "mock".to_string(),
+            available: vec![
+                "mock".to_string(),
+                "anthropic".to_string(),
+                "openai".to_string(),
+            ],
+        })
+    }
+
     async fn set_model(&self, provider: &str, model: Option<&str>) -> anyhow::Result<String> {
         let result = match model {
             Some(m) => format!("{provider}:{m}"),
@@ -119,6 +132,10 @@ impl AgentClientPort for MockAgentClient {
         });
 
         rx
+    }
+
+    async fn get_daemon_version(&self) -> anyhow::Result<String> {
+        Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
     fn session_id(&self) -> String {

@@ -417,6 +417,115 @@ mod tests {
         }
     }
 
+    // ── Provider picker ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn provider_command_opens_picker() {
+        let (mut app, _) = make_app();
+
+        type_text(&mut app, "/provider");
+        app.handle_key(press(KeyCode::Enter)).await;
+
+        assert!(
+            app.provider_picker.active,
+            "provider picker should be active after /provider"
+        );
+        assert!(!app.provider_picker.loading, "loading should be resolved");
+        assert!(
+            !app.provider_picker.providers.is_empty(),
+            "should have providers populated"
+        );
+        assert_eq!(app.provider_picker.current_provider, "mock");
+    }
+
+    #[tokio::test]
+    async fn provider_picker_esc_dismisses() {
+        let (mut app, _) = make_app();
+
+        type_text(&mut app, "/provider");
+        app.handle_key(press(KeyCode::Enter)).await;
+        assert!(app.provider_picker.active);
+
+        app.handle_key(press(KeyCode::Esc)).await;
+        assert!(
+            !app.provider_picker.active,
+            "Esc should dismiss provider picker"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_picker_navigation() {
+        let (mut app, _) = make_app();
+
+        type_text(&mut app, "/provider");
+        app.handle_key(press(KeyCode::Enter)).await;
+
+        // Mock client returns ["mock", "anthropic", "openai"], current = "mock"
+        // Pre-selected at index 0 ("mock")
+        assert_eq!(app.provider_picker.selected, 0);
+
+        // Navigate down
+        app.handle_key(press(KeyCode::Down)).await;
+        assert_eq!(app.provider_picker.selected, 1);
+
+        app.handle_key(press(KeyCode::Down)).await;
+        assert_eq!(app.provider_picker.selected, 2);
+
+        // Wrap around
+        app.handle_key(press(KeyCode::Down)).await;
+        assert_eq!(app.provider_picker.selected, 0);
+
+        // Navigate up wraps
+        app.handle_key(press(KeyCode::Up)).await;
+        assert_eq!(app.provider_picker.selected, 2);
+    }
+
+    #[tokio::test]
+    async fn provider_picker_enter_switches_provider() {
+        let (mut app, _) = make_app();
+        let initial_blocks = app.state.blocks.len();
+
+        type_text(&mut app, "/provider");
+        app.handle_key(press(KeyCode::Enter)).await;
+
+        // Navigate to "anthropic" (index 1)
+        app.handle_key(press(KeyCode::Down)).await;
+        assert_eq!(app.provider_picker.selected, 1);
+
+        // Press Enter to select
+        app.handle_key(press(KeyCode::Enter)).await;
+
+        assert!(
+            !app.provider_picker.active,
+            "picker should be dismissed after selection"
+        );
+
+        // Should have a system alert confirming the switch
+        // +2: echoed /provider command + switch confirmation
+        let has_switch_alert = app.state.blocks.iter().any(|b| match b {
+            UiBlock::SystemAlert { text, .. } => text.contains("Provider switched to"),
+            _ => false,
+        });
+        assert!(
+            has_switch_alert,
+            "should show provider switch confirmation. blocks: {:?}",
+            &app.state.blocks[initial_blocks..]
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_with_arg_does_not_open_picker() {
+        let (mut app, _) = make_app();
+
+        type_text(&mut app, "/provider mock");
+        app.handle_key(press(KeyCode::Enter)).await;
+
+        assert!(
+            !app.provider_picker.active,
+            "/provider <name> should directly switch, not open picker"
+        );
+    }
+
     // ── Rendering smoke tests ───────────────────────────────────────────────
 
     #[tokio::test]

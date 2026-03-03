@@ -3,6 +3,7 @@ pub mod autocomplete;
 pub mod chat_log;
 pub mod input_bar;
 pub mod markdown;
+pub mod provider_picker;
 pub mod session_browser;
 pub mod spinner;
 pub mod state_inspector;

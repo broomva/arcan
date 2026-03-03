@@ -8,6 +8,7 @@ use crate::ui;
 use crate::widgets::autocomplete::AutocompleteState;
 use crate::widgets::input_bar::InputBarState;
 use crate::widgets::markdown::MarkdownRenderer;
+use crate::widgets::provider_picker::ProviderPickerState;
 use crate::widgets::session_browser::{SessionBrowserState, SessionEntry};
 use crate::widgets::state_inspector::{AgentStateSnapshot, StateInspectorState};
 use chrono::Utc;
@@ -30,6 +31,8 @@ pub struct App {
     pub show_panels: bool,
     /// Slash command autocomplete popup state.
     pub autocomplete: AutocompleteState,
+    /// Provider picker popup state.
+    pub provider_picker: ProviderPickerState,
     pub(crate) events: mpsc::Receiver<TuiEvent>,
     /// Sender half of the unified event channel, used to inject network events
     /// after a session switch.
@@ -58,12 +61,37 @@ impl App {
             markdown: MarkdownRenderer::new(),
             show_panels: false,
             autocomplete: AutocompleteState::new(),
+            provider_picker: ProviderPickerState::new(),
             events,
             event_tx,
         };
 
         app.state.session_id = Some(session_id.clone());
         app.push_system_alert(format!("Arcan TUI | {base_url} | Session: {session_id}"));
+
+        // Async version check — warns if daemon is running a different version
+        let version_client = app.client.clone();
+        let version_tx = app.event_tx.clone();
+        tokio::spawn(async move {
+            let tui_version = env!("CARGO_PKG_VERSION");
+            match version_client.get_daemon_version().await {
+                Ok(daemon_version) if daemon_version != tui_version => {
+                    let msg = format!(
+                        "Version mismatch: TUI v{tui_version} / daemon v{daemon_version}. \
+                         Restart the daemon: cargo run -p arcan -- serve"
+                    );
+                    let _ = version_tx.send(TuiEvent::SystemAlert(msg)).await;
+                }
+                Err(_) => {
+                    let msg = format!(
+                        "Could not verify daemon version (TUI v{tui_version}). \
+                         The daemon may be outdated — consider restarting it."
+                    );
+                    let _ = version_tx.send(TuiEvent::SystemAlert(msg)).await;
+                }
+                Ok(_) => {} // versions match, nothing to report
+            }
+        });
 
         app
     }
@@ -122,6 +150,9 @@ impl App {
                     Ok(msg) => self.push_system_alert(msg),
                     Err(msg) => self.push_system_alert(msg),
                 },
+                TuiEvent::SystemAlert(msg) => {
+                    self.push_system_alert(msg);
+                }
                 _ => {}
             }
 
@@ -139,7 +170,11 @@ impl App {
         // Focus-independent keys
         match key.code {
             KeyCode::Esc => {
-                // Dismiss autocomplete first, then panels, then quit
+                // Dismiss provider picker first, then autocomplete, then panels, then quit
+                if self.provider_picker.active {
+                    self.provider_picker.dismiss();
+                    return;
+                }
                 if self.autocomplete.active {
                     self.autocomplete.dismiss();
                     return;
@@ -194,6 +229,31 @@ impl App {
     }
 
     async fn handle_input_key(&mut self, key: KeyEvent) {
+        // When provider picker is active, intercept navigation keys
+        if self.provider_picker.active {
+            match key.code {
+                KeyCode::Up => {
+                    self.provider_picker.previous();
+                    return;
+                }
+                KeyCode::Down => {
+                    self.provider_picker.next();
+                    return;
+                }
+                KeyCode::Enter => {
+                    if let Some(name) = self.provider_picker.accept() {
+                        self.set_provider(&name).await;
+                    }
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.provider_picker.dismiss();
+                    return;
+                }
+                _ => return, // Ignore all other keys while picker is open
+            }
+        }
+
         // When autocomplete is active, intercept navigation keys
         if self.autocomplete.active {
             match key.code {
@@ -519,45 +579,16 @@ impl App {
     }
 
     async fn show_provider_status(&mut self) {
-        // Query the daemon for live provider status
-        match self.client.get_model().await {
-            Ok(provider) => {
-                let mut lines = vec![format!("  Active:  {provider} (from daemon)")];
+        // Show interactive provider picker popup
+        self.provider_picker.show_loading();
 
-                // Also show local credential info
-                let has_openai_oauth = arcan_provider::oauth::load_tokens("openai").is_ok();
-                let openai_oauth_expired = arcan_provider::oauth::load_tokens("openai")
-                    .map(|t| t.is_expired())
-                    .unwrap_or(false);
-                let has_openai_key = std::env::var("OPENAI_API_KEY").is_ok();
-                let has_anthropic_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
-
-                lines.push("  Credentials found:".to_string());
-                if has_openai_oauth {
-                    let status = if openai_oauth_expired {
-                        "expired"
-                    } else {
-                        "valid"
-                    };
-                    lines.push(format!("    openai OAuth  [{status}]"));
-                }
-                if has_openai_key {
-                    lines.push("    openai API key  [OPENAI_API_KEY]".to_string());
-                }
-                if has_anthropic_key {
-                    lines.push("    anthropic API key  [ANTHROPIC_API_KEY]".to_string());
-                }
-                if !has_openai_oauth && !has_openai_key && !has_anthropic_key {
-                    lines.push("    (none)".to_string());
-                }
-
-                lines.push(
-                    "  Use /provider <name> to switch live (e.g. /provider mock)".to_string(),
-                );
-
-                self.push_system_alert(format!("Provider status:\n{}", lines.join("\n")));
+        match self.client.get_provider_info().await {
+            Ok(info) => {
+                self.provider_picker
+                    .set_providers(info.provider, info.available);
             }
             Err(e) => {
+                self.provider_picker.dismiss();
                 self.push_system_alert(format!("Failed to query provider from daemon: {e}"));
             }
         }

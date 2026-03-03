@@ -24,7 +24,7 @@ pub trait ProviderFactory: Send + Sync {
     fn build(&self, spec: &str) -> Result<Arc<dyn Provider>, CoreError>;
 
     /// List the available provider names (e.g. `["anthropic", "openai", "ollama", "mock"]`).
-    fn available_providers(&self) -> Vec<&str>;
+    fn available_providers(&self) -> Vec<String>;
 }
 
 /// Hook trait for approval gates, allowing the agent loop to wire event handlers

@@ -38,8 +38,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 clap = { workspace = true }
 
-# Markdown & Syntax Highlighting
-tui-markdown = { version = "0.3", features = ["highlight-code"] }
+# Markdown Rendering
+ratskin = "0.3"
 
 # Config
 toml = { workspace = true }

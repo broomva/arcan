@@ -1,12 +1,14 @@
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
+use ratskin::RatSkin;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-/// Renders markdown text into ratatui `Text` with syntax highlighting.
+/// Renders markdown text into ratatui `Line`s using `ratskin` (termimad).
 ///
-/// Wraps `tui_markdown` with an LRU-style cache (keyed by text hash) to avoid
-/// re-parsing unchanged messages on every frame.
+/// Supports tables, bold, italic, code blocks, lists, headings, blockquotes.
+/// Results are cached by (content hash, width) to avoid re-parsing on every frame.
 pub struct MarkdownRenderer {
+    skin: RatSkin,
     cache: HashMap<u64, Vec<Line<'static>>>,
     /// Maximum number of cached entries before eviction.
     capacity: usize,
@@ -21,6 +23,7 @@ impl Default for MarkdownRenderer {
 impl MarkdownRenderer {
     pub fn new() -> Self {
         Self {
+            skin: RatSkin::default(),
             cache: HashMap::new(),
             capacity: 16,
         }
@@ -28,19 +31,19 @@ impl MarkdownRenderer {
 
     /// Render markdown `input` into a Vec of ratatui Lines.
     ///
-    /// Results are cached by content hash. If the cache is full, it is cleared
-    /// (simple eviction — chat messages are append-only so old entries are
-    /// unlikely to be needed again).
-    pub fn render(&mut self, input: &str) -> Vec<Line<'static>> {
-        let hash = Self::hash_str(input);
+    /// `width` is the available terminal columns for line wrapping and table sizing.
+    /// Results are cached by content hash + width.
+    pub fn render(&mut self, input: &str, width: u16) -> Vec<Line<'static>> {
+        let hash = Self::hash_key(input, width);
 
         if let Some(cached) = self.cache.get(&hash) {
             return cached.clone();
         }
 
-        let text: Text<'_> = tui_markdown::from_str(input);
-        // Convert borrowed lines to owned so they can be cached.
-        let lines: Vec<Line<'static>> = text.lines.into_iter().map(line_to_owned).collect();
+        let parsed = RatSkin::parse_text(input);
+        let lines: Vec<Line<'_>> = self.skin.parse(parsed, width);
+        // Convert to owned for caching.
+        let lines: Vec<Line<'static>> = lines.into_iter().map(line_to_owned).collect();
 
         if self.cache.len() >= self.capacity {
             self.cache.clear();
@@ -51,9 +54,7 @@ impl MarkdownRenderer {
     }
 
     /// Check whether the input looks like it contains markdown formatting.
-    /// Used to decide whether to use the markdown renderer or plain text.
     pub fn has_markdown(input: &str) -> bool {
-        // Quick heuristic: check for common markdown patterns
         input.contains("```")
             || input.contains("**")
             || input.contains("## ")
@@ -63,11 +64,13 @@ impl MarkdownRenderer {
             || input.contains('`')
             || input.contains("> ")
             || input.contains("*")
+            || input.contains("| ")
     }
 
-    fn hash_str(s: &str) -> u64 {
+    fn hash_key(s: &str, width: u16) -> u64 {
         let mut hasher = DefaultHasher::new();
         s.hash(&mut hasher);
+        width.hash(&mut hasher);
         hasher.finish()
     }
 }
@@ -89,7 +92,7 @@ mod tests {
     #[test]
     fn plain_text_renders() {
         let mut r = MarkdownRenderer::new();
-        let lines = r.render("Hello, world!");
+        let lines = r.render("Hello, world!", 80);
         assert!(!lines.is_empty());
         let text: String = lines
             .iter()
@@ -101,7 +104,7 @@ mod tests {
     #[test]
     fn bold_renders_styled() {
         let mut r = MarkdownRenderer::new();
-        let lines = r.render("This is **bold** text.");
+        let lines = r.render("This is **bold** text.", 80);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -113,16 +116,35 @@ mod tests {
     fn code_block_renders() {
         let mut r = MarkdownRenderer::new();
         let input = "```rust\nfn main() {}\n```";
-        let lines = r.render(input);
-        assert!(lines.len() >= 3, "code block should produce multiple lines");
+        let lines = r.render(input, 80);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            text.contains("fn main()"),
+            "code block should contain the code content"
+        );
+    }
+
+    #[test]
+    fn table_renders_multiple_lines() {
+        let mut r = MarkdownRenderer::new();
+        let input = "| Name | Value |\n|------|-------|\n| foo  | 1     |\n| bar  | 2     |";
+        let lines = r.render(input, 80);
+        assert!(
+            lines.len() >= 3,
+            "table should produce at least 3 lines (header + separator + 2 rows), got {}",
+            lines.len()
+        );
     }
 
     #[test]
     fn cache_returns_same_result() {
         let mut r = MarkdownRenderer::new();
         let input = "# Heading\nSome text.";
-        let first = r.render(input);
-        let second = r.render(input);
+        let first = r.render(input, 80);
+        let second = r.render(input, 80);
         assert_eq!(first.len(), second.len());
     }
 
@@ -130,11 +152,10 @@ mod tests {
     fn cache_evicts_on_overflow() {
         let mut r = MarkdownRenderer::new();
         r.capacity = 2;
-        r.render("text 1");
-        r.render("text 2");
+        r.render("text 1", 80);
+        r.render("text 2", 80);
         assert_eq!(r.cache.len(), 2);
-        r.render("text 3");
-        // Cache was cleared and now only has the new entry
+        r.render("text 3", 80);
         assert_eq!(r.cache.len(), 1);
     }
 
@@ -146,6 +167,7 @@ mod tests {
         assert!(MarkdownRenderer::has_markdown("- list item"));
         assert!(MarkdownRenderer::has_markdown("`inline code`"));
         assert!(MarkdownRenderer::has_markdown("> blockquote"));
+        assert!(MarkdownRenderer::has_markdown("| col1 | col2 |"));
     }
 
     #[test]
@@ -157,7 +179,7 @@ mod tests {
     #[test]
     fn inline_code_renders() {
         let mut r = MarkdownRenderer::new();
-        let lines = r.render("Use `cargo test` to run tests.");
+        let lines = r.render("Use `cargo test` to run tests.", 80);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -168,8 +190,7 @@ mod tests {
     #[test]
     fn list_renders() {
         let mut r = MarkdownRenderer::new();
-        let lines = r.render("- item one\n- item two\n- item three");
-        // Each list item should produce a separate line
+        let lines = r.render("- item one\n- item two\n- item three", 80);
         assert!(lines.len() >= 3);
     }
 }

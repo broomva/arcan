@@ -29,6 +29,8 @@ pub enum TuiEvent {
         provider: String,
         result: Result<String, String>,
     },
+    /// A background task wants to display a system alert.
+    SystemAlert(String),
 }
 
 /// Spawn background producers that merge terminal input, network events,

@@ -1,6 +1,7 @@
 use arcan_core::error::CoreError;
 use arcan_core::runtime::{Provider, ProviderFactory};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
+use arcan_provider::ollama;
 use arcan_provider::openai::{OpenAiCompatibleProvider, OpenAiConfig};
 use arcand::mock::MockProvider;
 use std::sync::Arc;
@@ -36,8 +37,11 @@ impl ProviderFactory for ArcanProviderFactory {
                 Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
             }
             "ollama" => {
-                let config = OpenAiConfig::ollama_from_resolved(model_override, None, None, None)
-                    .map_err(|e| CoreError::Provider(e.to_string()))?;
+                let base_url = ollama::resolve_base_url();
+                ollama::ensure_ollama_running(&base_url)?;
+                let config =
+                    OpenAiConfig::ollama_from_resolved(model_override, Some(&base_url), None, None)
+                        .map_err(|e| CoreError::Provider(e.to_string()))?;
                 tracing::info!(model = %config.model, base_url = %config.base_url, "Provider switched to: ollama");
                 Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
             }
@@ -47,7 +51,29 @@ impl ProviderFactory for ArcanProviderFactory {
         }
     }
 
-    fn available_providers(&self) -> Vec<&str> {
-        vec!["anthropic", "openai", "ollama", "mock"]
+    fn available_providers(&self) -> Vec<String> {
+        let mut providers = vec![
+            "anthropic".to_string(),
+            "openai".to_string(),
+            "mock".to_string(),
+        ];
+
+        let base_url = ollama::resolve_base_url();
+        if ollama::is_ollama_running(&base_url) {
+            match ollama::list_ollama_models(&base_url) {
+                Ok(models) if !models.is_empty() => {
+                    for model in models {
+                        providers.push(format!("ollama:{model}"));
+                    }
+                }
+                _ => {
+                    providers.push("ollama".to_string());
+                }
+            }
+        } else {
+            providers.push("ollama".to_string());
+        }
+
+        providers
     }
 }

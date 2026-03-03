@@ -17,9 +17,5 @@ rustflags = []
 [target.x86_64-apple-darwin]
 rustflags = []
 
-[build]
-# Incremental compilation for dev builds
-incremental = true
-
 [net]
 retry = 3

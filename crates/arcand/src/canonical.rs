@@ -475,7 +475,10 @@ impl StreamFormat {
     )
 )]
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
+    Json(json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 #[utoipa::path(
@@ -918,23 +921,23 @@ async fn resolve_approval(
         (status = 200, description = "Current provider info", body = ProviderResponse)
     )
 )]
-async fn get_provider(State(state): State<CanonicalState>) -> Json<ProviderResponse> {
+async fn get_provider(
+    State(state): State<CanonicalState>,
+) -> Result<Json<ProviderResponse>, (StatusCode, Json<serde_json::Value>)> {
     let provider_name = state
         .provider_handle
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .name()
         .to_owned();
-    let available = state
-        .provider_factory
-        .available_providers()
-        .into_iter()
-        .map(String::from)
-        .collect();
-    Json(ProviderResponse {
+    let factory = state.provider_factory.clone();
+    let available = tokio::task::spawn_blocking(move || factory.available_providers())
+        .await
+        .map_err(|e| internal_error(format!("available_providers task panicked: {e}")))?;
+    Ok(Json(ProviderResponse {
         provider: provider_name,
         available,
-    })
+    }))
 }
 
 #[utoipa::path(
@@ -951,9 +954,14 @@ async fn set_provider(
     State(state): State<CanonicalState>,
     Json(request): Json<SetProviderRequest>,
 ) -> Result<Json<ProviderResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let new_provider = state
-        .provider_factory
-        .build(&request.provider)
+    // Provider constructors create `reqwest::blocking::Client`, which spawns an
+    // internal Tokio runtime and panics if called from an async worker thread.
+    // Move the build into a blocking thread to avoid the conflict.
+    let factory = state.provider_factory.clone();
+    let spec = request.provider.clone();
+    let new_provider = tokio::task::spawn_blocking(move || factory.build(&spec))
+        .await
+        .map_err(|e| internal_error(format!("provider build task panicked: {e}")))?
         .map_err(bad_request)?;
 
     let new_name = new_provider.name().to_owned();
@@ -965,12 +973,10 @@ async fn set_provider(
         *guard = new_provider;
     }
 
-    let available = state
-        .provider_factory
-        .available_providers()
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let factory = state.provider_factory.clone();
+    let available = tokio::task::spawn_blocking(move || factory.available_providers())
+        .await
+        .map_err(|e| internal_error(format!("available_providers task panicked: {e}")))?;
 
     tracing::info!(provider = %new_name, spec = %request.provider, "Provider switched via API");
 

@@ -39,8 +39,8 @@ impl ProviderFactory for StubFactory {
     fn build(&self, _spec: &str) -> Result<Arc<dyn Provider>, CoreError> {
         Ok(Arc::new(StubProvider))
     }
-    fn available_providers(&self) -> Vec<&str> {
-        vec!["test-stub"]
+    fn available_providers(&self) -> Vec<String> {
+        vec!["test-stub".to_string()]
     }
 }
 
