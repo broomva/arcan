@@ -67,16 +67,28 @@ impl arcan_aios_adapters::tools::ToolHarnessObserver for LakeFsObserver {
 
         let current_manifest = proj.manifest().clone();
 
-        let new_manifest =
-            match lago_fs::snapshot(&self.workspace_root, &current_manifest, &self.blob_store) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(%e, "LakeFsObserver: failed to snapshot workspace");
-                    return;
-                }
-            };
+        // Run the synchronous snapshot + diff on a blocking thread to avoid
+        // stalling the tokio worker (the walk/hash can take seconds on large workspaces).
+        let workspace_root = self.workspace_root.clone();
+        let blob_store = self.blob_store.clone();
+        let snapshot_result = tokio::task::spawn_blocking(move || {
+            let new_manifest = lago_fs::snapshot(&workspace_root, &current_manifest, &blob_store)?;
+            let diffs = lago_fs::diff(&current_manifest, &new_manifest);
+            Ok::<_, lago_core::LagoError>(diffs)
+        })
+        .await;
 
-        let diffs = lago_fs::diff(&current_manifest, &new_manifest);
+        let diffs = match snapshot_result {
+            Ok(Ok(d)) => d,
+            Ok(Err(e)) => {
+                tracing::warn!(%e, "LakeFsObserver: failed to snapshot workspace");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(%e, "LakeFsObserver: snapshot task panicked");
+                return;
+            }
+        };
         if diffs.is_empty() {
             return;
         }

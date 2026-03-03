@@ -236,7 +236,7 @@ impl HttpAgentClient {
     pub fn new(config: NetworkConfig) -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(120))
                 .build()
                 .unwrap(),
             base_url: config.base_url,
