@@ -3,7 +3,7 @@
 **Date**: 2026-02-22  
 **Version**: 0.2.0 (canonical baseline active)
 
-This document describes the active Arcan implementation state for `/Users/broomva/broomva.tech/live/arcan`.
+This document describes the active Arcan implementation state for `/Users/broomva/broomva.tech/life/arcan`.
 
 ---
 
@@ -30,7 +30,7 @@ Current workspace gates pass:
 
 Conformance-dependent Arcan checks also pass through:
 
-- `/Users/broomva/broomva.tech/live/conformance/run.sh`
+- `/Users/broomva/broomva.tech/life/conformance/run.sh`
 
 ---
 
@@ -127,7 +127,7 @@ Arcan baseline boundaries:
 
 Dependency governance is audited by:
 
-- `/Users/broomva/broomva.tech/live/scripts/architecture/verify_dependencies.sh`
+- `/Users/broomva/broomva.tech/life/scripts/architecture/verify_dependencies.sh`
 - `make audit` from workspace root
 
 ---
