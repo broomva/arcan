@@ -9,6 +9,7 @@ members = [
   "crates/arcan-tui",
   "crates/arcand",
   "crates/arcan-lago",
+  "crates/arcan-spaces",
   "crates/arcan",
 ]
 resolver = "2"

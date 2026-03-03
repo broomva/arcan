@@ -475,6 +475,14 @@ fn run_serve(
     registry.register(MemoryProposeTool::new(journal.clone()));
     registry.register(MemoryCommitTool::new(journal.clone()));
 
+    // --- Spaces distributed networking (opt-in) ---
+    #[cfg(feature = "spaces")]
+    {
+        let spaces_port: Arc<dyn arcan_spaces::SpacesPort> =
+            Arc::new(arcan_spaces::MockSpacesClient::default_hub());
+        arcan_spaces::register_spaces_tools(&mut registry, spaces_port);
+    }
+
     // --- Provider ---
     let provider = build_provider(resolved)?;
 

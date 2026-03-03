@@ -184,6 +184,7 @@ dependencies = [
  "arcan-harness",
  "arcan-lago",
  "arcan-provider",
+ "arcan-spaces",
  "arcan-tui",
  "arcand",
  "async-trait",
@@ -312,6 +313,17 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "arcan-spaces"
+version = "0.2.1"
+dependencies = [
+ "arcan-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

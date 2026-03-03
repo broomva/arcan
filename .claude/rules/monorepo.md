@@ -11,6 +11,7 @@ arcan-rs/
 │   ├── arcan-provider/ # LLM provider implementations
 │   ├── arcand/         # Agent loop, SSE server, HTTP routing (library)
 │   ├── arcan-lago/     # Lago persistence bridge
+│   ├── arcan-spaces/   # Spaces networking bridge
 │   └── arcan/          # Installable binary (cargo install arcan)
 ├── Cargo.toml           # Workspace definition
 ├── AGENTS.md            # Project documentation
@@ -25,6 +26,7 @@ arcan-rs/
 - **`arcan-provider`** depends on `arcan-core`.
 - **`arcand`** depends on `arcan-core`, `arcan-harness`, `arcan-provider`, `arcan-store`.
 - **`arcan-lago`** depends on `arcan-core`, `arcan-store`.
+- **`arcan-spaces`** depends on `arcan-core`.
 - **`arcan`** (binary) depends on all of the above.
 
 ## Build Orchestration

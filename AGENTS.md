@@ -12,6 +12,7 @@ The project is structured as a Rust 2024 Edition workspace (`edition = "2024"`, 
 - **`crates/arcan-provider`**: LLM provider implementations. Currently includes `AnthropicProvider` for the Claude Messages API.
 - **`crates/arcand`**: The agent loop, SSE server, and HTTP routing library for the daemon.
 - **`crates/arcan-lago`**: Bridge between Arcan and Lago event-sourced persistence.
+- **`crates/arcan-spaces`**: Bridge between Arcan and Spaces distributed networking (port-based abstraction, tool definitions, middleware).
 - **`crates/arcan`**: The installable binary (`cargo install arcan`) — production entry point with Clap CLI, structured logging, and policy middleware.
 
 ## Key Concepts
