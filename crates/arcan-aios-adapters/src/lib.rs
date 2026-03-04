@@ -1,11 +1,13 @@
 pub mod approval;
 pub mod autonomic;
+pub mod embedded_autonomic;
 pub mod policy;
 pub mod provider;
 pub mod tools;
 
 pub use approval::ArcanApprovalAdapter;
 pub use autonomic::{AutonomicPolicyAdapter, EconomicGateHandle};
+pub use embedded_autonomic::EmbeddedAutonomicController;
 pub use policy::ArcanPolicyAdapter;
 pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
 

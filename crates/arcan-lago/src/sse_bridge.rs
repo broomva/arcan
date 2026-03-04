@@ -109,6 +109,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("The answer is 42.".into()),
+            usage: None,
         };
 
         let frames = bridge.format_event(&event, "r1");

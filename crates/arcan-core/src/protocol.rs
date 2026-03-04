@@ -348,6 +348,9 @@ pub enum AgentEvent {
         reason: RunStopReason,
         total_iterations: u32,
         final_answer: Option<String>,
+        /// Accumulated token usage across all iterations in this run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TokenUsage>,
     },
 }
 

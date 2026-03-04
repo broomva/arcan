@@ -220,6 +220,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("done".to_string()),
+            usage: None,
         }
     }
 

@@ -127,6 +127,7 @@ mod tests {
             reason: arcan_core::protocol::RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("Echo: hi".to_string()),
+            usage: None,
         });
         state.apply_event(AgentEvent::RunFinished {
             run_id: "r1".to_string(),
@@ -134,6 +135,7 @@ mod tests {
             reason: arcan_core::protocol::RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("Echo: hi".to_string()),
+            usage: None,
         });
 
         let assistant_count = state

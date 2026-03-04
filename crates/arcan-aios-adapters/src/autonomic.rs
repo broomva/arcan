@@ -1,12 +1,18 @@
 //! Advisory integration with the Autonomic homeostasis controller.
 //!
-//! [`AutonomicPolicyAdapter`] decorates an inner [`PolicyGatePort`] by consulting
-//! Autonomic's `/gating/{session_id}` HTTP endpoint before delegating. If Autonomic
-//! is unreachable or returns an error, the adapter fails open and delegates entirely
-//! to the inner gate (advisory semantics).
+//! [`AutonomicPolicyAdapter`] decorates an inner [`PolicyGatePort`] and supports
+//! two modes of operation:
 //!
-//! Response types are duplicated locally to avoid coupling `arcan-aios-adapters`
-//! to `autonomic-core` at the crate level.
+//! - **Embedded** (default): Runs `autonomic-controller` in-process with
+//!   microsecond-latency gating. Events are folded inline via the
+//!   [`EmbeddedAutonomicController`]. No network required.
+//!
+//! - **Remote** (opt-in via `--autonomic-url`): Consults the standalone
+//!   Autonomic daemon's `/gating/{session_id}` HTTP endpoint.
+//!
+//! Both modes are advisory: if gating data is unavailable (no events folded
+//! yet, or HTTP failure), the adapter falls open and delegates entirely to
+//! the inner gate.
 
 use std::sync::Arc;
 
@@ -16,6 +22,8 @@ use aios_protocol::{
 };
 use async_trait::async_trait;
 use serde::Deserialize;
+
+use crate::embedded_autonomic::EmbeddedAutonomicController;
 
 // ---------------------------------------------------------------------------
 // Public handle for economic gates (shared with provider layer in Phase 2)
@@ -94,22 +102,52 @@ pub enum ModelTier {
 // AutonomicPolicyAdapter
 // ---------------------------------------------------------------------------
 
+/// Mode of operation for the Autonomic adapter.
+enum AutonomicMode {
+    /// In-process controller: fold events locally, evaluate with microsecond latency.
+    Embedded(Arc<EmbeddedAutonomicController>),
+    /// Remote HTTP daemon: consult via `GET /gating/{session_id}`.
+    Remote {
+        client: reqwest::Client,
+        base_url: String,
+    },
+}
+
 /// Decorator that optionally consults Autonomic before delegating to an inner
 /// [`PolicyGatePort`].
 ///
-/// Advisory semantics: if Autonomic is unreachable, the adapter falls through
-/// to the inner gate. When Autonomic responds, the most-restrictive union of
+/// Supports two modes: **Embedded** (in-process controller, default) and
+/// **Remote** (HTTP to standalone daemon, opt-in).
+///
+/// Advisory semantics: if gating data is unavailable, the adapter falls through
+/// to the inner gate. When gating is available, the most-restrictive union of
 /// Autonomic's operational gates and the inner decision wins.
 pub struct AutonomicPolicyAdapter {
     inner: Arc<dyn PolicyGatePort>,
-    client: reqwest::Client,
-    base_url: String,
+    mode: AutonomicMode,
     economic_handle: EconomicGateHandle,
 }
 
 impl AutonomicPolicyAdapter {
-    /// Create a new adapter wrapping `inner`, consulting `base_url` for gating.
-    pub fn new(inner: Arc<dyn PolicyGatePort>, base_url: String) -> Self {
+    /// Create an adapter in **embedded** mode (default).
+    ///
+    /// Runs `autonomic-controller` in-process with the default 6-rule set.
+    /// Call [`embedded_controller()`](Self::embedded_controller) to get a
+    /// reference for feeding events via `fold_event()`.
+    pub fn new_embedded(inner: Arc<dyn PolicyGatePort>) -> Self {
+        let economic_handle: EconomicGateHandle = Arc::new(tokio::sync::RwLock::new(None));
+        let controller = Arc::new(EmbeddedAutonomicController::new(economic_handle.clone()));
+        Self {
+            inner,
+            mode: AutonomicMode::Embedded(controller),
+            economic_handle,
+        }
+    }
+
+    /// Create an adapter in **remote** mode (opt-in via `--autonomic-url`).
+    ///
+    /// Consults the standalone Autonomic daemon at `base_url` for gating decisions.
+    pub fn new_remote(inner: Arc<dyn PolicyGatePort>, base_url: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .build()
@@ -117,15 +155,29 @@ impl AutonomicPolicyAdapter {
 
         Self {
             inner,
-            client,
-            base_url,
+            mode: AutonomicMode::Remote { client, base_url },
             economic_handle: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Backward-compatible alias for [`new_remote`](Self::new_remote).
+    pub fn new(inner: Arc<dyn PolicyGatePort>, base_url: String) -> Self {
+        Self::new_remote(inner, base_url)
     }
 
     /// Returns a cloneable handle to the latest economic gates.
     pub fn economic_handle(&self) -> EconomicGateHandle {
         self.economic_handle.clone()
+    }
+
+    /// Returns a reference to the embedded controller, if in embedded mode.
+    ///
+    /// Use this to feed events via `fold_event()` from the agent event handler.
+    pub fn embedded_controller(&self) -> Option<&Arc<EmbeddedAutonomicController>> {
+        match &self.mode {
+            AutonomicMode::Embedded(controller) => Some(controller),
+            AutonomicMode::Remote { .. } => None,
+        }
     }
 }
 
@@ -139,19 +191,27 @@ impl PolicyGatePort for AutonomicPolicyAdapter {
         // 1. Get the inner (base) decision first.
         let inner_decision = self.inner.evaluate(session_id.clone(), requested).await?;
 
-        // 2. Consult Autonomic (advisory — errors fall through).
-        let Some(gating) = self.fetch_gating(&session_id).await else {
-            return Ok(inner_decision);
-        };
-
-        // 3. Store economic gates for provider layer.
-        {
-            let mut handle = self.economic_handle.write().await;
-            *handle = Some(gating.economic);
+        // 2. Dispatch based on mode (advisory — failures fall through).
+        match &self.mode {
+            AutonomicMode::Embedded(controller) => {
+                let Some(profile) = controller.evaluate_gating(session_id.as_str()).await else {
+                    return Ok(inner_decision);
+                };
+                // Economic handle is already updated by the embedded controller.
+                Ok(merge_decision(inner_decision, &profile.operational))
+            }
+            AutonomicMode::Remote { .. } => {
+                let Some(gating) = self.fetch_gating(&session_id).await else {
+                    return Ok(inner_decision);
+                };
+                // Store economic gates for provider layer.
+                {
+                    let mut handle = self.economic_handle.write().await;
+                    *handle = Some(gating.economic);
+                }
+                Ok(merge_decision(inner_decision, &gating.operational))
+            }
         }
-
-        // 4. Merge operational gates: most restrictive wins.
-        Ok(merge_decision(inner_decision, &gating.operational))
     }
 
     async fn set_policy(
@@ -165,11 +225,15 @@ impl PolicyGatePort for AutonomicPolicyAdapter {
 }
 
 impl AutonomicPolicyAdapter {
-    /// Fetch gating profile from Autonomic. Returns `None` on any failure.
+    /// Fetch gating profile from the remote Autonomic daemon.
+    /// Returns `None` on any failure (advisory semantics).
     async fn fetch_gating(&self, session_id: &SessionId) -> Option<LocalGatingProfile> {
-        let url = format!("{}/gating/{}", self.base_url, session_id);
+        let AutonomicMode::Remote { client, base_url } = &self.mode else {
+            return None;
+        };
+        let url = format!("{base_url}/gating/{session_id}");
 
-        let resp = match self.client.get(&url).send().await {
+        let resp = match client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, %url, "Autonomic unreachable, falling through");
@@ -506,5 +570,156 @@ mod tests {
             .unwrap();
 
         assert!(*called.lock().await, "set_policy should delegate to inner");
+    }
+
+    // -----------------------------------------------------------------------
+    // Embedded mode tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn embedded_falls_through_when_no_events() {
+        let inner: Arc<dyn PolicyGatePort> = Arc::new(AlwaysAllowGate);
+        let adapter = AutonomicPolicyAdapter::new_embedded(inner);
+
+        let caps = vec![Capability::exec("cargo")];
+        let decision = adapter
+            .evaluate(SessionId::from_string("unknown-session"), caps)
+            .await
+            .unwrap();
+
+        // No events folded → no projection → falls through to inner → allowed
+        assert_eq!(decision.allowed.len(), 1);
+        assert!(decision.denied.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedded_returns_profile_after_events() {
+        use crate::embedded_autonomic::agent_event_to_payload;
+        use arcan_core::protocol::{AgentEvent, RunStopReason};
+
+        let inner: Arc<dyn PolicyGatePort> = Arc::new(AlwaysAllowGate);
+        let adapter = AutonomicPolicyAdapter::new_embedded(inner);
+        let controller = adapter.embedded_controller().unwrap().clone();
+
+        // Feed a successful event
+        let event = AgentEvent::RunFinished {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            reason: RunStopReason::Completed,
+            total_iterations: 1,
+            final_answer: None,
+            usage: None,
+        };
+        if let Some(payload) = agent_event_to_payload(&event) {
+            controller.fold_event("s1", &payload, 1, now_ms()).await;
+        }
+
+        let caps = vec![
+            Capability::fs_write("/workspace/foo.rs"),
+            Capability::exec("cargo"),
+        ];
+        let decision = adapter
+            .evaluate(SessionId::from_string("s1"), caps)
+            .await
+            .unwrap();
+
+        // Default state with 1 success → permissive → all allowed
+        assert_eq!(decision.allowed.len(), 2);
+        assert!(decision.denied.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedded_error_streak_restricts() {
+        use crate::embedded_autonomic::agent_event_to_payload;
+        use arcan_core::protocol::AgentEvent;
+
+        let inner: Arc<dyn PolicyGatePort> = Arc::new(AlwaysAllowGate);
+        let adapter = AutonomicPolicyAdapter::new_embedded(inner);
+        let controller = adapter.embedded_controller().unwrap().clone();
+
+        // Feed 8 consecutive errors
+        for i in 0..8 {
+            let event = AgentEvent::RunErrored {
+                run_id: format!("r{i}"),
+                session_id: "s1".into(),
+                error: "connection refused".into(),
+            };
+            if let Some(payload) = agent_event_to_payload(&event) {
+                controller.fold_event("s1", &payload, i + 1, now_ms()).await;
+            }
+        }
+
+        let caps = vec![
+            Capability::fs_write("/workspace/foo.rs"),
+            Capability::exec("cargo"),
+        ];
+        let decision = adapter
+            .evaluate(SessionId::from_string("s1"), caps)
+            .await
+            .unwrap();
+
+        // Error streak rule should restrict operations
+        assert!(
+            !decision.denied.is_empty(),
+            "error streak should cause some denials"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_economic_handle_populated() {
+        use crate::embedded_autonomic::agent_event_to_payload;
+        use arcan_core::protocol::{AgentEvent, RunStopReason};
+
+        let inner: Arc<dyn PolicyGatePort> = Arc::new(AlwaysAllowGate);
+        let adapter = AutonomicPolicyAdapter::new_embedded(inner);
+        let handle = adapter.economic_handle();
+        let controller = adapter.embedded_controller().unwrap().clone();
+
+        // Before: handle is empty
+        assert!(handle.read().await.is_none());
+
+        // Feed an event and evaluate
+        let event = AgentEvent::RunFinished {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            reason: RunStopReason::Completed,
+            total_iterations: 1,
+            final_answer: None,
+            usage: None,
+        };
+        if let Some(payload) = agent_event_to_payload(&event) {
+            controller.fold_event("s1", &payload, 1, now_ms()).await;
+        }
+
+        let caps = vec![Capability::fs_read("/workspace/foo.rs")];
+        adapter
+            .evaluate(SessionId::from_string("s1"), caps)
+            .await
+            .unwrap();
+
+        // After: handle is populated
+        let gates = handle.read().await;
+        assert!(
+            gates.is_some(),
+            "economic handle should be populated after evaluate"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedded_controller_accessor() {
+        let inner: Arc<dyn PolicyGatePort> = Arc::new(AlwaysAllowGate);
+
+        let embedded = AutonomicPolicyAdapter::new_embedded(inner.clone());
+        assert!(embedded.embedded_controller().is_some());
+
+        let remote = AutonomicPolicyAdapter::new_remote(inner, "http://localhost:3002".into());
+        assert!(remote.embedded_controller().is_none());
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
     }
 }

@@ -332,6 +332,7 @@ pub fn agent_event_from_protocol_record(record: &ProtocolEventRecord) -> Option<
             reason: run_stop_reason_from_string(reason),
             total_iterations: *total_iterations,
             final_answer: final_answer.clone(),
+            usage: None,
         }),
         ProtocolEventKind::RunErrored { error } => Some(AgentEvent::RunErrored {
             run_id,

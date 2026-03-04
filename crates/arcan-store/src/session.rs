@@ -275,6 +275,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("ok".to_string()),
+            usage: None,
         }
     }
 

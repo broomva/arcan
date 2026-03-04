@@ -104,6 +104,10 @@ praxis-tools = { path = "../praxis/crates/praxis-tools", version = "0.1.0" }
 praxis-skills = { path = "../praxis/crates/praxis-skills", version = "0.1.0" }
 praxis-mcp = { path = "../praxis/crates/praxis-mcp", version = "0.1.0" }
 
+# Autonomic homeostasis controller (embedded controller support)
+autonomic-core = { path = "../autonomic/crates/autonomic-core", version = "0.1.0" }
+autonomic-controller = { path = "../autonomic/crates/autonomic-controller", version = "0.1.0" }
+
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.1" }
 lago-core = { path = "../lago/crates/lago-core", version = "0.2.1" }

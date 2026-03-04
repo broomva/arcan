@@ -18,6 +18,9 @@ workspace = true
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
 aios-protocol.workspace = true
 aios-policy = { workspace = true }
+autonomic-core = { workspace = true }
+autonomic-controller = { workspace = true }
+lago-core = { workspace = true }
 
 anyhow.workspace = true
 async-trait.workspace = true

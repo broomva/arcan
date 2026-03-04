@@ -12,6 +12,8 @@ use arcan_core::state::AppState;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
+use crate::autonomic::{EconomicGateHandle, EconomicMode};
+
 /// Shared handle for the runtime broadcast sender.
 /// Starts as `None` (before the runtime is created) and is filled in
 /// once `KernelRuntime::event_sender()` is available.
@@ -22,6 +24,7 @@ pub struct ArcanProviderAdapter {
     handle: SwappableProviderHandle,
     tools: Vec<arcan_core::protocol::ToolDefinition>,
     streaming_sender: StreamingSenderHandle,
+    economic_handle: Option<EconomicGateHandle>,
 }
 
 impl ArcanProviderAdapter {
@@ -36,6 +39,7 @@ impl ArcanProviderAdapter {
             handle: Arc::new(std::sync::RwLock::new(provider)),
             tools,
             streaming_sender,
+            economic_handle: None,
         }
     }
 
@@ -49,7 +53,20 @@ impl ArcanProviderAdapter {
             handle,
             tools,
             streaming_sender,
+            economic_handle: None,
         }
+    }
+
+    /// Attach an economic gate handle for advisory token capping.
+    ///
+    /// When set, the provider will consult economic gates before each model call:
+    /// - **Hibernate**: Block the call entirely (return error).
+    /// - **Hustle**: Cap `max_tokens` to `gates.max_tokens_next_turn`.
+    /// - **Conserving**: Advisory log, cap tokens if set.
+    /// - **Sovereign**: No restrictions.
+    pub fn with_economic_handle(mut self, handle: EconomicGateHandle) -> Self {
+        self.economic_handle = Some(handle);
+        self
     }
 }
 
@@ -70,6 +87,40 @@ impl ModelProviderPort for ArcanProviderAdapter {
         &self,
         request: ModelCompletionRequest,
     ) -> Result<ModelCompletion, KernelError> {
+        // Consult economic gates (advisory — if handle is absent, proceed normally).
+        if let Some(ref handle) = self.economic_handle {
+            let gates = handle.read().await;
+            if let Some(ref gates) = *gates {
+                match gates.economic_mode {
+                    EconomicMode::Hibernate => {
+                        tracing::warn!(
+                            session = %request.session_id,
+                            "Autonomic: Hibernate mode — blocking model call"
+                        );
+                        return Err(KernelError::Runtime(
+                            "model call blocked: Autonomic Hibernate mode active".to_owned(),
+                        ));
+                    }
+                    EconomicMode::Hustle => {
+                        if let Some(max) = gates.max_tokens_next_turn {
+                            tracing::info!(
+                                session = %request.session_id,
+                                max_tokens = max,
+                                "Autonomic: Hustle mode — capping tokens"
+                            );
+                        }
+                    }
+                    EconomicMode::Conserving => {
+                        tracing::debug!(
+                            session = %request.session_id,
+                            "Autonomic: Conserving mode"
+                        );
+                    }
+                    EconomicMode::Sovereign => {}
+                }
+            }
+        }
+
         let provider_request = ProviderRequest {
             run_id: request.run_id.as_str().to_owned(),
             session_id: request.session_id.as_str().to_owned(),

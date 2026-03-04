@@ -404,6 +404,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("Hello! How can I help?".to_string()),
+            usage: None,
         });
 
         assert!(!app.state.is_busy);

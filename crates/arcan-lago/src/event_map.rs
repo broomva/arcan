@@ -58,14 +58,15 @@ pub fn arcan_to_lago(
             final_answer,
             reason,
             total_iterations,
+            usage,
             ..
         } => {
-            // Map RunFinished to native Lago RunFinished
+            // Map RunFinished to native Lago RunFinished, forwarding token usage.
             EventPayload::RunFinished {
                 reason: run_stop_reason_to_str(*reason).to_string(),
                 total_iterations: *total_iterations,
                 final_answer: final_answer.clone(),
-                usage: None,
+                usage: usage.as_ref().map(arcan_usage_to_lago),
             }
         }
 
@@ -243,13 +244,14 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
             reason,
             total_iterations,
             final_answer,
-            ..
+            usage,
         } => Some(AgentEvent::RunFinished {
             run_id,
             session_id,
             reason: parse_run_stop_reason(reason),
             total_iterations: *total_iterations,
             final_answer: final_answer.clone(),
+            usage: usage.as_ref().map(lago_usage_to_arcan),
         }),
 
         EventPayload::StepStarted { index } => Some(AgentEvent::IterationStarted {
@@ -355,6 +357,25 @@ pub fn lago_to_arcan(envelope: &EventEnvelope) -> Option<AgentEvent> {
         }
 
         _ => None,
+    }
+}
+
+/// Convert Arcan TokenUsage (u64, 4 fields) → Lago/aiOS TokenUsage (u32, 3 fields).
+fn arcan_usage_to_lago(usage: &arcan_core::protocol::TokenUsage) -> lago_core::event::TokenUsage {
+    lago_core::event::TokenUsage {
+        prompt_tokens: usage.input_tokens as u32,
+        completion_tokens: usage.output_tokens as u32,
+        total_tokens: usage.total() as u32,
+    }
+}
+
+/// Convert Lago/aiOS TokenUsage (u32, 3 fields) → Arcan TokenUsage (u64, 4 fields).
+fn lago_usage_to_arcan(usage: &lago_core::event::TokenUsage) -> arcan_core::protocol::TokenUsage {
+    arcan_core::protocol::TokenUsage {
+        input_tokens: u64::from(usage.prompt_tokens),
+        output_tokens: u64::from(usage.completion_tokens),
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     }
 }
 
@@ -515,6 +536,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 10,
             final_answer: Some("42".into()),
+            usage: None,
         };
         let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-6");
 
@@ -641,6 +663,47 @@ mod tests {
                 assert_eq!(revision, 5);
             }
             _ => panic!("expected StatePatched"),
+        }
+    }
+
+    #[test]
+    fn run_finished_usage_round_trips() {
+        let event = AgentEvent::RunFinished {
+            run_id: "r1".into(),
+            session_id: "s1".into(),
+            reason: RunStopReason::Completed,
+            total_iterations: 3,
+            final_answer: None,
+            usage: Some(arcan_core::protocol::TokenUsage {
+                input_tokens: 500,
+                output_tokens: 200,
+                cache_read_tokens: 50,
+                cache_creation_tokens: 10,
+            }),
+        };
+        let envelope = arcan_to_lago(&test_session(), &test_branch(), 1, "r1", &event, "uuid-u1");
+
+        // Verify Lago payload has usage
+        if let EventPayload::RunFinished { usage, .. } = &envelope.payload {
+            let u = usage.as_ref().expect("usage should be present");
+            assert_eq!(u.prompt_tokens, 500);
+            assert_eq!(u.completion_tokens, 200);
+            assert_eq!(u.total_tokens, 700);
+        } else {
+            panic!("expected RunFinished payload");
+        }
+
+        // Verify roundtrip back to Arcan
+        let back = lago_to_arcan(&envelope).expect("should map back");
+        match back {
+            AgentEvent::RunFinished { usage, .. } => {
+                let u = usage.expect("usage should round-trip");
+                assert_eq!(u.input_tokens, 500);
+                assert_eq!(u.output_tokens, 200);
+                // Cache tokens not preserved in aiOS TokenUsage
+                assert_eq!(u.cache_read_tokens, 0);
+            }
+            _ => panic!("expected RunFinished"),
         }
     }
 }

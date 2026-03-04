@@ -609,6 +609,11 @@ impl Orchestrator {
             reason: stop_reason,
             total_iterations,
             final_answer: final_answer.clone(),
+            usage: if total_usage.total() > 0 {
+                Some(total_usage)
+            } else {
+                None
+            },
         };
         event_handler(finished_event.clone());
         events.push(finished_event);

@@ -102,6 +102,7 @@ async fn full_session_lifecycle_round_trip() {
             reason: RunStopReason::Completed,
             total_iterations: 2,
             final_answer: Some("The file contains: Hello, World!".into()),
+            usage: None,
         },
     ];
 
@@ -381,6 +382,7 @@ async fn multiple_sessions_isolated() {
                     reason: RunStopReason::Completed,
                     total_iterations: 1,
                     final_answer: Some("done A".into()),
+                    usage: None,
                 },
             })
             .unwrap();

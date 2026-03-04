@@ -446,6 +446,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 3,
             final_answer: None,
+            usage: None,
         };
         let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 1);
@@ -460,6 +461,7 @@ mod tests {
             reason: RunStopReason::Completed,
             total_iterations: 1,
             final_answer: Some("Done!".to_string()),
+            usage: None,
         };
         let parts = to_ui_stream_parts(&event);
         assert_eq!(parts.len(), 2);
