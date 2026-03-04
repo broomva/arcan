@@ -24,6 +24,7 @@ pub struct DefaultsConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub port: Option<u16>,
+    pub autonomic_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -52,6 +53,7 @@ pub struct ResolvedConfig {
     pub max_iterations: u32,
     pub approval_timeout: u64,
     pub provider_config: Option<ProviderConfig>,
+    pub autonomic_url: Option<String>,
 }
 
 impl ArcanConfig {
@@ -65,6 +67,11 @@ impl ArcanConfig {
         }
         if other.defaults.port.is_some() {
             self.defaults.port = other.defaults.port;
+        }
+        if other.defaults.autonomic_url.is_some() {
+            self.defaults
+                .autonomic_url
+                .clone_from(&other.defaults.autonomic_url);
         }
         if other.agent.max_iterations.is_some() {
             self.agent.max_iterations = other.agent.max_iterations;
@@ -104,6 +111,9 @@ impl ArcanConfig {
                     .parse()
                     .map_err(|e| format!("invalid port value: {e}"))?;
                 self.defaults.port = Some(port);
+            }
+            "autonomic_url" | "defaults.autonomic_url" => {
+                self.defaults.autonomic_url = Some(value.to_owned());
             }
             "agent.max_iterations" | "max_iterations" => {
                 let v: u32 = value
@@ -158,6 +168,7 @@ impl ArcanConfig {
             "provider" | "defaults.provider" => self.defaults.provider.clone(),
             "model" | "defaults.model" => self.defaults.model.clone(),
             "port" | "defaults.port" => self.defaults.port.map(|p| p.to_string()),
+            "autonomic_url" | "defaults.autonomic_url" => self.defaults.autonomic_url.clone(),
             "agent.max_iterations" | "max_iterations" => {
                 self.agent.max_iterations.map(|v| v.to_string())
             }
@@ -238,6 +249,7 @@ pub fn resolve(
     cli_port: Option<u16>,
     cli_max_iterations: Option<u32>,
     cli_approval_timeout: Option<u64>,
+    cli_autonomic_url: Option<&str>,
 ) -> ResolvedConfig {
     // Provider: CLI > env > config > ""
     let provider = cli_provider
@@ -278,6 +290,12 @@ pub fn resolve(
         .or(config.agent.approval_timeout)
         .unwrap_or(300);
 
+    // Autonomic URL: CLI > env > config > None
+    let autonomic_url = cli_autonomic_url
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_AUTONOMIC_URL").ok())
+        .or_else(|| config.defaults.autonomic_url.clone());
+
     // Provider-specific config section
     let provider_config = config.providers.get(&provider).cloned();
 
@@ -288,6 +306,7 @@ pub fn resolve(
         max_iterations,
         approval_timeout,
         provider_config,
+        autonomic_url,
     }
 }
 
@@ -337,6 +356,7 @@ mod tests {
                 provider: Some("ollama".into()),
                 model: Some("llama3.2".into()),
                 port: None,
+                autonomic_url: None,
             },
             ..Default::default()
         };
@@ -406,12 +426,13 @@ mod tests {
     #[test]
     fn resolve_defaults() {
         let config = ArcanConfig::default();
-        let resolved = resolve(&config, None, None, None, None, None);
+        let resolved = resolve(&config, None, None, None, None, None, None);
         assert_eq!(resolved.provider, "");
         assert!(resolved.model.is_none());
         assert_eq!(resolved.port, 3000);
         assert_eq!(resolved.max_iterations, 10);
         assert_eq!(resolved.approval_timeout, 300);
+        assert!(resolved.autonomic_url.is_none());
     }
 
     #[test]
@@ -426,6 +447,7 @@ mod tests {
             Some("anthropic"),
             Some("claude-3"),
             Some(4000),
+            None,
             None,
             None,
         );
@@ -444,7 +466,7 @@ mod tests {
         };
         config.providers.insert("ollama".into(), pc);
 
-        let resolved = resolve(&config, None, None, None, None, None);
+        let resolved = resolve(&config, None, None, None, None, None, None);
         assert_eq!(resolved.model.as_deref(), Some("special-model"));
     }
 

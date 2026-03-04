@@ -98,6 +98,12 @@ aios-policy = { path = "../aiOS/crates/aios-policy", version = "0.1.0" }
 aios-sandbox = { path = "../aiOS/crates/aios-sandbox", version = "0.1.0" }
 aios-tools = { path = "../aiOS/crates/aios-tools", version = "0.1.0" }
 
+# Praxis tool execution engine (canonical tool implementations)
+praxis-core = { path = "../praxis/crates/praxis-core", version = "0.1.0" }
+praxis-tools = { path = "../praxis/crates/praxis-tools", version = "0.1.0" }
+praxis-skills = { path = "../praxis/crates/praxis-skills", version = "0.1.0" }
+praxis-mcp = { path = "../praxis/crates/praxis-mcp", version = "0.1.0" }
+
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.1" }
 lago-core = { path = "../lago/crates/lago-core", version = "0.2.1" }

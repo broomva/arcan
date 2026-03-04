@@ -13,6 +13,7 @@ The project is structured as a Rust 2024 Edition workspace (`edition = "2024"`, 
 - **`crates/arcand`**: The agent loop, SSE server, and HTTP routing library for the daemon.
 - **`crates/arcan-lago`**: Bridge between Arcan and Lago event-sourced persistence.
 - **`crates/arcan-spaces`**: Bridge between Arcan and Spaces distributed networking (port-based abstraction, tool definitions, middleware).
+- **`crates/arcan-aios-adapters`**: Implements aiOS protocol ports — includes `AutonomicPolicyAdapter` (advisory gating decorator over `PolicyGatePort`).
 - **`crates/arcan`**: The installable binary (`cargo install arcan`) — production entry point with Clap CLI, structured logging, and policy middleware.
 
 ## Key Concepts
@@ -46,6 +47,13 @@ cargo run -p arcan
 Run with real LLM (Anthropic Claude):
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... cargo run -p arcan
+```
+
+Run with Autonomic advisory gating:
+```bash
+cargo run -p arcan -- --autonomic-url http://localhost:3002 serve
+# or via env:
+ARCAN_AUTONOMIC_URL=http://localhost:3002 cargo run -p arcan -- serve
 ```
 
 Install from crates.io:

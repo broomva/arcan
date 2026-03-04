@@ -3,139 +3,39 @@ mod config;
 mod daemon;
 mod factory;
 
+use aios_protocol::sandbox::NetworkPolicy;
 use aios_protocol::{
     ApprovalPort, EventStorePort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use arcan_aios_adapters::{
     ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanPolicyAdapter, ArcanProviderAdapter,
-    StreamingSenderHandle,
+    AutonomicPolicyAdapter, EconomicGateHandle, StreamingSenderHandle,
 };
 use arcan_core::runtime::{Provider, ToolRegistry};
-use arcan_harness::edit::EditFileTool;
-use arcan_harness::fs::{FsPolicy, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
-use arcan_harness::memory::{ReadMemoryTool, WriteMemoryTool};
-use arcan_harness::sandbox::{BashTool, LocalCommandRunner, NetworkPolicy, SandboxPolicy};
-use arcan_lago::{MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool};
+use arcan_harness::bridge::PraxisToolBridge;
+use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
+use arcan_lago::{
+    LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
+    run_event_writer,
+};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::{canonical::create_canonical_router, mock::MockProvider};
 use clap::{Parser, Subcommand};
 use config::ResolvedConfig;
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
-use lago_core::{
-    BranchId, EventEnvelope, EventId, EventPayload, EventQuery, Journal, Projection, SessionId,
-};
-use lago_fs::{DiffEntry, ManifestProjection};
+use lago_core::{BranchId, SessionId};
+use lago_fs::{FsTracker, Manifest};
 use lago_journal::RedbJournal;
+use praxis_tools::edit::EditFileTool;
+use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
+use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
+use praxis_tools::shell::BashTool;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-
-struct LakeFsObserver {
-    workspace_root: PathBuf,
-    journal: Arc<dyn Journal>,
-    blob_store: Arc<lago_store::BlobStore>,
-}
-
-#[async_trait::async_trait]
-impl arcan_aios_adapters::tools::ToolHarnessObserver for LakeFsObserver {
-    async fn post_execute(&self, session_id: String, _tool_name: String) {
-        // We skip memory tools since they don't modify the FS directly, and bash since we might want more granular control, but for now we trace everything.
-        let sess_id = SessionId::from_string(session_id.clone());
-        let branch_id = BranchId::from_string("main");
-
-        let events = match self
-            .journal
-            .read(EventQuery::new().session(lago_core::SessionId::from_string(session_id)))
-            .await
-        {
-            Ok(events) => events,
-            Err(e) => {
-                tracing::warn!(%e, "LakeFsObserver: failed to read journal");
-                return;
-            }
-        };
-
-        let mut proj = ManifestProjection::new();
-        for e in events {
-            if e.branch_id == branch_id {
-                let _ = proj.on_event(&e);
-            }
-        }
-
-        let current_manifest = proj.manifest().clone();
-
-        // Run the synchronous snapshot + diff on a blocking thread to avoid
-        // stalling the tokio worker (the walk/hash can take seconds on large workspaces).
-        let workspace_root = self.workspace_root.clone();
-        let blob_store = self.blob_store.clone();
-        let snapshot_result = tokio::task::spawn_blocking(move || {
-            let new_manifest = lago_fs::snapshot(&workspace_root, &current_manifest, &blob_store)?;
-            let diffs = lago_fs::diff(&current_manifest, &new_manifest);
-            Ok::<_, lago_core::LagoError>(diffs)
-        })
-        .await;
-
-        let diffs = match snapshot_result {
-            Ok(Ok(d)) => d,
-            Ok(Err(e)) => {
-                tracing::warn!(%e, "LakeFsObserver: failed to snapshot workspace");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(%e, "LakeFsObserver: snapshot task panicked");
-                return;
-            }
-        };
-        if diffs.is_empty() {
-            return;
-        }
-
-        tracing::info!(
-            diff_count = diffs.len(),
-            "LakeFsObserver: workspace changed, emitting events"
-        );
-
-        for diff in diffs {
-            let payload = match diff {
-                DiffEntry::Added { path, entry } => EventPayload::FileWrite {
-                    path,
-                    blob_hash: entry.blob_hash.into(),
-                    size_bytes: entry.size_bytes,
-                    content_type: entry.content_type,
-                },
-                DiffEntry::Modified {
-                    path, new: entry, ..
-                } => EventPayload::FileWrite {
-                    path,
-                    blob_hash: entry.blob_hash.into(),
-                    size_bytes: entry.size_bytes,
-                    content_type: entry.content_type,
-                },
-                DiffEntry::Removed { path, .. } => EventPayload::FileDelete { path },
-            };
-
-            let envelope = EventEnvelope {
-                event_id: EventId::new(),
-                session_id: sess_id.clone(),
-                branch_id: branch_id.clone(),
-                run_id: None,
-                seq: 0,
-                timestamp: EventEnvelope::now_micros(),
-                parent_id: None,
-                payload,
-                metadata: std::collections::HashMap::new(),
-                schema_version: 1,
-            };
-
-            if let Err(e) = self.journal.append(envelope).await {
-                tracing::warn!(%e, "LakeFsObserver: failed to append event");
-            }
-        }
-    }
-}
 
 #[derive(Parser)]
 #[command(
@@ -165,6 +65,10 @@ struct Cli {
     /// Model name override
     #[arg(long, global = true)]
     model: Option<String>,
+
+    /// Autonomic homeostasis controller URL (advisory gating, env: ARCAN_AUTONOMIC_URL)
+    #[arg(long, global = true)]
+    autonomic_url: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -435,11 +339,16 @@ fn run_serve(
     );
 
     let journal = RedbJournal::open(&journal_path)?;
-    let _blob_store = Arc::new(lago_store::BlobStore::open(&blobs_path)?);
+    let blob_store = Arc::new(lago_store::BlobStore::open(&blobs_path)?);
     let journal: Arc<dyn lago_core::Journal> = Arc::new(journal);
 
-    // --- Policies ---
+    // --- Lago-tracked filesystem (O(1) write tracking via FsTracker) ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
+    let local_fs = LocalFs::new(fs_policy);
+    let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_store.clone()));
+    let (fs_event_tx, fs_event_rx) = tokio::sync::mpsc::channel(1000);
+    let tracked_fs: Arc<dyn FsPort> = Arc::new(LagoTrackedFs::new(local_fs, tracker, fs_event_tx));
+
     let sandbox_policy = SandboxPolicy {
         workspace_root: workspace_root.clone(),
         shell_enabled: true,
@@ -448,26 +357,28 @@ fn run_serve(
         max_execution_ms: 10_000,
         max_stdout_bytes: 1024 * 1024,
         max_stderr_bytes: 1024 * 1024,
-        max_processes: 10,
-        max_memory_mb: 512,
     };
 
-    // --- Tools ---
+    // --- Tools (Praxis canonical implementations, bridged into Arcan) ---
     let mut registry = ToolRegistry::default();
-    registry.register(ReadFileTool::new(fs_policy.clone()));
-    registry.register(WriteFileTool::new(fs_policy.clone()));
-    registry.register(ListDirTool::new(fs_policy.clone()));
-    registry.register(EditFileTool::new(fs_policy.clone()));
-    registry.register(GlobTool::new(fs_policy.clone()));
-    registry.register(GrepTool::new(fs_policy));
+    registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
+    registry.register(PraxisToolBridge::new(WriteFileTool::new(
+        tracked_fs.clone(),
+    )));
+    registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs.clone())));
+    registry.register(PraxisToolBridge::new(EditFileTool::new(tracked_fs.clone())));
+    registry.register(PraxisToolBridge::new(GlobTool::new(tracked_fs.clone())));
+    registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs)));
 
     let runner = Box::new(LocalCommandRunner);
-    registry.register(BashTool::new(sandbox_policy, runner));
+    registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
     let memory_dir = data_dir.join("memory");
     std::fs::create_dir_all(&memory_dir)?;
-    registry.register(ReadMemoryTool::new(memory_dir.clone()));
-    registry.register(WriteMemoryTool::new(memory_dir));
+    registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
+        memory_dir.clone(),
+    )));
+    registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
 
     // --- Governed memory tools (event-sourced via Lago) ---
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
@@ -502,15 +413,20 @@ fn run_serve(
         registry.definitions(),
         streaming_sender.clone(),
     ));
-    let observer = Arc::new(LakeFsObserver {
-        workspace_root: workspace_root.clone(),
-        journal: journal.clone(),
-        blob_store: _blob_store,
-    });
-    let tool_harness: Arc<dyn ToolHarnessPort> =
-        Arc::new(ArcanHarnessAdapter::new(registry).with_observer(observer));
-    let policy_gate: Arc<dyn PolicyGatePort> =
+    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
+    let base_policy: Arc<dyn PolicyGatePort> =
         Arc::new(ArcanPolicyAdapter::new(aios_protocol::PolicySet::default()));
+
+    let (policy_gate, _economic_handle): (Arc<dyn PolicyGatePort>, Option<EconomicGateHandle>) =
+        if let Some(url) = &resolved.autonomic_url {
+            tracing::info!(url = %url, "Autonomic advisory enabled");
+            let adapter = AutonomicPolicyAdapter::new(base_policy, url.clone());
+            let handle = adapter.economic_handle();
+            (Arc::new(adapter), Some(handle))
+        } else {
+            (base_policy, None)
+        };
+
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
 
     let runtime = Arc::new(KernelRuntime::new(
@@ -533,6 +449,16 @@ fn run_serve(
         .build()?;
 
     tokio_runtime.block_on(async move {
+        // --- Background FS event writer (persists tracked writes to Lago journal) ---
+        let session_id = SessionId::from_string("default");
+        let branch_id = BranchId::from_string("main");
+        tokio::spawn(run_event_writer(
+            fs_event_rx,
+            journal,
+            session_id,
+            branch_id,
+        ));
+
         // --- HTTP Server ---
         let mut router = create_canonical_router(runtime, provider_handle, provider_factory);
 
@@ -889,6 +815,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 max_iterations,
                 approval_timeout,
+                cli.autonomic_url.as_deref(),
             );
 
             run_serve(&data_dir, &resolved, cli.console_dir)
@@ -910,6 +837,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -927,6 +855,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -956,6 +885,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -974,6 +904,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -989,6 +920,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1013,6 +945,7 @@ fn main() -> anyhow::Result<()> {
                 cli.port,
                 None,
                 None,
+                cli.autonomic_url.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()

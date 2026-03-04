@@ -19,10 +19,12 @@ arcan-core = { path = "../arcan-core", version = "0.2.1" }
 arcan-store = { path = "../arcan-store", version = "0.2.1" }
 aios-protocol.workspace = true
 lago-core.workspace = true
+lago-fs.workspace = true
 lago-journal.workspace = true
 lago-store.workspace = true
 lago-api.workspace = true
 lago-policy.workspace = true
+praxis-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

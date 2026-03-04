@@ -8,7 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Tool harness with filesystem, editing, memory, and sandboxing for Arcan agents"
+description = "Tool harness bridge: adapts Praxis canonical tools for the Arcan runtime"
 readme = "../../README.md"
 
 [lints]
@@ -16,19 +16,12 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
-blake3.workspace = true
-tracing.workspace = true
-schemars.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-glob.workspace = true
-regex.workspace = true
-rmcp.workspace = true
-serde_yaml.workspace = true
-tokio.workspace = true
-wait-timeout.workspace = true
-walkdir.workspace = true
+aios-protocol.workspace = true
+praxis-core.workspace = true
+praxis-tools.workspace = true
+praxis-skills.workspace = true
+praxis-mcp.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"

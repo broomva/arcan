@@ -9,6 +9,7 @@ pub mod policy_middleware;
 pub mod repository;
 pub mod sse_bridge;
 pub mod state_projection;
+pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
 // Re-export the traits that ApprovalGate implements, for convenience
@@ -22,3 +23,4 @@ pub use policy_middleware::LagoPolicyMiddleware;
 pub use repository::LagoSessionRepository;
 pub use sse_bridge::{SseBridge, select_format};
 pub use state_projection::AppStateProjection;
+pub use tracked_fs::{LagoTrackedFs, run_event_writer};

@@ -199,6 +199,8 @@ dependencies = [
  "lago-journal",
  "lago-policy",
  "lago-store",
+ "praxis-core",
+ "praxis-tools",
  "reqwest",
  "reqwest-eventsource",
  "serde",
@@ -220,9 +222,13 @@ dependencies = [
  "anyhow",
  "arcan-core",
  "async-trait",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -255,21 +261,14 @@ dependencies = [
 name = "arcan-harness"
 version = "0.2.1"
 dependencies = [
+ "aios-protocol",
  "arcan-core",
- "blake3",
- "glob",
- "regex",
- "rmcp",
- "schemars 0.8.22",
- "serde",
+ "praxis-core",
+ "praxis-mcp",
+ "praxis-skills",
+ "praxis-tools",
  "serde_json",
- "serde_yaml",
  "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "wait-timeout",
- "walkdir",
 ]
 
 [[package]]
@@ -282,9 +281,11 @@ dependencies = [
  "chrono",
  "lago-api",
  "lago-core",
+ "lago-fs",
  "lago-journal",
  "lago-policy",
  "lago-store",
+ "praxis-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2546,6 +2547,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "praxis-core"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "wait-timeout",
+]
+
+[[package]]
+name = "praxis-mcp"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "praxis-skills"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
+name = "praxis-tools"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "blake3",
+ "glob",
+ "praxis-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]

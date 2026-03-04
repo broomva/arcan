@@ -29,6 +29,8 @@ arcan-spaces = { path = "../arcan-spaces", version = "0.2.1", optional = true }
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
 arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.2.1" }
 arcan-harness = { path = "../arcan-harness", version = "0.2.1" }
+praxis-core.workspace = true
+praxis-tools.workspace = true
 arcan-provider = { path = "../arcan-provider", version = "0.2.1" }
 arcand = { path = "../arcand", version = "0.2.1" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.1" }
