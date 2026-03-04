@@ -2,6 +2,8 @@ mod error;
 mod middleware;
 mod mock;
 mod port;
+#[cfg(feature = "spacetimedb")]
+mod spacetimedb;
 mod tools;
 
 pub use error::SpacesBridgeError;
@@ -11,6 +13,8 @@ pub use port::{
     SpacesChannel, SpacesChannelType, SpacesDirectMessage, SpacesMessage, SpacesMessageType,
     SpacesPort,
 };
+#[cfg(feature = "spacetimedb")]
+pub use spacetimedb::{SpacetimeDbClient, SpacetimeDbConfig};
 pub use tools::{
     SpacesListChannelsTool, SpacesReadMessagesTool, SpacesSendDmTool, SpacesSendMessageTool,
 };

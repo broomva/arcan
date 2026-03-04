@@ -16,6 +16,8 @@ pub struct ArcanConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub providers: HashMap<String, ProviderConfig>,
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub spaces: SpacesConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -25,6 +27,15 @@ pub struct DefaultsConfig {
     pub model: Option<String>,
     pub port: Option<u16>,
     pub autonomic_url: Option<String>,
+    pub spaces_backend: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpacesConfig {
+    pub host: Option<String>,
+    pub database_id: Option<String>,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -54,6 +65,10 @@ pub struct ResolvedConfig {
     pub approval_timeout: u64,
     pub provider_config: Option<ProviderConfig>,
     pub autonomic_url: Option<String>,
+    pub spaces_backend: String,
+    pub spaces_host: Option<String>,
+    pub spaces_database_id: Option<String>,
+    pub spaces_token: Option<String>,
 }
 
 impl ArcanConfig {
@@ -72,6 +87,22 @@ impl ArcanConfig {
             self.defaults
                 .autonomic_url
                 .clone_from(&other.defaults.autonomic_url);
+        }
+        if other.defaults.spaces_backend.is_some() {
+            self.defaults
+                .spaces_backend
+                .clone_from(&other.defaults.spaces_backend);
+        }
+        if other.spaces.host.is_some() {
+            self.spaces.host.clone_from(&other.spaces.host);
+        }
+        if other.spaces.database_id.is_some() {
+            self.spaces
+                .database_id
+                .clone_from(&other.spaces.database_id);
+        }
+        if other.spaces.token.is_some() {
+            self.spaces.token.clone_from(&other.spaces.token);
         }
         if other.agent.max_iterations.is_some() {
             self.agent.max_iterations = other.agent.max_iterations;
@@ -114,6 +145,18 @@ impl ArcanConfig {
             }
             "autonomic_url" | "defaults.autonomic_url" => {
                 self.defaults.autonomic_url = Some(value.to_owned());
+            }
+            "spaces_backend" | "defaults.spaces_backend" => {
+                self.defaults.spaces_backend = Some(value.to_owned());
+            }
+            "spaces.host" => {
+                self.spaces.host = Some(value.to_owned());
+            }
+            "spaces.database_id" => {
+                self.spaces.database_id = Some(value.to_owned());
+            }
+            "spaces.token" => {
+                self.spaces.token = Some(value.to_owned());
             }
             "agent.max_iterations" | "max_iterations" => {
                 let v: u32 = value
@@ -169,6 +212,10 @@ impl ArcanConfig {
             "model" | "defaults.model" => self.defaults.model.clone(),
             "port" | "defaults.port" => self.defaults.port.map(|p| p.to_string()),
             "autonomic_url" | "defaults.autonomic_url" => self.defaults.autonomic_url.clone(),
+            "spaces_backend" | "defaults.spaces_backend" => self.defaults.spaces_backend.clone(),
+            "spaces.host" => self.spaces.host.clone(),
+            "spaces.database_id" => self.spaces.database_id.clone(),
+            "spaces.token" => self.spaces.token.clone(),
             "agent.max_iterations" | "max_iterations" => {
                 self.agent.max_iterations.map(|v| v.to_string())
             }
@@ -242,6 +289,7 @@ pub fn save_config(data_dir: &Path, config: &ArcanConfig) -> anyhow::Result<()> 
 }
 
 /// Resolve the final config by applying env vars and CLI overrides on top.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve(
     config: &ArcanConfig,
     cli_provider: Option<&str>,
@@ -250,6 +298,8 @@ pub fn resolve(
     cli_max_iterations: Option<u32>,
     cli_approval_timeout: Option<u64>,
     cli_autonomic_url: Option<&str>,
+    cli_spaces_backend: Option<&str>,
+    cli_spaces_token: Option<&str>,
 ) -> ResolvedConfig {
     // Provider: CLI > env > config > ""
     let provider = cli_provider
@@ -299,6 +349,20 @@ pub fn resolve(
     // Provider-specific config section
     let provider_config = config.providers.get(&provider).cloned();
 
+    // Spaces backend: CLI > env > config > "mock"
+    let spaces_backend = cli_spaces_backend
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_SPACES_BACKEND").ok())
+        .or_else(|| config.defaults.spaces_backend.clone())
+        .unwrap_or_else(|| "mock".to_string());
+
+    // Spaces connection details (resolved further in SpacetimeDbConfig::resolve)
+    let spaces_host = config.spaces.host.clone();
+    let spaces_database_id = config.spaces.database_id.clone();
+    let spaces_token = cli_spaces_token
+        .map(String::from)
+        .or_else(|| config.spaces.token.clone());
+
     ResolvedConfig {
         provider,
         model,
@@ -307,6 +371,10 @@ pub fn resolve(
         approval_timeout,
         provider_config,
         autonomic_url,
+        spaces_backend,
+        spaces_host,
+        spaces_database_id,
+        spaces_token,
     }
 }
 
@@ -319,6 +387,7 @@ pub fn default_config_content() -> String {
 # provider = "anthropic"  # anthropic, openai, ollama, mock
 # model = "claude-sonnet-4-5-20250929"
 # port = 3000
+# spaces_backend = "mock"  # mock, spacetimedb
 
 [agent]
 # max_iterations = 10
@@ -337,6 +406,11 @@ pub fn default_config_content() -> String {
 # [providers.openai]
 # model = "gpt-4o"
 # max_tokens = 4096
+
+# [spaces]
+# host = "https://maincloud.spacetimedb.com"
+# database_id = "your-database-identity"
+# token = ""  # or set SPACETIMEDB_TOKEN env var
 "#
     .to_owned()
 }
@@ -357,6 +431,7 @@ mod tests {
                 model: Some("llama3.2".into()),
                 port: None,
                 autonomic_url: None,
+                spaces_backend: None,
             },
             ..Default::default()
         };
@@ -426,13 +501,14 @@ mod tests {
     #[test]
     fn resolve_defaults() {
         let config = ArcanConfig::default();
-        let resolved = resolve(&config, None, None, None, None, None, None);
+        let resolved = resolve(&config, None, None, None, None, None, None, None, None);
         assert_eq!(resolved.provider, "");
         assert!(resolved.model.is_none());
         assert_eq!(resolved.port, 3000);
         assert_eq!(resolved.max_iterations, 10);
         assert_eq!(resolved.approval_timeout, 300);
         assert!(resolved.autonomic_url.is_none());
+        assert_eq!(resolved.spaces_backend, "mock");
     }
 
     #[test]
@@ -447,6 +523,8 @@ mod tests {
             Some("anthropic"),
             Some("claude-3"),
             Some(4000),
+            None,
+            None,
             None,
             None,
             None,
@@ -466,7 +544,7 @@ mod tests {
         };
         config.providers.insert("ollama".into(), pc);
 
-        let resolved = resolve(&config, None, None, None, None, None, None);
+        let resolved = resolve(&config, None, None, None, None, None, None, None, None);
         assert_eq!(resolved.model.as_deref(), Some("special-model"));
     }
 

@@ -13,12 +13,20 @@ description = "Bridge between Arcan agent runtime and Spaces distributed network
 [lints]
 workspace = true
 
+[features]
+default = []
+spacetimedb = ["dep:reqwest", "dep:toml", "dep:dirs", "dep:hex"]
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+reqwest = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
+hex = { version = "0.4", optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -20,6 +20,15 @@ pub enum SpacesBridgeError {
 
     #[error("reducer failed: {0}")]
     ReducerFailed(String),
+
+    #[error("HTTP request failed: {0}")]
+    Http(String),
+
+    #[error("failed to parse response: {0}")]
+    ParseError(String),
+
+    #[error("authentication error: {0}")]
+    AuthError(String),
 }
 
 impl SpacesBridgeError {

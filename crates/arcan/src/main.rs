@@ -69,6 +69,14 @@ struct Cli {
     /// Autonomic homeostasis controller URL (advisory gating, env: ARCAN_AUTONOMIC_URL)
     #[arg(long, global = true)]
     autonomic_url: Option<String>,
+
+    /// Spaces backend: mock (default) or spacetimedb (env: ARCAN_SPACES_BACKEND)
+    #[arg(long, global = true)]
+    spaces_backend: Option<String>,
+
+    /// SpacetimeDB auth token override (env: SPACETIMEDB_TOKEN)
+    #[arg(long, global = true)]
+    spaces_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -389,8 +397,27 @@ fn run_serve(
     // --- Spaces distributed networking (opt-in) ---
     #[cfg(feature = "spaces")]
     {
-        let spaces_port: Arc<dyn arcan_spaces::SpacesPort> =
-            Arc::new(arcan_spaces::MockSpacesClient::default_hub());
+        let spaces_port: Arc<dyn arcan_spaces::SpacesPort> = match resolved.spaces_backend.as_str()
+        {
+            "spacetimedb" | "mainnet" => {
+                let stdb_config = arcan_spaces::SpacetimeDbConfig::resolve(
+                    resolved.spaces_host.as_deref(),
+                    resolved.spaces_database_id.as_deref(),
+                    resolved.spaces_token.as_deref(),
+                )
+                .map_err(|e| anyhow::anyhow!("spaces config: {e}"))?;
+                tracing::info!(
+                    host = %stdb_config.host,
+                    database = %stdb_config.database_id,
+                    "Spaces: SpacetimeDB backend"
+                );
+                Arc::new(arcan_spaces::SpacetimeDbClient::new(stdb_config))
+            }
+            _ => {
+                tracing::info!("Spaces: mock backend");
+                Arc::new(arcan_spaces::MockSpacesClient::default_hub())
+            }
+        };
         arcan_spaces::register_spaces_tools(&mut registry, spaces_port);
     }
 
@@ -406,26 +433,38 @@ fn run_serve(
     // --- Canonical aiOS runtime adapters ---
     let event_store: Arc<dyn EventStorePort> =
         Arc::new(LagoAiosEventStoreAdapter::new(journal.clone()));
-    // Shared handle: starts empty, filled after runtime creation.
-    let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
-    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(ArcanProviderAdapter::from_handle(
-        provider_handle.clone(),
-        registry.definitions(),
-        streaming_sender.clone(),
-    ));
-    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
     let base_policy: Arc<dyn PolicyGatePort> =
         Arc::new(ArcanPolicyAdapter::new(aios_protocol::PolicySet::default()));
 
-    let (policy_gate, _economic_handle): (Arc<dyn PolicyGatePort>, Option<EconomicGateHandle>) =
+    // --- Autonomic advisory gate (embedded by default, remote via --autonomic-url) ---
+    let (policy_gate, economic_handle): (Arc<dyn PolicyGatePort>, EconomicGateHandle) =
         if let Some(url) = &resolved.autonomic_url {
-            tracing::info!(url = %url, "Autonomic advisory enabled");
-            let adapter = AutonomicPolicyAdapter::new(base_policy, url.clone());
+            // Remote: consult standalone Autonomic daemon via HTTP.
+            tracing::info!(url = %url, "Autonomic advisory enabled (remote)");
+            let adapter = AutonomicPolicyAdapter::new_remote(base_policy, url.clone());
             let handle = adapter.economic_handle();
-            (Arc::new(adapter), Some(handle))
+            (Arc::new(adapter), handle)
         } else {
-            (base_policy, None)
+            // Embedded: run controller in-process (default).
+            tracing::info!("Autonomic advisory enabled (embedded)");
+            let adapter = AutonomicPolicyAdapter::new_embedded(base_policy);
+            let handle = adapter.economic_handle();
+            (Arc::new(adapter), handle)
         };
+
+    // --- Provider adapter (wired with economic handle for cost gating) ---
+    // Shared handle: starts empty, filled after runtime creation.
+    let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
+    let tool_definitions = registry.definitions();
+    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(
+        ArcanProviderAdapter::from_handle(
+            provider_handle.clone(),
+            tool_definitions,
+            streaming_sender.clone(),
+        )
+        .with_economic_handle(economic_handle),
+    );
+    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
 
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
 
@@ -816,6 +855,8 @@ fn main() -> anyhow::Result<()> {
                 max_iterations,
                 approval_timeout,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             run_serve(&data_dir, &resolved, cli.console_dir)
@@ -838,6 +879,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -856,6 +899,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -886,6 +931,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -905,6 +952,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -921,6 +970,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -946,6 +997,8 @@ fn main() -> anyhow::Result<()> {
                 None,
                 None,
                 cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
