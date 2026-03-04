@@ -58,6 +58,7 @@ vgcore.*
 # Arcan-specific
 # ============================================================
 .arcan/
+.lake/
 /brain/
 .entire/
 
