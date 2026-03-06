@@ -1,10 +1,13 @@
+use std::sync::Arc;
+use std::time::Instant;
+
 use aios_protocol::{
     KernelError, ToolExecutionReport, ToolExecutionRequest, ToolHarnessPort, ToolOutcome, ToolRunId,
 };
 use arcan_core::protocol::ToolCall;
 use arcan_core::runtime::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
-use std::sync::Arc;
+use tracing::Instrument;
 
 #[async_trait]
 pub trait ToolHarnessObserver: Send + Sync {
@@ -53,11 +56,19 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             iteration: 1,
         };
 
-        let result = tool
-            .execute(&arcan_call, &context)
-            .map_err(|error| KernelError::Runtime(error.to_string()))?;
+        let tool_span = vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
+        let tool_start = Instant::now();
+        let result = {
+            let _guard = tool_span.enter();
+            tool.execute(&arcan_call, &context)
+                .map_err(|error| KernelError::Runtime(error.to_string()))?
+        };
+        let tool_duration = tool_start.elapsed();
         let exit_status = if result.is_error { 1 } else { 0 };
+        let status_str;
         let outcome = if result.is_error {
+            status_str = "error";
+            vigil::spans::record_tool_status(&tool_span, status_str);
             ToolOutcome::Failure {
                 error: result
                     .output
@@ -67,10 +78,16 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
                     .unwrap_or_else(|| "tool execution failed".to_owned()),
             }
         } else {
+            status_str = "ok";
+            vigil::spans::record_tool_status(&tool_span, status_str);
             ToolOutcome::Success {
                 output: result.output,
             }
         };
+
+        // Record GenAI tool execution metric.
+        let genai_metrics = vigil::metrics::GenAiMetrics::new("arcan");
+        genai_metrics.record_tool_execution(&arcan_call.tool_name, status_str);
 
         for observer in &self.observers {
             observer
@@ -79,6 +96,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
                     request.session_id.as_str().to_owned(),
                     arcan_call.tool_name.clone(),
                 )
+                .instrument(tool_span.clone())
                 .await;
         }
 
@@ -87,7 +105,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             call_id: arcan_call.call_id,
             tool_name: arcan_call.tool_name,
             exit_status,
-            duration_ms: 0,
+            duration_ms: tool_duration.as_millis() as u64,
             outcome,
         })
     }

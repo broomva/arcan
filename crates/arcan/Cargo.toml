@@ -59,6 +59,7 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender = "0.2"
+vigil.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]

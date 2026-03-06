@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration, time::Instant};
 
 use aios_protocol::{
     AgentStateVector, BranchId, BranchInfo, BranchMergeResult, EventKind, EventRecord,
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{fs, sync::mpsc};
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use tracing::Instrument;
 use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
@@ -178,6 +179,7 @@ struct CanonicalState {
     runtime: Arc<KernelRuntime>,
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
+    started_at: Instant,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -421,6 +423,7 @@ pub fn create_canonical_router(
         runtime,
         provider_handle,
         provider_factory,
+        started_at: Instant::now(),
     };
     Router::new()
         .route("/health", get(health))
@@ -474,10 +477,18 @@ impl StreamFormat {
         (status = 200, description = "Daemon is healthy", body = Object)
     )
 )]
-async fn health() -> Json<serde_json::Value> {
+async fn health(State(state): State<CanonicalState>) -> Json<serde_json::Value> {
+    let uptime_seconds = state.started_at.elapsed().as_secs();
+    let otlp_configured = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok();
     Json(json!({
         "status": "ok",
+        "service": "arcan",
         "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": uptime_seconds,
+        "telemetry": {
+            "sdk": "vigil",
+            "otlp_configured": otlp_configured,
+        },
     }))
 }
 
@@ -592,6 +603,7 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
+    let agent_span = vigil::spans::agent_span(session_id.as_str(), "arcan");
     let tick = state
         .runtime
         .tick_on_branch(
@@ -602,6 +614,7 @@ async fn run_session(
                 proposed_tool,
             },
         )
+        .instrument(agent_span)
         .await
         .map_err(internal_error)?;
 

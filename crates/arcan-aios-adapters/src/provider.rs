@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use aios_protocol::{
     EventKind, EventRecord, KernelError, ModelCompletion, ModelCompletionRequest, ModelDirective,
@@ -11,6 +12,7 @@ use arcan_core::runtime::{Provider, ProviderRequest, SwappableProviderHandle};
 use arcan_core::state::AppState;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
+use tracing::Instrument;
 
 use crate::autonomic::{EconomicGateHandle, EconomicMode};
 
@@ -146,6 +148,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
         let session_id = request.session_id.clone();
         let branch_id = request.branch_id.clone();
 
+        // Create a GenAI chat span for this provider call.
+        let chat_span = vigil::spans::chat_span(&provider_name, &provider_name, None, None);
+
+        // Measure wall-clock duration of the provider call for GenAI metrics.
+        let call_start = Instant::now();
+
         // The Arcan Provider trait is synchronous and may use reqwest::blocking,
         // which panics if called directly on a tokio worker thread.
         // Wrap in spawn_blocking to run on a dedicated thread.
@@ -170,11 +178,24 @@ impl ModelProviderPort for ArcanProviderAdapter {
             }
             provider.complete(&provider_request)
         })
+        .instrument(chat_span.clone())
         .await
         .map_err(|join_error: tokio::task::JoinError| {
             KernelError::Runtime(format!("provider task panicked: {join_error}"))
         })?
         .map_err(|error| KernelError::Runtime(error.to_string()))?;
+
+        // Record stop reason on the chat span.
+        let stop_reason = to_stop_reason(turn.stop_reason);
+        let reason_str = match &stop_reason {
+            ModelStopReason::Completed => "stop",
+            ModelStopReason::ToolCall => "tool_calls",
+            ModelStopReason::MaxIterations => "max_tokens",
+            ModelStopReason::Cancelled => "cancelled",
+            ModelStopReason::Error => "error",
+            ModelStopReason::Other(s) => s.as_str(),
+        };
+        vigil::spans::record_finish_reason(&chat_span, reason_str);
 
         let mut directives = Vec::new();
         let mut final_answer = None;
@@ -216,11 +237,29 @@ impl ModelProviderPort for ArcanProviderAdapter {
             total_tokens: usage.total() as u32,
         });
 
+        // Record token usage on the chat span.
+        if let Some(ref usage) = usage {
+            vigil::spans::record_token_usage(&chat_span, usage);
+        }
+
+        // Record GenAI metrics (token usage + operation duration).
+        let genai_metrics = vigil::metrics::GenAiMetrics::new("arcan");
+        let call_duration = call_start.elapsed();
+        genai_metrics.record_operation_duration(&provider_name, "chat", call_duration);
+        if let Some(ref usage) = usage {
+            genai_metrics.record_token_usage(
+                &provider_name,
+                "chat",
+                usage.prompt_tokens as u64,
+                usage.completion_tokens as u64,
+            );
+        }
+
         Ok(ModelCompletion {
             provider: provider_name.clone(),
             model: provider_name,
             directives,
-            stop_reason: to_stop_reason(turn.stop_reason),
+            stop_reason,
             usage,
             final_answer,
         })

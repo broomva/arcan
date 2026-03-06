@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+use vigil::VigConfig;
 
 #[derive(Parser)]
 #[command(
@@ -842,10 +843,10 @@ fn main() -> anyhow::Result<()> {
             max_iterations,
             approval_timeout,
         }) => {
-            // Structured logging to stderr for daemon mode
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
+            // Structured logging + optional OTel export via Vigil
+            let _vigil_guard =
+                vigil::init_telemetry(VigConfig::for_service("arcan").with_env_overrides())
+                    .expect("failed to initialize telemetry");
 
             let resolved = config::resolve(
                 &file_config,

@@ -30,6 +30,7 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+vigil.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"
