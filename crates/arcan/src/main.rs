@@ -515,7 +515,11 @@ fn run_serve(
         let cors = tower_http::cors::CorsLayer::permissive();
         let router = router.layer(cors);
 
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let bind_ip: std::net::IpAddr = std::env::var("ARCAN_BIND")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        let addr = std::net::SocketAddr::new(bind_ip, port);
         let listener = TcpListener::bind(addr).await?;
 
         tracing::info!(%addr, "Listening");
