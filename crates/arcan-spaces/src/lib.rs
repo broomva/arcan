@@ -1,4 +1,5 @@
 mod error;
+pub mod hive;
 mod middleware;
 mod mock;
 mod port;
@@ -7,6 +8,7 @@ mod spacetimedb;
 mod tools;
 
 pub use error::SpacesBridgeError;
+pub use hive::{HiveArtifactMessage, HiveContext, HiveSpacesCoordinator};
 pub use middleware::SpacesActivityMiddleware;
 pub use mock::MockSpacesClient;
 pub use port::{
