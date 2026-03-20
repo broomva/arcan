@@ -422,6 +422,14 @@ fn run_serve(
         let skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&skills_dir).ok();
 
+        // Auto-sync: symlink skills from ~/.agents/skills/ and .agents/skills/ into .arcan/skills/
+        // so that `npx skills add` installs are immediately visible to Arcan.
+        match skills::sync_skills_to_arcan(data_dir) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(synced = n, "auto-synced skills into .arcan/skills/"),
+            Err(e) => tracing::debug!(error = %e, "skill auto-sync skipped"),
+        }
+
         match skills::discover_skills(
             &resolved.skill_dirs,
             data_dir,
