@@ -2,6 +2,8 @@ pub mod approval;
 pub mod autonomic;
 pub mod embedded_autonomic;
 pub mod gating_middleware;
+#[cfg(feature = "haima")]
+pub mod haima_middleware;
 pub mod policy;
 pub mod provider;
 pub mod tools;
@@ -10,6 +12,8 @@ pub use approval::ArcanApprovalAdapter;
 pub use autonomic::{AutonomicPolicyAdapter, EconomicGateHandle, GatingProfileHandle};
 pub use embedded_autonomic::EmbeddedAutonomicController;
 pub use gating_middleware::{AutonomicGatingMiddleware, AutonomicGatingState};
+#[cfg(feature = "haima")]
+pub use haima_middleware::HaimaPaymentMiddleware;
 pub use policy::ArcanPolicyAdapter;
 pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
 
