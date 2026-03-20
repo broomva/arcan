@@ -62,13 +62,16 @@ dependencies = [
  "anyhow",
  "chrono",
  "hex",
+ "opentelemetry",
  "parking_lot",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "uuid",
+ "vigil",
 ]
 
 [[package]]
@@ -183,6 +186,7 @@ dependencies = [
  "arcan-core",
  "arcan-harness",
  "arcan-lago",
+ "arcan-praxis",
  "arcan-provider",
  "arcan-spaces",
  "arcan-tui",
@@ -299,6 +303,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "arcan-praxis"
+version = "0.2.1"
+dependencies = [
+ "aios-protocol",
+ "arcan-core",
+ "arcan-harness",
+ "praxis-core",
+ "praxis-tools",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

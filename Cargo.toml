@@ -3,6 +3,7 @@ members = [
   "crates/arcan-console",
   "crates/arcan-core",
   "crates/arcan-harness",
+  "crates/arcan-praxis",
   "crates/arcan-aios-adapters",
   "crates/arcan-store",
   "crates/arcan-provider",
