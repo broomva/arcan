@@ -51,15 +51,17 @@ struct GatingResponse {
 }
 
 /// Mirrors `autonomic_core::gating::AutonomicGatingProfile`.
+///
+/// Published so the gating middleware can read the full profile for enforcement.
 #[derive(Debug, Clone, Deserialize)]
-struct LocalGatingProfile {
+pub struct LocalGatingProfile {
     /// Canonical operational gates (from aios-protocol).
-    operational: GatingProfile,
+    pub operational: GatingProfile,
     /// Economic regulation gates.
-    economic: EconomicGates,
+    pub economic: EconomicGates,
+    /// Human-readable rationale for the gating decision.
     #[serde(default)]
-    #[allow(dead_code)]
-    rationale: Vec<String>,
+    pub rationale: Vec<String>,
 }
 
 /// Economic regulation gates from Autonomic.
@@ -113,6 +115,11 @@ enum AutonomicMode {
     },
 }
 
+/// Shared handle exposing the latest full gating profile from Autonomic.
+///
+/// The gating middleware reads this to enforce per-tick limits.
+pub type GatingProfileHandle = Arc<tokio::sync::RwLock<Option<LocalGatingProfile>>>;
+
 /// Decorator that optionally consults Autonomic before delegating to an inner
 /// [`PolicyGatePort`].
 ///
@@ -126,6 +133,7 @@ pub struct AutonomicPolicyAdapter {
     inner: Arc<dyn PolicyGatePort>,
     mode: AutonomicMode,
     economic_handle: EconomicGateHandle,
+    profile_handle: GatingProfileHandle,
 }
 
 impl AutonomicPolicyAdapter {
@@ -141,6 +149,7 @@ impl AutonomicPolicyAdapter {
             inner,
             mode: AutonomicMode::Embedded(controller),
             economic_handle,
+            profile_handle: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -157,6 +166,7 @@ impl AutonomicPolicyAdapter {
             inner,
             mode: AutonomicMode::Remote { client, base_url },
             economic_handle: Arc::new(tokio::sync::RwLock::new(None)),
+            profile_handle: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -168,6 +178,14 @@ impl AutonomicPolicyAdapter {
     /// Returns a cloneable handle to the latest economic gates.
     pub fn economic_handle(&self) -> EconomicGateHandle {
         self.economic_handle.clone()
+    }
+
+    /// Returns a cloneable handle to the latest full gating profile.
+    ///
+    /// The gating middleware reads this to enforce per-tick limits
+    /// (tool call caps, file mutation caps, network/shell restrictions).
+    pub fn profile_handle(&self) -> GatingProfileHandle {
+        self.profile_handle.clone()
     }
 
     /// Returns a reference to the embedded controller, if in embedded mode.
@@ -197,6 +215,41 @@ impl PolicyGatePort for AutonomicPolicyAdapter {
                 let Some(profile) = controller.evaluate_gating(session_id.as_str()).await else {
                     return Ok(inner_decision);
                 };
+                // Log rationale from the gating profile.
+                if !profile.rationale.is_empty() {
+                    tracing::info!(
+                        session = %session_id,
+                        rationale = ?profile.rationale,
+                        "Autonomic gating rationale (embedded)"
+                    );
+                }
+                // Store full profile for the gating middleware.
+                {
+                    let local = LocalGatingProfile {
+                        operational: profile.operational.clone(),
+                        economic: EconomicGates {
+                            economic_mode: match profile.economic.economic_mode {
+                                autonomic_core::EconomicMode::Sovereign => EconomicMode::Sovereign,
+                                autonomic_core::EconomicMode::Conserving => {
+                                    EconomicMode::Conserving
+                                }
+                                autonomic_core::EconomicMode::Hustle => EconomicMode::Hustle,
+                                autonomic_core::EconomicMode::Hibernate => EconomicMode::Hibernate,
+                            },
+                            max_tokens_next_turn: profile.economic.max_tokens_next_turn,
+                            preferred_model: profile.economic.preferred_model.map(|t| match t {
+                                autonomic_core::ModelTier::Flagship => ModelTier::Flagship,
+                                autonomic_core::ModelTier::Standard => ModelTier::Standard,
+                                autonomic_core::ModelTier::Budget => ModelTier::Budget,
+                            }),
+                            allow_expensive_tools: profile.economic.allow_expensive_tools,
+                            allow_replication: profile.economic.allow_replication,
+                        },
+                        rationale: profile.rationale.clone(),
+                    };
+                    let mut handle = self.profile_handle.write().await;
+                    *handle = Some(local);
+                }
                 // Economic handle is already updated by the embedded controller.
                 Ok(merge_decision(inner_decision, &profile.operational))
             }
@@ -204,6 +257,19 @@ impl PolicyGatePort for AutonomicPolicyAdapter {
                 let Some(gating) = self.fetch_gating(&session_id).await else {
                     return Ok(inner_decision);
                 };
+                // Log rationale from the gating profile.
+                if !gating.rationale.is_empty() {
+                    tracing::info!(
+                        session = %session_id,
+                        rationale = ?gating.rationale,
+                        "Autonomic gating rationale (remote)"
+                    );
+                }
+                // Store full profile for the gating middleware.
+                {
+                    let mut handle = self.profile_handle.write().await;
+                    *handle = Some(gating.clone());
+                }
                 // Store economic gates for provider layer.
                 {
                     let mut handle = self.economic_handle.write().await;

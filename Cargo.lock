@@ -62,13 +62,16 @@ dependencies = [
  "anyhow",
  "chrono",
  "hex",
+ "opentelemetry",
  "parking_lot",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "uuid",
+ "vigil",
 ]
 
 [[package]]
