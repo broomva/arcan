@@ -24,6 +24,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -38,6 +42,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,6 +66,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
@@ -91,6 +103,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
         with:
@@ -109,6 +125,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88.0"
@@ -133,6 +153,10 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
           git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-deny --locked
       - run: cargo deny check
