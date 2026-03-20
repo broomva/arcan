@@ -582,7 +582,12 @@ fn run_serve(
         let cors = tower_http::cors::CorsLayer::permissive();
         let router = router.layer(cors);
 
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        // Bind to 0.0.0.0 when ARCAN_BIND_ADDR is set (containers/production),
+        // otherwise default to 127.0.0.1 (local development).
+        let addr: std::net::SocketAddr = std::env::var("ARCAN_BIND_ADDR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let listener = TcpListener::bind(addr).await?;
 
         tracing::info!(%addr, "Listening");
