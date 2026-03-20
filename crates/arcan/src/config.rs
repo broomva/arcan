@@ -18,6 +18,8 @@ pub struct ArcanConfig {
     pub agent: AgentConfig,
     #[serde(default)]
     pub spaces: SpacesConfig,
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -54,6 +56,24 @@ pub struct AgentConfig {
     pub approval_timeout: Option<u64>,
 }
 
+/// Skills discovery configuration.
+///
+/// Controls where Arcan scans for SKILL.md files during startup.
+/// Directories are scanned in order; later entries can override earlier ones.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Directories to scan for SKILL.md files.
+    /// Supports `~` expansion. Defaults if empty:
+    /// `[".arcan/skills", ".agents/skills", "~/.agents/skills"]`
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// Whether skill discovery is enabled on startup (default: true).
+    pub enabled: Option<bool>,
+    /// Whether to write a registry cache to `.arcan/skills/registry.json` (default: true).
+    pub write_registry: Option<bool>,
+}
+
 /// Fully resolved configuration with concrete values (no Options).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -69,6 +89,12 @@ pub struct ResolvedConfig {
     pub spaces_host: Option<String>,
     pub spaces_database_id: Option<String>,
     pub spaces_token: Option<String>,
+    /// Resolved skill discovery directories (absolute paths, ~ expanded).
+    pub skill_dirs: Vec<std::path::PathBuf>,
+    /// Whether skill discovery is enabled.
+    pub skills_enabled: bool,
+    /// Whether to write the skill registry cache.
+    pub skills_write_registry: bool,
 }
 
 impl ArcanConfig {
@@ -125,6 +151,17 @@ impl ArcanConfig {
                 entry.enable_streaming = pc.enable_streaming;
             }
         }
+
+        // Skills: non-empty dirs override, options merge
+        if !other.skills.dirs.is_empty() {
+            self.skills.dirs.clone_from(&other.skills.dirs);
+        }
+        if other.skills.enabled.is_some() {
+            self.skills.enabled = other.skills.enabled;
+        }
+        if other.skills.write_registry.is_some() {
+            self.skills.write_registry = other.skills.write_registry;
+        }
     }
 
     /// Set a key using dotted notation. Shortcut keys:
@@ -169,6 +206,18 @@ impl ArcanConfig {
                     .parse()
                     .map_err(|e| format!("invalid approval_timeout: {e}"))?;
                 self.agent.approval_timeout = Some(v);
+            }
+            "skills.enabled" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid skills.enabled: {e}"))?;
+                self.skills.enabled = Some(v);
+            }
+            "skills.write_registry" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid skills.write_registry: {e}"))?;
+                self.skills.write_registry = Some(v);
             }
             _ if key.starts_with("providers.") => {
                 // e.g. providers.ollama.base_url
@@ -221,6 +270,15 @@ impl ArcanConfig {
             }
             "agent.approval_timeout" | "approval_timeout" => {
                 self.agent.approval_timeout.map(|v| v.to_string())
+            }
+            "skills.enabled" => self.skills.enabled.map(|v| v.to_string()),
+            "skills.write_registry" => self.skills.write_registry.map(|v| v.to_string()),
+            "skills.dirs" => {
+                if self.skills.dirs.is_empty() {
+                    None
+                } else {
+                    Some(self.skills.dirs.join(", "))
+                }
             }
             _ if key.starts_with("providers.") => {
                 let rest = &key["providers.".len()..];
@@ -363,6 +421,11 @@ pub fn resolve(
         .map(String::from)
         .or_else(|| config.spaces.token.clone());
 
+    // Skills: resolve directories with ~ expansion and defaults
+    let skill_dirs = resolve_skill_dirs(&config.skills.dirs);
+    let skills_enabled = config.skills.enabled.unwrap_or(true);
+    let skills_write_registry = config.skills.write_registry.unwrap_or(true);
+
     ResolvedConfig {
         provider,
         model,
@@ -375,7 +438,36 @@ pub fn resolve(
         spaces_host,
         spaces_database_id,
         spaces_token,
+        skill_dirs,
+        skills_enabled,
+        skills_write_registry,
     }
+}
+
+/// Resolve skill discovery directories from config, applying defaults and ~ expansion.
+fn resolve_skill_dirs(configured: &[String]) -> Vec<std::path::PathBuf> {
+    let dirs = if configured.is_empty() {
+        // Default discovery directories (project-local → global)
+        vec![
+            ".arcan/skills".to_string(),
+            ".agents/skills".to_string(),
+            "~/.agents/skills".to_string(),
+        ]
+    } else {
+        configured.to_vec()
+    };
+
+    dirs.iter().map(|d| expand_tilde(d)).collect()
+}
+
+/// Expand `~` prefix to the user's home directory.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 /// Generate default config TOML content.
@@ -411,6 +503,11 @@ pub fn default_config_content() -> String {
 # host = "https://maincloud.spacetimedb.com"
 # database_id = "your-database-identity"
 # token = ""  # or set SPACETIMEDB_TOKEN env var
+
+[skills]
+# enabled = true
+# write_registry = true
+# dirs = [".arcan/skills", ".agents/skills", "~/.agents/skills"]
 "#
     .to_owned()
 }

@@ -2,6 +2,7 @@ mod cli_run;
 mod config;
 mod daemon;
 mod factory;
+mod skills;
 
 use aios_protocol::sandbox::NetworkPolicy;
 use aios_protocol::{
@@ -152,6 +153,25 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Manage skill discovery and registration
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsAction {
+    /// List discovered skills
+    List {
+        /// Force fresh discovery instead of using cache
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Sync skills from ~/.agents/skills/ into .arcan/skills/ via symlinks
+    Sync,
+    /// Show skill discovery directories
+    Dirs,
 }
 
 #[derive(Subcommand)]
@@ -394,6 +414,33 @@ fn run_serve(
     registry.register(MemoryQueryTool::new(memory_projection));
     registry.register(MemoryProposeTool::new(journal.clone()));
     registry.register(MemoryCommitTool::new(journal.clone()));
+
+    // --- Skill discovery (scan directories for SKILL.md files) ---
+    if resolved.skills_enabled {
+        let skills_dir = data_dir.join("skills");
+        std::fs::create_dir_all(&skills_dir).ok();
+
+        match skills::discover_skills(
+            &resolved.skill_dirs,
+            data_dir,
+            resolved.skills_write_registry,
+        ) {
+            Ok(skill_registry) => {
+                let catalog = skill_registry.system_prompt_catalog();
+                if !catalog.is_empty() {
+                    tracing::info!(
+                        count = skill_registry.count(),
+                        "skills discovered and registered"
+                    );
+                    // TODO: inject catalog into context compiler system prompt
+                    // once context compiler is wired for skill-aware prompts
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "skill discovery failed (non-fatal)");
+            }
+        }
+    }
 
     // --- Spaces distributed networking (opt-in) ---
     #[cfg(feature = "spaces")]
@@ -831,6 +878,80 @@ fn run_logout(provider: &str, data_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::print_stdout)]
+fn run_skills(
+    data_dir: &Path,
+    resolved: &config::ResolvedConfig,
+    action: &SkillsAction,
+) -> anyhow::Result<()> {
+    match action {
+        SkillsAction::List { refresh } => {
+            let refresh = *refresh;
+            if !refresh {
+                // Try cache first
+                if skills::print_cached_skills(data_dir) {
+                    return Ok(());
+                }
+            }
+
+            // Full discovery
+            let registry = skills::discover_skills(
+                &resolved.skill_dirs,
+                data_dir,
+                resolved.skills_write_registry,
+            )?;
+            skills::print_skills_list(&registry);
+        }
+        SkillsAction::Sync => {
+            println!("Syncing skills into .arcan/skills/...");
+            let synced = skills::sync_skills_to_arcan(data_dir)?;
+
+            // Re-discover after sync
+            let registry = skills::discover_skills(
+                &resolved.skill_dirs,
+                data_dir,
+                resolved.skills_write_registry,
+            )?;
+
+            println!();
+            println!(
+                "Synced {} new skill(s). Total discovered: {}",
+                synced,
+                registry.count()
+            );
+        }
+        SkillsAction::Dirs => {
+            println!("Skill discovery directories:");
+            for dir in &resolved.skill_dirs {
+                let exists = dir.exists();
+                let count = if exists {
+                    // Count SKILL.md files
+                    walkdir::WalkDir::new(dir)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .filter(|e| {
+                            e.file_type().is_file()
+                                && e.file_name()
+                                    .to_string_lossy()
+                                    .eq_ignore_ascii_case("SKILL.md")
+                        })
+                        .count()
+                } else {
+                    0
+                };
+                let status = if exists {
+                    format!("{count} skill(s)")
+                } else {
+                    "(not found)".to_string()
+                };
+                println!("  {} — {}", dir.display(), status);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(&cli.data_dir)?;
@@ -944,6 +1065,20 @@ fn main() -> anyhow::Result<()> {
             ))
         }
         Some(Command::Config { action }) => run_config(&data_dir, action),
+        Some(Command::Skills { action }) => {
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+                cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
+            );
+            run_skills(&data_dir, &resolved, &action)
+        }
         Some(Command::Status) => {
             let resolved = config::resolve(
                 &file_config,

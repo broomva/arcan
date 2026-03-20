@@ -1236,7 +1236,7 @@ mod tests {
                 "provider-a"
             }
             fn complete(&self, _: &ProviderRequest) -> Result<ModelTurn, CoreError> {
-                unimplemented!()
+                Err(CoreError::Provider("stub provider".into()))
             }
         }
 
@@ -1246,7 +1246,7 @@ mod tests {
                 "provider-b"
             }
             fn complete(&self, _: &ProviderRequest) -> Result<ModelTurn, CoreError> {
-                unimplemented!()
+                Err(CoreError::Provider("stub provider".into()))
             }
         }
 
