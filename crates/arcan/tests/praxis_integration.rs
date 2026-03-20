@@ -8,7 +8,7 @@
 //! executes the named tool, making these tests fully deterministic.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,7 +50,7 @@ fn unique_root(name: &str) -> PathBuf {
 ///
 /// Returns `(runtime, provider_handle, provider_factory, workspace_root)`.
 fn build_praxis_runtime(
-    root: PathBuf,
+    root: &Path,
 ) -> (
     Arc<KernelRuntime>,
     arcan_core::runtime::SwappableProviderHandle,
@@ -126,7 +126,7 @@ fn build_praxis_runtime(
 
     // --- Kernel runtime ---
     let runtime = Arc::new(KernelRuntime::new(
-        RuntimeConfig::new(root.clone()),
+        RuntimeConfig::new(root.to_path_buf()),
         event_store,
         provider_adapter,
         tool_harness,
@@ -213,7 +213,7 @@ async fn run_tool(
 #[tokio::test]
 async fn write_file_through_full_stack() {
     let root = unique_root("write");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -255,7 +255,7 @@ async fn write_file_through_full_stack() {
 #[tokio::test]
 async fn read_file_through_full_stack() {
     let root = unique_root("read");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -289,7 +289,7 @@ async fn read_file_through_full_stack() {
 #[tokio::test]
 async fn list_dir_through_full_stack() {
     let root = unique_root("listdir");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -324,7 +324,7 @@ async fn list_dir_through_full_stack() {
 #[tokio::test]
 async fn write_then_read_round_trip() {
     let root = unique_root("roundtrip");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -367,7 +367,7 @@ async fn write_then_read_round_trip() {
 #[tokio::test]
 async fn glob_finds_files() {
     let root = unique_root("glob");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -402,7 +402,7 @@ async fn glob_finds_files() {
 #[tokio::test]
 async fn grep_searches_content() {
     let root = unique_root("grep");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -439,7 +439,7 @@ async fn grep_searches_content() {
 #[tokio::test]
 async fn bash_executes_command() {
     let root = unique_root("bash");
-    let (runtime, handle, factory, _workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, _workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
@@ -469,7 +469,7 @@ async fn bash_executes_command() {
 #[tokio::test]
 async fn mock_provider_triggers_write_file() {
     let root = unique_root("mock-write");
-    let (runtime, handle, factory, workspace) = build_praxis_runtime(root.clone());
+    let (runtime, handle, factory, workspace) = build_praxis_runtime(&root);
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 

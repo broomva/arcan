@@ -214,6 +214,7 @@ dependencies = [
  "lago-policy",
  "lago-store",
  "praxis-core",
+ "praxis-skills",
  "praxis-tools",
  "reqwest",
  "reqwest-eventsource",
@@ -227,6 +228,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "vigil",
+ "walkdir",
 ]
 
 [[package]]

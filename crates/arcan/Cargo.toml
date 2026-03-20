@@ -33,6 +33,7 @@ arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.2.1" }
 arcan-harness = { path = "../arcan-harness", version = "0.2.1" }
 praxis-core.workspace = true
 praxis-tools.workspace = true
+praxis-skills.workspace = true
 arcan-provider = { path = "../arcan-provider", version = "0.2.1" }
 arcand = { path = "../arcand", version = "0.2.1" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.1" }
@@ -62,6 +63,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender = "0.2"
 vigil.workspace = true
+walkdir.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
