@@ -28,7 +28,9 @@ aios-protocol = { workspace = true }
 aios-runtime = { workspace = true }
 utoipa = { workspace = true }
 utoipa-scalar = { workspace = true }
+thiserror.workspace = true
 tracing.workspace = true
+jsonwebtoken.workspace = true
 vigil.workspace = true
 
 [dev-dependencies]
@@ -40,3 +42,5 @@ aios-events = { workspace = true }
 aios-policy = { workspace = true }
 aios-sandbox = { workspace = true }
 aios-tools = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
