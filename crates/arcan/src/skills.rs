@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+// Re-export activation types from praxis-skills for downstream consumers.
+#[allow(unused_imports)]
+pub use praxis_skills::registry::{ActiveSkillState, active_skill_prompt, try_activate_skill};
+
 /// Cached skill entry written to registry.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryEntry {
@@ -186,6 +190,85 @@ pub fn print_cached_skills(data_dir: &Path) -> bool {
     }
 }
 
+/// Build a system prompt from the skill registry for injection into provider calls.
+///
+/// Wraps the skill catalog in a context block with instructions for the LLM.
+/// This is the "liquid prompt" — a dynamic system prompt that flows through the
+/// provider adapter, making skills visible to the model.
+pub fn build_system_prompt(registry: &SkillRegistry) -> String {
+    let catalog = registry.system_prompt_catalog();
+    if catalog.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "<skills>\n{catalog}\n\n\
+         To activate a skill, the user types `/skill-name` as their message.\n\
+         When a skill is active, follow its instructions for that interaction.\n\
+         </skills>"
+    )
+}
+
+/// Convert a SKILL.md `SkillMcpServer` declaration into a `praxis-mcp` config.
+#[allow(dead_code)] // Phase 4: called when MCP activation is wired into arcand
+pub fn to_mcp_config(
+    server: &praxis_skills::parser::SkillMcpServer,
+) -> praxis_mcp::connection::McpServerConfig {
+    praxis_mcp::connection::McpServerConfig {
+        name: server.name.clone(),
+        transport: praxis_mcp::connection::McpTransport::Stdio {
+            command: server.command.clone(),
+            args: server.args.clone(),
+        },
+    }
+}
+
+/// Spawn MCP server connections for a skill's declared `mcp_servers`.
+///
+/// Returns the list of tool definitions discovered from all connected servers
+/// (as aios-protocol `ToolDefinition`s that can be bridged into Arcan via `PraxisToolBridge`),
+/// plus the connection handles (which must be kept alive for the skill session duration).
+///
+/// Errors are logged but don't fail the activation — partial MCP is better than none.
+#[allow(dead_code)] // Phase 4: called when MCP activation is wired into arcand
+pub async fn spawn_skill_mcp_servers(
+    servers: &[praxis_skills::parser::SkillMcpServer],
+) -> (
+    Vec<aios_protocol::tool::ToolDefinition>,
+    Vec<praxis_mcp::connection::McpConnection>,
+) {
+    use aios_protocol::tool::Tool;
+
+    let mut all_definitions = Vec::new();
+    let mut connections = Vec::new();
+
+    for server in servers {
+        let config = to_mcp_config(server);
+        match praxis_mcp::connection::connect_mcp_stdio(&config).await {
+            Ok(connection) => {
+                tracing::info!(
+                    server = %server.name,
+                    tools = connection.tools.len(),
+                    "MCP server connected for skill"
+                );
+                for tool in &connection.tools {
+                    all_definitions.push(tool.definition());
+                }
+                connections.push(connection);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    server = %server.name,
+                    error = %e,
+                    "failed to connect MCP server for skill (non-fatal)"
+                );
+            }
+        }
+    }
+
+    (all_definitions, connections)
+}
+
 /// Sync skills from external install locations into `.arcan/skills/` via symlinks.
 ///
 /// This creates symlinks in `.arcan/skills/` pointing to skills found in
@@ -335,6 +418,35 @@ mod tests {
         assert_eq!(registry.count(), 2);
         assert!(registry.activate("skill-a").is_some());
         assert!(registry.activate("skill-b").is_some());
+    }
+
+    #[test]
+    fn build_system_prompt_includes_catalog() {
+        let skills_dir = TempDir::new().unwrap();
+        create_skill(
+            skills_dir.path(),
+            "commit-helper",
+            "Helps create git commits",
+        );
+        create_skill(skills_dir.path(), "test-runner", "Runs test suites");
+
+        let registry = SkillRegistry::discover(&[skills_dir.path().to_path_buf()]).unwrap();
+
+        let prompt = build_system_prompt(&registry);
+        assert!(prompt.contains("<skills>"));
+        assert!(prompt.contains("</skills>"));
+        assert!(prompt.contains("commit-helper"));
+        assert!(prompt.contains("test-runner"));
+        assert!(prompt.contains("Available skills:"));
+    }
+
+    #[test]
+    fn build_system_prompt_empty_registry() {
+        let empty_dir = TempDir::new().unwrap();
+        let registry = SkillRegistry::discover(&[empty_dir.path().to_path_buf()]).unwrap();
+
+        let prompt = build_system_prompt(&registry);
+        assert!(prompt.is_empty());
     }
 
     #[test]

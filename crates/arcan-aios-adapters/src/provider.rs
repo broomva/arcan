@@ -27,6 +27,8 @@ pub struct ArcanProviderAdapter {
     tools: Vec<arcan_core::protocol::ToolDefinition>,
     streaming_sender: StreamingSenderHandle,
     economic_handle: Option<EconomicGateHandle>,
+    /// System prompt to prepend to every provider call (skill catalog, persona, etc.).
+    system_prompt: Option<Arc<String>>,
 }
 
 impl ArcanProviderAdapter {
@@ -42,6 +44,7 @@ impl ArcanProviderAdapter {
             tools,
             streaming_sender,
             economic_handle: None,
+            system_prompt: None,
         }
     }
 
@@ -56,6 +59,7 @@ impl ArcanProviderAdapter {
             tools,
             streaming_sender,
             economic_handle: None,
+            system_prompt: None,
         }
     }
 
@@ -69,6 +73,54 @@ impl ArcanProviderAdapter {
     pub fn with_economic_handle(mut self, handle: EconomicGateHandle) -> Self {
         self.economic_handle = Some(handle);
         self
+    }
+
+    /// Set the system prompt (skill catalog, persona, context compiler output).
+    ///
+    /// When set, a system message is prepended to every provider call.
+    pub fn with_system_prompt(mut self, prompt: String) -> Self {
+        if !prompt.is_empty() {
+            self.system_prompt = Some(Arc::new(prompt));
+        }
+        self
+    }
+
+    /// Filter tool definitions by an allowed_tools whitelist.
+    ///
+    /// Returns either the filtered set (if whitelist is provided) or the full set.
+    /// Warns on tool names in the whitelist that don't match any registered tool.
+    fn filter_tools(
+        &self,
+        allowed_tools: Option<&[String]>,
+    ) -> Vec<arcan_core::protocol::ToolDefinition> {
+        match allowed_tools {
+            Some(allowed) => {
+                let filtered: Vec<_> = self
+                    .tools
+                    .iter()
+                    .filter(|t| allowed.iter().any(|a| a == &t.name))
+                    .cloned()
+                    .collect();
+
+                // Warn on whitelist entries that don't match any tool.
+                for name in allowed {
+                    if !self.tools.iter().any(|t| &t.name == name) {
+                        tracing::warn!(
+                            tool = %name,
+                            "skill allowed_tools references unknown tool"
+                        );
+                    }
+                }
+
+                tracing::debug!(
+                    total = self.tools.len(),
+                    filtered = filtered.len(),
+                    "tool filtering applied by active skill"
+                );
+                filtered
+            }
+            None => self.tools.clone(),
+        }
     }
 }
 
@@ -123,12 +175,30 @@ impl ModelProviderPort for ArcanProviderAdapter {
             }
         }
 
+        // Build messages: system prompt(s) first, then user objective.
+        let mut messages = Vec::new();
+
+        // Adapter-level system prompt (skill catalog from startup).
+        if let Some(ref prompt) = self.system_prompt {
+            messages.push(ChatMessage::system(prompt.as_str()));
+        }
+
+        // Per-request system prompt (active skill body, context compiler output).
+        if let Some(ref prompt) = request.system_prompt {
+            messages.push(ChatMessage::system(prompt.as_str()));
+        }
+
+        messages.push(ChatMessage::user(request.objective));
+
+        // Apply tool filtering from active skill's allowed_tools whitelist.
+        let tools = self.filter_tools(request.allowed_tools.as_deref());
+
         let provider_request = ProviderRequest {
             run_id: request.run_id.as_str().to_owned(),
             session_id: request.session_id.as_str().to_owned(),
             iteration: request.step_index + 1,
-            messages: vec![ChatMessage::user(request.objective)],
-            tools: self.tools.clone(),
+            messages,
+            tools,
             state: AppState::default(),
         };
 

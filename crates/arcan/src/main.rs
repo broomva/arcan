@@ -21,7 +21,7 @@ use arcan_lago::{
     run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcand::{canonical::create_canonical_router, mock::MockProvider};
+use arcand::mock::MockProvider;
 use clap::{Parser, Subcommand};
 use config::ResolvedConfig;
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
@@ -416,6 +416,8 @@ fn run_serve(
     registry.register(MemoryCommitTool::new(journal.clone()));
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
+    let mut skill_system_prompt = String::new();
+    let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
     if resolved.skills_enabled {
         let skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&skills_dir).ok();
@@ -426,14 +428,13 @@ fn run_serve(
             resolved.skills_write_registry,
         ) {
             Ok(skill_registry) => {
-                let catalog = skill_registry.system_prompt_catalog();
-                if !catalog.is_empty() {
+                if skill_registry.count() > 0 {
                     tracing::info!(
                         count = skill_registry.count(),
                         "skills discovered and registered"
                     );
-                    // TODO: inject catalog into context compiler system prompt
-                    // once context compiler is wired for skill-aware prompts
+                    skill_system_prompt = skills::build_system_prompt(&skill_registry);
+                    skill_registry_arc = Some(Arc::new(skill_registry));
                 }
             }
             Err(e) => {
@@ -504,14 +505,20 @@ fn run_serve(
     // Shared handle: starts empty, filled after runtime creation.
     let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
     let tool_definitions = registry.definitions();
-    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(
-        ArcanProviderAdapter::from_handle(
-            provider_handle.clone(),
-            tool_definitions,
-            streaming_sender.clone(),
-        )
-        .with_economic_handle(economic_handle),
-    );
+    let mut adapter = ArcanProviderAdapter::from_handle(
+        provider_handle.clone(),
+        tool_definitions,
+        streaming_sender.clone(),
+    )
+    .with_economic_handle(economic_handle);
+
+    // Inject the skill catalog as a liquid prompt (system message on every call).
+    if !skill_system_prompt.is_empty() {
+        adapter = adapter.with_system_prompt(skill_system_prompt);
+        tracing::info!("liquid prompt: skill catalog injected into provider adapter");
+    }
+
+    let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(adapter);
     let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
 
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
@@ -547,7 +554,12 @@ fn run_serve(
         ));
 
         // --- HTTP Server ---
-        let mut router = create_canonical_router(runtime, provider_handle, provider_factory);
+        let mut router = arcand::canonical::create_canonical_router_with_skills(
+            runtime,
+            provider_handle,
+            provider_factory,
+            skill_registry_arc,
+        );
 
         // --- Console UI ---
         #[cfg(feature = "console")]
