@@ -29,7 +29,7 @@ impl Provider for StubProvider {
         &self,
         _: &arcan_core::runtime::ProviderRequest,
     ) -> Result<arcan_core::protocol::ModelTurn, CoreError> {
-        todo!("stub provider for canonical API tests")
+        Err(CoreError::Provider("stub provider — not implemented".into()))
     }
 }
 
