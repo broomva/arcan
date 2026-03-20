@@ -11,6 +11,10 @@ categories.workspace = true
 description = "Arcan adapters implementing aiOS protocol ports"
 readme = "../../README.md"
 
+[features]
+default = []
+haima = ["dep:haima-core", "dep:haima-x402", "dep:haima-wallet", "dep:haima-lago"]
+
 [lints]
 workspace = true
 
@@ -21,6 +25,12 @@ aios-policy = { workspace = true }
 autonomic-core = { workspace = true }
 autonomic-controller = { workspace = true }
 lago-core = { workspace = true }
+
+# Haima finance engine (optional, feature-gated)
+haima-core = { workspace = true, optional = true }
+haima-x402 = { workspace = true, optional = true }
+haima-wallet = { workspace = true, optional = true }
+haima-lago = { workspace = true, optional = true }
 
 anyhow.workspace = true
 async-trait.workspace = true
@@ -34,3 +44,8 @@ vigil.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6"
+# Haima dependencies needed for tests (feature-gated tests require the types)
+haima-core = { workspace = true }
+haima-x402 = { workspace = true }
+haima-wallet = { workspace = true }
+haima-lago = { workspace = true }

@@ -109,6 +109,12 @@ praxis-mcp = { path = "../praxis/crates/praxis-mcp", version = "0.1.0" }
 autonomic-core = { path = "../autonomic/crates/autonomic-core", version = "0.1.0" }
 autonomic-controller = { path = "../autonomic/crates/autonomic-controller", version = "0.1.0" }
 
+# Haima agentic finance engine (x402 payments, wallet, policy)
+haima-core = { path = "../haima/crates/haima-core", version = "0.1.0" }
+haima-x402 = { path = "../haima/crates/haima-x402", version = "0.1.0" }
+haima-wallet = { path = "../haima/crates/haima-wallet", version = "0.1.0" }
+haima-lago = { path = "../haima/crates/haima-lago", version = "0.1.0" }
+
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.1" }
 lago-core = { path = "../lago/crates/lago-core", version = "0.2.1" }
