@@ -180,6 +180,8 @@ struct CanonicalState {
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
     started_at: Instant,
+    /// Shared skill registry for activation and tool filtering.
+    skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -419,11 +421,22 @@ pub fn create_canonical_router(
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
 ) -> Router {
+    create_canonical_router_with_skills(runtime, provider_handle, provider_factory, None)
+}
+
+/// Create the canonical router with an optional skill registry for activation.
+pub fn create_canonical_router_with_skills(
+    runtime: Arc<KernelRuntime>,
+    provider_handle: SwappableProviderHandle,
+    provider_factory: Arc<dyn ProviderFactory>,
+    skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
+) -> Router {
     let state = CanonicalState {
         runtime,
         provider_handle,
         provider_factory,
         started_at: Instant::now(),
+        skill_registry,
     };
     Router::new()
         .route("/health", get(health))
@@ -603,6 +616,38 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
+    // --- Skill activation: detect `/skill-name` prefix in objective ---
+    let (objective, skill_prompt, skill_allowed_tools) =
+        if let Some(ref registry) = state.skill_registry {
+            match praxis_skills::registry::try_activate_skill(registry, &request.objective) {
+                Ok(Some((skill_state, remaining))) => {
+                    let prompt = praxis_skills::registry::active_skill_prompt(&skill_state);
+                    tracing::info!(
+                        skill = %skill_state.name,
+                        "skill activated via liquid prompt"
+                    );
+                    let allowed = skill_state.allowed_tools.clone();
+                    // Use remaining text as objective, or a default if no remaining text
+                    let obj = if remaining.is_empty() {
+                        format!(
+                            "The user activated the '{}' skill. Follow its instructions.",
+                            skill_state.name
+                        )
+                    } else {
+                        remaining
+                    };
+                    (obj, Some(prompt), allowed)
+                }
+                Ok(None) => (request.objective.clone(), None, None),
+                Err(err) => {
+                    tracing::warn!(error = %err, "skill activation failed");
+                    (request.objective.clone(), None, None)
+                }
+            }
+        } else {
+            (request.objective.clone(), None, None)
+        };
+
     let agent_span = vigil::spans::agent_span(session_id.as_str(), "arcan");
     let tick = state
         .runtime
@@ -610,8 +655,10 @@ async fn run_session(
             &session_id,
             &branch,
             TickInput {
-                objective: request.objective,
+                objective,
                 proposed_tool,
+                system_prompt: skill_prompt,
+                allowed_tools: skill_allowed_tools,
             },
         )
         .instrument(agent_span)
