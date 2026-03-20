@@ -23,6 +23,8 @@ use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
+use crate::auth::{AuthConfig, jwt_auth_middleware};
+
 // ─── Mirror schemas for external aios-protocol types ─────────────────────────
 //
 // These structs mirror the shape of aios-protocol types that don't derive
@@ -425,6 +427,13 @@ pub fn create_canonical_router(
 }
 
 /// Create the canonical router with an optional skill registry for activation.
+///
+/// Health check endpoints (`/health`, `/healthz`) are always unprotected
+/// so Railway / Kubernetes probes can reach them without a token.
+///
+/// All other endpoints are protected by JWT auth middleware when
+/// `ARCAN_JWT_SECRET` or `AUTH_SECRET` is configured. If neither env var
+/// is set, auth is disabled and all routes are open (local dev mode).
 pub fn create_canonical_router_with_skills(
     runtime: Arc<KernelRuntime>,
     provider_handle: SwappableProviderHandle,
@@ -438,10 +447,19 @@ pub fn create_canonical_router_with_skills(
         started_at: Instant::now(),
         skill_registry,
     };
-    Router::new()
+
+    let auth_config = Arc::new(AuthConfig::from_env());
+
+    // Public routes — no auth required (health checks, API docs).
+    let public = Router::new()
         .route("/health", get(health))
+        .route("/healthz", get(health))
         .route("/openapi.json", get(openapi_json))
         .merge(Scalar::with_url("/docs", ApiDoc::openapi()))
+        .with_state(state.clone());
+
+    // Protected routes — JWT auth middleware applied.
+    let protected = Router::new()
         .route("/sessions", get(list_sessions).post(create_session))
         .route("/sessions/{session_id}/runs", post(run_session))
         .route("/sessions/{session_id}/state", get(get_state))
@@ -460,7 +478,13 @@ pub fn create_canonical_router_with_skills(
             post(resolve_approval),
         )
         .route("/provider", get(get_provider).put(set_provider))
-        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            auth_config,
+            jwt_auth_middleware,
+        ))
+        .with_state(state);
+
+    public.merge(protected)
 }
 
 // ─── Stream format ───────────────────────────────────────────────────────────

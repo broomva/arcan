@@ -34,6 +34,9 @@ COPY --from=builder /build/target/release/arcan /usr/local/bin/arcan
 USER arcan
 WORKDIR /home/arcan
 
+# ARCAN_JWT_SECRET — shared HMAC secret for JWT auth (same as broomva.tech AUTH_SECRET).
+# When set, all API routes except /health and /healthz require a valid Bearer token.
+# When unset, auth is disabled (local dev mode).
 ENV RUST_LOG=info
 EXPOSE 3000
 
