@@ -542,8 +542,14 @@ fn run_serve(
             None
         }
     };
-    let nous_observer: Option<Arc<NousToolObserver>> =
-        nous_registry.map(|r| Arc::new(NousToolObserver::new(r)));
+    let nous_observer: Option<Arc<NousToolObserver>> = nous_registry.map(|r| {
+        Arc::new(NousToolObserver::with_journal(
+            r,
+            journal.clone(),
+            "default",
+            "arcan",
+        ))
+    });
 
     let mut harness = ArcanHarnessAdapter::new(registry);
     if let Some(ref obs) = nous_observer {

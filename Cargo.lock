@@ -227,6 +227,7 @@ dependencies = [
  "lago-store",
  "nous-core",
  "nous-heuristics",
+ "nous-lago",
  "nous-middleware",
  "praxis-core",
  "praxis-mcp",
@@ -2813,6 +2814,20 @@ dependencies = [
  "nous-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nous-lago"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "lago-core",
+ "lago-journal",
+ "nous-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,25 +1,45 @@
 //! Nous tool observer — bridges Nous eval into the ArcanHarnessAdapter observer pattern.
 //!
 //! Runs Nous heuristic evaluators after each tool execution and logs scores via tracing.
+//! Optionally persists eval scores to the Lago journal via `LivePublisher`.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use arcan_aios_adapters::tools::ToolHarnessObserver;
 use async_trait::async_trait;
+use lago_core::Journal;
 use nous_core::{EvalContext, EvalHook, EvalScore, EvaluatorRegistry};
+use nous_lago::LivePublisher;
 use tracing::debug;
 
 /// Observer that runs Nous evaluators after tool execution.
 pub struct NousToolObserver {
     registry: EvaluatorRegistry,
     scores: Mutex<Vec<EvalScore>>,
+    publisher: Option<LivePublisher>,
 }
 
 impl NousToolObserver {
+    #[allow(dead_code)]
     pub fn new(registry: EvaluatorRegistry) -> Self {
         Self {
             registry,
             scores: Mutex::new(Vec::new()),
+            publisher: None,
+        }
+    }
+
+    /// Create a new observer with Lago journal persistence via `LivePublisher`.
+    pub fn with_journal(
+        registry: EvaluatorRegistry,
+        journal: Arc<dyn Journal>,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Self {
+        Self {
+            registry,
+            scores: Mutex::new(Vec::new()),
+            publisher: Some(LivePublisher::new(journal, session_id, agent_id)),
         }
     }
 
@@ -66,6 +86,17 @@ impl ToolHarnessObserver for NousToolObserver {
                             score.layer.label(),
                             score.value,
                         );
+
+                        // Persist to Lago journal (fire-and-forget)
+                        if let Some(ref publisher) = self.publisher {
+                            if let Err(e) = publisher.publish_score(score).await {
+                                tracing::warn!(
+                                    evaluator = score.evaluator,
+                                    error = %e,
+                                    "failed to publish eval score to Lago (non-fatal)"
+                                );
+                            }
+                        }
                     }
                     if let Ok(mut acc) = self.scores.lock() {
                         acc.extend(scores);
