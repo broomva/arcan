@@ -39,6 +39,7 @@ impl ToolHarnessObserver for NousToolObserver {
         for evaluator in self.registry.evaluators_for(EvalHook::PostToolCall) {
             match evaluator.evaluate(&ctx) {
                 Ok(scores) => {
+                    let metrics = vigil::GenAiMetrics::new("arcan");
                     for score in &scores {
                         debug!(
                             evaluator = score.evaluator,
@@ -47,6 +48,23 @@ impl ToolHarnessObserver for NousToolObserver {
                             layer = %score.layer,
                             session_id = %session_id,
                             "nous eval score"
+                        );
+                        // Emit OTel span event
+                        vigil::spans::eval_event(
+                            &score.evaluator,
+                            score.value,
+                            score.label.as_str(),
+                            score.layer.label(),
+                            match score.timing {
+                                nous_core::EvalTiming::Inline => "inline",
+                                nous_core::EvalTiming::Async => "async",
+                            },
+                        );
+                        // Record eval metric
+                        metrics.record_eval_execution(
+                            &score.evaluator,
+                            score.layer.label(),
+                            score.value,
                         );
                     }
                     if let Ok(mut acc) = self.scores.lock() {
