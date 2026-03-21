@@ -542,13 +542,34 @@ fn run_serve(
             None
         }
     };
+
+    // --- Async judge provider (LLM-as-judge for run-level evaluation) ---
+    // Requires ANTHROPIC_API_KEY. Builds reqwest::blocking::Client, so must
+    // be initialized BEFORE entering the Tokio runtime.
+    let judge_provider: Option<Arc<dyn nous_judge::JudgeProvider>> =
+        match nous_judge::AnthropicJudgeProvider::from_env() {
+            Ok(provider) => {
+                tracing::info!("async judge evaluators enabled (AnthropicJudgeProvider)");
+                Some(Arc::new(provider))
+            }
+            Err(_) => {
+                tracing::info!("async judge evaluators disabled (ANTHROPIC_API_KEY not set)");
+                None
+            }
+        };
+
+    let score_store = nous_api::ScoreStore::new();
     let nous_observer: Option<Arc<NousToolObserver>> = nous_registry.map(|r| {
-        Arc::new(NousToolObserver::with_journal(
-            r,
-            journal.clone(),
-            "default",
-            "arcan",
-        ))
+        Arc::new(
+            NousToolObserver::with_full_config(
+                r,
+                journal.clone(),
+                "default",
+                "arcan",
+                judge_provider,
+            )
+            .with_score_store(score_store.clone()),
+        )
     });
 
     let mut harness = ArcanHarnessAdapter::new(registry);
@@ -590,11 +611,20 @@ fn run_serve(
         ));
 
         // --- HTTP Server ---
+        // Build run observers for canonical router (async judge on run completion).
+        let run_observers: Vec<Arc<dyn arcan_aios_adapters::tools::ToolHarnessObserver>> =
+            match nous_observer {
+                Some(obs) => vec![obs],
+                None => Vec::new(),
+            };
+
         let mut router = arcand::canonical::create_canonical_router_with_skills(
             runtime,
             provider_handle,
             provider_factory,
             skill_registry_arc,
+            Some(score_store),
+            run_observers,
         );
 
         // --- Console UI ---

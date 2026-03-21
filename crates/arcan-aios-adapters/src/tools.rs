@@ -12,6 +12,19 @@ use tracing::Instrument;
 #[async_trait]
 pub trait ToolHarnessObserver: Send + Sync {
     async fn post_execute(&self, session_id: String, tool_name: String);
+
+    /// Called after an agent run completes. Default: no-op.
+    ///
+    /// Receives the session context so observers can run async evaluations
+    /// (e.g. LLM-as-judge) without blocking the HTTP response.
+    async fn on_run_finished(
+        &self,
+        _session_id: String,
+        _objective: Option<String>,
+        _final_answer: Option<String>,
+        _assistant_messages: Option<String>,
+    ) {
+    }
 }
 
 #[derive(Clone)]
@@ -31,6 +44,13 @@ impl ArcanHarnessAdapter {
     pub fn with_observer(mut self, observer: Arc<dyn ToolHarnessObserver>) -> Self {
         self.observers.push(observer);
         self
+    }
+
+    /// Return a reference to the registered observers.
+    ///
+    /// Used by the canonical router to call `on_run_finished` after a run completes.
+    pub fn observers(&self) -> &[Arc<dyn ToolHarnessObserver>] {
+        &self.observers
     }
 }
 

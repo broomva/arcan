@@ -225,8 +225,10 @@ dependencies = [
  "lago-journal",
  "lago-policy",
  "lago-store",
+ "nous-api",
  "nous-core",
  "nous-heuristics",
+ "nous-judge",
  "nous-lago",
  "nous-middleware",
  "praxis-core",
@@ -443,12 +445,15 @@ dependencies = [
  "aios-runtime",
  "aios-sandbox",
  "aios-tools",
+ "arcan-aios-adapters",
  "arcan-core",
  "async-trait",
  "axum 0.8.8",
  "chrono",
  "http-body-util",
  "jsonwebtoken",
+ "nous-api",
+ "nous-core",
  "praxis-skills",
  "reqwest",
  "serde",
@@ -2798,6 +2803,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nous-api"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.8",
+ "nous-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nous-core"
 version = "0.1.0"
 dependencies = [
@@ -2814,6 +2831,18 @@ dependencies = [
  "nous-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nous-judge"
+version = "0.1.0"
+dependencies = [
+ "nous-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -1,5 +1,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration, time::Instant};
 
+use arcan_aios_adapters::tools::ToolHarnessObserver;
+
 use aios_protocol::{
     AgentStateVector, BranchId, BranchInfo, BranchMergeResult, EventKind, EventRecord,
     ModelRouting, OperatingMode, PolicySet, SessionId, ToolCall,
@@ -184,6 +186,8 @@ struct CanonicalState {
     started_at: Instant,
     /// Shared skill registry for activation and tool filtering.
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
+    /// Observers notified on run completion (async judge evaluators, EGRI bridge).
+    run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -423,7 +427,14 @@ pub fn create_canonical_router(
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
 ) -> Router {
-    create_canonical_router_with_skills(runtime, provider_handle, provider_factory, None)
+    create_canonical_router_with_skills(
+        runtime,
+        provider_handle,
+        provider_factory,
+        None,
+        None,
+        Vec::new(),
+    )
 }
 
 /// Create the canonical router with an optional skill registry for activation.
@@ -439,6 +450,8 @@ pub fn create_canonical_router_with_skills(
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
+    score_store: Option<nous_api::ScoreStore>,
+    run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
 ) -> Router {
     let state = CanonicalState {
         runtime,
@@ -446,6 +459,7 @@ pub fn create_canonical_router_with_skills(
         provider_factory,
         started_at: Instant::now(),
         skill_registry,
+        run_observers,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -484,7 +498,16 @@ pub fn create_canonical_router_with_skills(
         ))
         .with_state(state);
 
-    public.merge(protected)
+    let mut router = public.merge(protected);
+
+    // Nest Nous eval routes at /nous when a ScoreStore is available.
+    if let Some(store) = score_store {
+        // Use the default heuristic count (6) as the evaluator_count for the API health response.
+        // The actual evaluators are managed by NousToolObserver; this count is informational.
+        router = router.nest("/nous", nous_api::nous_router(store, 6));
+    }
+
+    router
 }
 
 // ─── Stream format ───────────────────────────────────────────────────────────
@@ -690,6 +713,21 @@ async fn run_session(
         .map_err(internal_error)?;
 
     persist_last_session_hint(state.runtime.as_ref(), &tick.session_id).await;
+
+    // Fire-and-forget: notify run observers (async judge evaluators, EGRI bridge).
+    // This never blocks the HTTP response — observers run in background tasks.
+    if !state.run_observers.is_empty() {
+        let observers = state.run_observers.clone();
+        let sid = tick.session_id.as_str().to_owned();
+        let obj = Some(request.objective.clone());
+        tokio::spawn(async move {
+            for observer in &observers {
+                observer
+                    .on_run_finished(sid.clone(), obj.clone(), None, None)
+                    .await;
+            }
+        });
+    }
 
     Ok(Json(RunResponse {
         session_id: tick.session_id,

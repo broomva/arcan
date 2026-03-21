@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
+arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.2.1" }
 praxis-skills.workspace = true
 axum.workspace = true
 chrono.workspace = true
@@ -31,6 +32,8 @@ utoipa-scalar = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 jsonwebtoken.workspace = true
+nous-api.workspace = true
+nous-core.workspace = true
 vigil.workspace = true
 
 [dev-dependencies]
