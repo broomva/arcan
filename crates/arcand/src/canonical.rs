@@ -716,14 +716,26 @@ async fn run_session(
 
     // Fire-and-forget: notify run observers (async judge evaluators, EGRI bridge).
     // This never blocks the HTTP response — observers run in background tasks.
+    // Extract final answer and assistant messages from session events for judge context.
     if !state.run_observers.is_empty() {
         let observers = state.run_observers.clone();
         let sid = tick.session_id.as_str().to_owned();
         let obj = Some(request.objective.clone());
+        let runtime_for_events = state.runtime.clone();
+        let tick_session = tick.session_id.clone();
         tokio::spawn(async move {
+            // Query recent events to extract final answer and assistant text.
+            let (final_answer, assistant_messages) =
+                extract_run_context(&runtime_for_events, &tick_session).await;
+
             for observer in &observers {
                 observer
-                    .on_run_finished(sid.clone(), obj.clone(), None, None)
+                    .on_run_finished(
+                        sid.clone(),
+                        obj.clone(),
+                        final_answer.clone(),
+                        assistant_messages.clone(),
+                    )
                     .await;
             }
         });
@@ -736,6 +748,52 @@ async fn run_session(
         events_emitted: tick.events_emitted,
         last_sequence: tick.last_sequence,
     }))
+}
+
+/// Extract final answer and assistant messages from the most recent run events.
+///
+/// Queries the session's event history and collects `Message` and `TextDelta`
+/// events to reconstruct what the agent said. Returns `(final_answer, assistant_messages)`.
+async fn extract_run_context(
+    runtime: &KernelRuntime,
+    session_id: &SessionId,
+) -> (Option<String>, Option<String>) {
+    let Ok(events) = runtime.read_events(session_id, 0, 1000).await else {
+        return (None, None);
+    };
+
+    let mut assistant_texts = Vec::new();
+    let mut final_answer = None;
+
+    for record in &events {
+        match &record.kind {
+            aios_protocol::event::EventKind::Message { content, role, .. }
+                if role == "assistant" =>
+            {
+                assistant_texts.push(content.clone());
+                final_answer = Some(content.clone());
+            }
+            aios_protocol::event::EventKind::TextDelta { delta, .. } => {
+                assistant_texts.push(delta.clone());
+                final_answer = Some(delta.clone());
+            }
+            aios_protocol::event::EventKind::RunFinished {
+                final_answer: Some(fa),
+                ..
+            } => {
+                final_answer = Some(fa.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let messages = if assistant_texts.is_empty() {
+        None
+    } else {
+        Some(assistant_texts.join("\n"))
+    };
+
+    (final_answer, messages)
 }
 
 #[utoipa::path(
