@@ -116,6 +116,11 @@ haima-x402 = { path = "../haima/crates/haima-x402", version = "0.1.0" }
 haima-wallet = { path = "../haima/crates/haima-wallet", version = "0.1.0" }
 haima-lago = { path = "../haima/crates/haima-lago", version = "0.1.0" }
 
+# Nous metacognitive evaluation (inline quality scoring)
+nous-core = { path = "../nous/crates/nous-core", version = "0.1.0" }
+nous-heuristics = { path = "../nous/crates/nous-heuristics", version = "0.1.0" }
+nous-middleware = { path = "../nous/crates/nous-middleware", version = "0.1.0" }
+
 # Lago persistence layer (path deps for local development)
 lago-api = { path = "../lago/crates/lago-api", version = "0.2.1" }
 lago-core = { path = "../lago/crates/lago-core", version = "0.2.1" }

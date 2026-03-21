@@ -64,6 +64,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender = "0.2"
 vigil.workspace = true
+nous-core.workspace = true
+nous-heuristics.workspace = true
+nous-middleware.workspace = true
 walkdir.workspace = true
 chrono.workspace = true
 

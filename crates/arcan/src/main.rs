@@ -2,6 +2,7 @@ mod cli_run;
 mod config;
 mod daemon;
 mod factory;
+mod nous_observer;
 mod skills;
 
 use aios_protocol::sandbox::NetworkPolicy;
@@ -28,6 +29,7 @@ use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_core::{BranchId, SessionId};
 use lago_fs::{FsTracker, Manifest};
 use lago_journal::RedbJournal;
+use nous_observer::NousToolObserver;
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
@@ -527,7 +529,27 @@ fn run_serve(
     }
 
     let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(adapter);
-    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(registry));
+
+    // --- Nous metacognitive evaluation ---
+    // Initialize the eval registry and log scores via tracing on every tool execution.
+    let nous_registry = match nous_heuristics::default_registry() {
+        Ok(reg) => {
+            tracing::info!(evaluators = reg.len(), "Nous eval active");
+            Some(reg)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Nous eval init failed (non-fatal)");
+            None
+        }
+    };
+    let nous_observer: Option<Arc<NousToolObserver>> =
+        nous_registry.map(|r| Arc::new(NousToolObserver::new(r)));
+
+    let mut harness = ArcanHarnessAdapter::new(registry);
+    if let Some(ref obs) = nous_observer {
+        harness = harness.with_observer(obs.clone());
+    }
+    let tool_harness: Arc<dyn ToolHarnessPort> = Arc::new(harness);
 
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
 
