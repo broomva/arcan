@@ -104,9 +104,10 @@ impl NousToolObserver {
 
 #[async_trait]
 impl ToolHarnessObserver for NousToolObserver {
-    async fn post_execute(&self, session_id: String, tool_name: String) {
+    async fn post_execute(&self, session_id: String, tool_name: String, is_error: bool) {
         let mut ctx = EvalContext::new(&session_id);
         ctx.tool_name = Some(tool_name);
+        ctx.tool_errored = Some(is_error);
         // Post-tool-call: run safety compliance and any PostToolCall evaluators.
         for evaluator in self.registry.evaluators_for(EvalHook::PostToolCall) {
             match evaluator.evaluate(&ctx) {

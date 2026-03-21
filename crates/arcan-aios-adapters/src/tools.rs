@@ -11,7 +11,7 @@ use tracing::Instrument;
 
 #[async_trait]
 pub trait ToolHarnessObserver: Send + Sync {
-    async fn post_execute(&self, session_id: String, tool_name: String);
+    async fn post_execute(&self, session_id: String, tool_name: String, is_error: bool);
 
     /// Called after an agent run completes. Default: no-op.
     ///
@@ -115,6 +115,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
                 .post_execute(
                     request.session_id.as_str().to_owned(),
                     arcan_call.tool_name.clone(),
+                    result.is_error,
                 )
                 .instrument(tool_span.clone())
                 .await;
