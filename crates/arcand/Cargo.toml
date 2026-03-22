@@ -34,7 +34,7 @@ tracing.workspace = true
 jsonwebtoken.workspace = true
 nous-api.workspace = true
 nous-core.workspace = true
-vigil.workspace = true
+life-vigil.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

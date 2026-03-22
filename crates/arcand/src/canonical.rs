@@ -560,7 +560,7 @@ async fn health(State(state): State<CanonicalState>) -> Json<serde_json::Value> 
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime_seconds,
         "telemetry": {
-            "sdk": "vigil",
+            "sdk": "life-vigil",
             "otlp_configured": otlp_configured,
         },
     }))
@@ -722,7 +722,7 @@ async fn run_session(
         "running agent tick with identity"
     );
 
-    let agent_span = vigil::spans::agent_span(session_id.as_str(), "arcan");
+    let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
     let tick = state
         .runtime
         .tick_on_branch(

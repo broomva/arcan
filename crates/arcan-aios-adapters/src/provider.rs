@@ -219,7 +219,7 @@ impl ModelProviderPort for ArcanProviderAdapter {
         let branch_id = request.branch_id.clone();
 
         // Create a GenAI chat span for this provider call.
-        let chat_span = vigil::spans::chat_span(&provider_name, &provider_name, None, None);
+        let chat_span = life_vigil::spans::chat_span(&provider_name, &provider_name, None, None);
 
         // Measure wall-clock duration of the provider call for GenAI metrics.
         let call_start = Instant::now();
@@ -265,7 +265,7 @@ impl ModelProviderPort for ArcanProviderAdapter {
             ModelStopReason::Error => "error",
             ModelStopReason::Other(s) => s.as_str(),
         };
-        vigil::spans::record_finish_reason(&chat_span, reason_str);
+        life_vigil::spans::record_finish_reason(&chat_span, reason_str);
 
         let mut directives = Vec::new();
         let mut final_answer = None;
@@ -309,11 +309,11 @@ impl ModelProviderPort for ArcanProviderAdapter {
 
         // Record token usage on the chat span.
         if let Some(ref usage) = usage {
-            vigil::spans::record_token_usage(&chat_span, usage);
+            life_vigil::spans::record_token_usage(&chat_span, usage);
         }
 
         // Record GenAI metrics (token usage + operation duration).
-        let genai_metrics = vigil::metrics::GenAiMetrics::new("arcan");
+        let genai_metrics = life_vigil::metrics::GenAiMetrics::new("arcan");
         let call_duration = call_start.elapsed();
         genai_metrics.record_operation_duration(&provider_name, "chat", call_duration);
         if let Some(ref usage) = usage {

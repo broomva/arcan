@@ -112,7 +112,7 @@ impl ToolHarnessObserver for NousToolObserver {
         for evaluator in self.registry.evaluators_for(EvalHook::PostToolCall) {
             match evaluator.evaluate(&ctx) {
                 Ok(scores) => {
-                    let metrics = vigil::GenAiMetrics::new("arcan");
+                    let metrics = life_vigil::GenAiMetrics::new("arcan");
                     for score in &scores {
                         debug!(
                             evaluator = score.evaluator,
@@ -123,7 +123,7 @@ impl ToolHarnessObserver for NousToolObserver {
                             "nous eval score"
                         );
                         // Emit OTel span event
-                        vigil::spans::eval_event(
+                        life_vigil::spans::eval_event(
                             &score.evaluator,
                             score.value,
                             score.label.as_str(),
@@ -219,7 +219,7 @@ impl ToolHarnessObserver for NousToolObserver {
         ];
 
         let mut all_scores: Vec<EvalScore> = Vec::new();
-        let metrics = vigil::GenAiMetrics::new("arcan");
+        let metrics = life_vigil::GenAiMetrics::new("arcan");
 
         for (eval_name, eval) in judge_specs {
             let eval_ctx = ctx.clone();
@@ -242,7 +242,7 @@ impl ToolHarnessObserver for NousToolObserver {
                         );
 
                         // Emit OTel span event
-                        vigil::spans::eval_event(
+                        life_vigil::spans::eval_event(
                             &score.evaluator,
                             score.value,
                             score.label.as_str(),

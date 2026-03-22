@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use vigil::VigConfig;
+use life_vigil::VigConfig;
 
 #[derive(Parser)]
 #[command(
@@ -1050,7 +1050,7 @@ fn main() -> anyhow::Result<()> {
         }) => {
             // Structured logging + optional OTel export via Vigil
             let _vigil_guard =
-                vigil::init_telemetry(VigConfig::for_service("arcan").with_env_overrides())
+                life_vigil::init_telemetry(VigConfig::for_service("arcan").with_env_overrides())
                     .expect("failed to initialize telemetry");
 
             let resolved = config::resolve(

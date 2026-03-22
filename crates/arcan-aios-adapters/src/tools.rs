@@ -76,7 +76,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             iteration: 1,
         };
 
-        let tool_span = vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
+        let tool_span = life_vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
         let tool_start = Instant::now();
         let result = {
             let _guard = tool_span.enter();
@@ -88,7 +88,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
         let status_str;
         let outcome = if result.is_error {
             status_str = "error";
-            vigil::spans::record_tool_status(&tool_span, status_str);
+            life_vigil::spans::record_tool_status(&tool_span, status_str);
             ToolOutcome::Failure {
                 error: result
                     .output
@@ -99,14 +99,14 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             }
         } else {
             status_str = "ok";
-            vigil::spans::record_tool_status(&tool_span, status_str);
+            life_vigil::spans::record_tool_status(&tool_span, status_str);
             ToolOutcome::Success {
                 output: result.output,
             }
         };
 
         // Record GenAI tool execution metric.
-        let genai_metrics = vigil::metrics::GenAiMetrics::new("arcan");
+        let genai_metrics = life_vigil::metrics::GenAiMetrics::new("arcan");
         genai_metrics.record_tool_execution(&arcan_call.tool_name, status_str);
 
         for observer in &self.observers {
