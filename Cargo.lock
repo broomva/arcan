@@ -557,6 +557,7 @@ version = "0.1.0"
 dependencies = [
  "aios-protocol",
  "autonomic-core",
+ "chrono",
  "serde",
  "serde_json",
  "tracing",
@@ -1773,6 +1774,7 @@ dependencies = [
  "aios-protocol",
  "async-trait",
  "base64",
+ "chrono",
  "haima-core",
  "haima-wallet",
  "hex",
