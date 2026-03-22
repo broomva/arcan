@@ -20,7 +20,7 @@ aios-protocol.workspace = true
 praxis-core.workspace = true
 praxis-tools.workspace = true
 praxis-skills.workspace = true
-praxis-mcp.workspace = true
+praxis-mcp-bridge.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

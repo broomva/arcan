@@ -29,6 +29,7 @@ use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_core::{BranchId, SessionId};
 use lago_fs::{FsTracker, Manifest};
 use lago_journal::RedbJournal;
+use life_vigil::VigConfig;
 use nous_observer::NousToolObserver;
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
@@ -39,7 +40,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use life_vigil::VigConfig;
 
 #[derive(Parser)]
 #[command(

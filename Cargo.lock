@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aios-events"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "aios-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aios-protocol",
  "async-trait",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "aios-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -78,12 +78,13 @@ dependencies = [
 
 [[package]]
 name = "aios-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
  "chrono",
  "hex",
+ "life-vigil",
  "opentelemetry",
  "parking_lot",
  "serde",
@@ -93,12 +94,11 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "uuid",
- "vigil",
 ]
 
 [[package]]
 name = "aios-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "aios-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aios-policy",
  "aios-protocol",
@@ -225,6 +225,7 @@ dependencies = [
  "lago-journal",
  "lago-policy",
  "lago-store",
+ "life-vigil",
  "nous-api",
  "nous-core",
  "nous-heuristics",
@@ -232,7 +233,7 @@ dependencies = [
  "nous-lago",
  "nous-middleware",
  "praxis-core",
- "praxis-mcp",
+ "praxis-mcp-bridge",
  "praxis-skills",
  "praxis-tools",
  "reqwest",
@@ -246,7 +247,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "vigil",
  "walkdir",
 ]
 
@@ -266,13 +266,13 @@ dependencies = [
  "haima-wallet",
  "haima-x402",
  "lago-core",
+ "life-vigil",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "uuid",
- "vigil",
  "wiremock",
 ]
 
@@ -309,7 +309,7 @@ dependencies = [
  "aios-protocol",
  "arcan-core",
  "praxis-core",
- "praxis-mcp",
+ "praxis-mcp-bridge",
  "praxis-skills",
  "praxis-tools",
  "serde_json",
@@ -452,6 +452,7 @@ dependencies = [
  "chrono",
  "http-body-util",
  "jsonwebtoken",
+ "life-vigil",
  "nous-api",
  "nous-core",
  "praxis-skills",
@@ -466,7 +467,6 @@ dependencies = [
  "utoipa",
  "utoipa-scalar",
  "uuid",
- "vigil",
 ]
 
 [[package]]
@@ -2524,6 +2524,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "life-vigil"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "line-clipping"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3373,7 +3391,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "praxis-mcp"
+name = "praxis-mcp-bridge"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
@@ -5302,24 +5320,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vigil"
-version = "0.1.0"
-dependencies = [
- "aios-protocol",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "vtparse"

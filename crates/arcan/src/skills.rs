@@ -209,14 +209,14 @@ pub fn build_system_prompt(registry: &SkillRegistry) -> String {
     )
 }
 
-/// Convert a SKILL.md `SkillMcpServer` declaration into a `praxis-mcp` config.
+/// Convert a SKILL.md `SkillMcpServer` declaration into a `praxis-mcp-bridge` config.
 #[allow(dead_code)] // Phase 4: called when MCP activation is wired into arcand
 pub fn to_mcp_config(
     server: &praxis_skills::parser::SkillMcpServer,
-) -> praxis_mcp::connection::McpServerConfig {
-    praxis_mcp::connection::McpServerConfig {
+) -> praxis_mcp_bridge::connection::McpServerConfig {
+    praxis_mcp_bridge::connection::McpServerConfig {
         name: server.name.clone(),
-        transport: praxis_mcp::connection::McpTransport::Stdio {
+        transport: praxis_mcp_bridge::connection::McpTransport::Stdio {
             command: server.command.clone(),
             args: server.args.clone(),
         },
@@ -235,7 +235,7 @@ pub async fn spawn_skill_mcp_servers(
     servers: &[praxis_skills::parser::SkillMcpServer],
 ) -> (
     Vec<aios_protocol::tool::ToolDefinition>,
-    Vec<praxis_mcp::connection::McpConnection>,
+    Vec<praxis_mcp_bridge::connection::McpConnection>,
 ) {
     use aios_protocol::tool::Tool;
 
@@ -244,7 +244,7 @@ pub async fn spawn_skill_mcp_servers(
 
     for server in servers {
         let config = to_mcp_config(server);
-        match praxis_mcp::connection::connect_mcp_stdio(&config).await {
+        match praxis_mcp_bridge::connection::connect_mcp_stdio(&config).await {
             Ok(connection) => {
                 tracing::info!(
                     server = %server.name,

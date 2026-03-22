@@ -76,7 +76,8 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             iteration: 1,
         };
 
-        let tool_span = life_vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
+        let tool_span =
+            life_vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
         let tool_start = Instant::now();
         let result = {
             let _guard = tool_span.enter();
