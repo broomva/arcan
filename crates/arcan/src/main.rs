@@ -625,6 +625,7 @@ fn run_serve(
             skill_registry_arc,
             Some(score_store),
             run_observers,
+            None, // identity — use BasicIdentity default; Anima can be wired later
         );
 
         // --- Console UI ---

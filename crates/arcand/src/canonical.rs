@@ -3,8 +3,9 @@ use std::{convert::Infallible, sync::Arc, time::Duration, time::Instant};
 use arcan_aios_adapters::tools::ToolHarnessObserver;
 
 use aios_protocol::{
-    AgentStateVector, BranchId, BranchInfo, BranchMergeResult, EventKind, EventRecord,
-    ModelRouting, OperatingMode, PolicySet, SessionId, ToolCall,
+    AgentIdentityProvider, AgentStateVector, BasicIdentity, BranchId, BranchInfo,
+    BranchMergeResult, EventKind, EventRecord, ModelRouting, OperatingMode, PolicySet, SessionId,
+    ToolCall,
 };
 use aios_runtime::{KernelRuntime, TickInput};
 use arcan_core::runtime::{ProviderFactory, SwappableProviderHandle};
@@ -188,6 +189,8 @@ struct CanonicalState {
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
     /// Observers notified on run completion (async judge evaluators, EGRI bridge).
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
+    /// Agent identity provider — supplies persona, DID, capabilities, and policy.
+    identity: Arc<dyn AgentIdentityProvider>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -434,6 +437,7 @@ pub fn create_canonical_router(
         None,
         None,
         Vec::new(),
+        None,
     )
 }
 
@@ -452,7 +456,16 @@ pub fn create_canonical_router_with_skills(
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
     score_store: Option<nous_api::ScoreStore>,
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
+    identity: Option<Arc<dyn AgentIdentityProvider>>,
 ) -> Router {
+    let identity: Arc<dyn AgentIdentityProvider> =
+        identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
+    tracing::info!(
+        agent_id = %identity.agent_id(),
+        agent_name = %identity.soul_profile().name,
+        "agent identity initialized"
+    );
+
     let state = CanonicalState {
         runtime,
         provider_handle,
@@ -460,6 +473,7 @@ pub fn create_canonical_router_with_skills(
         started_at: Instant::now(),
         skill_registry,
         run_observers,
+        identity,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -695,6 +709,19 @@ async fn run_session(
             (request.objective.clone(), None, None)
         };
 
+    // Build system prompt: persona block (from identity) + skill prompt (if any).
+    let persona = state.identity.persona_block();
+    let system_prompt = match skill_prompt {
+        Some(skill) => Some(format!("{persona}\n\n---\n\n{skill}")),
+        None => Some(persona),
+    };
+
+    tracing::debug!(
+        agent_id = %state.identity.agent_id(),
+        did = state.identity.did().unwrap_or("none"),
+        "running agent tick with identity"
+    );
+
     let agent_span = vigil::spans::agent_span(session_id.as_str(), "arcan");
     let tick = state
         .runtime
@@ -704,7 +731,7 @@ async fn run_session(
             TickInput {
                 objective,
                 proposed_tool,
-                system_prompt: skill_prompt,
+                system_prompt,
                 allowed_tools: skill_allowed_tools,
             },
         )
