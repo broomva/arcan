@@ -53,8 +53,8 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 authors = ["Arcan Contributors"]
-repository = "https://github.com/broomva/arcan-rs"
-homepage = "https://github.com/broomva/arcan-rs"
+repository = "https://github.com/broomva/arcan"
+homepage = "https://docs.broomva.tech/docs/life/arcan"
 keywords = ["agent", "llm", "runtime", "daemon", "ai"]
 categories = ["command-line-utilities", "web-programming"]
 
