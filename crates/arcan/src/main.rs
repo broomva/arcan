@@ -44,6 +44,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(
     name = "arcan",
+    version,
     about = "Arcan agent runtime with streaming and tool execution"
 )]
 struct Cli {
