@@ -141,6 +141,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "anima-core"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "blake3",
+ "bs58",
+ "chrono",
+ "haima-core",
+ "indexmap 2.13.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "anima-lago"
+version = "0.1.0"
+dependencies = [
+ "aios-protocol",
+ "anima-core",
+ "blake3",
+ "chrono",
+ "lago-core",
+ "lago-journal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "anstream"
 version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,6 +306,25 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "arcan-anima"
+version = "0.2.1"
+dependencies = [
+ "anima-core",
+ "anima-lago",
+ "arcan-core",
+ "chrono",
+ "haima-core",
+ "lago-core",
+ "lago-journal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -556,6 +607,7 @@ name = "autonomic-controller"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
+ "anima-core",
  "autonomic-core",
  "chrono",
  "serde",
@@ -568,6 +620,7 @@ name = "autonomic-core"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
+ "anima-core",
  "chrono",
  "serde",
  "serde_json",
@@ -774,6 +827,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
 ]
 
 [[package]]
@@ -4760,6 +4822,21 @@ dependencies = [
  "displaydoc",
  "zerovec",
 ]
+
+[[package]]
+name = "tinyvec"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"

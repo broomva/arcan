@@ -1,0 +1,32 @@
+[package]
+name = "arcan-anima"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bridge between Arcan agent runtime and Anima identity/self layer"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.2.1" }
+anima-core.workspace = true
+anima-lago.workspace = true
+lago-core.workspace = true
+lago-journal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+haima-core.workspace = true
+tempfile = "3"

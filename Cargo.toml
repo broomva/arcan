@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/arcan-anima",
   "crates/arcan-console",
   "crates/arcan-core",
   "crates/arcan-harness",
@@ -132,6 +133,10 @@ lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.1" }
 lago-store = { path = "../lago/crates/lago-store", version = "0.2.1" }
 lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.1" }
 lago-aios-eventstore-adapter = { path = "../lago/crates/lago-aios-eventstore-adapter", version = "0.2.1" }
+
+# Anima identity, beliefs, and self-model
+anima-core = { path = "../anima/crates/anima-core", version = "0.1.0" }
+anima-lago = { path = "../anima/crates/anima-lago", version = "0.1.0" }
 
 # Observability
 life-vigil = { version = "0.1.0", path = "../vigil" }
