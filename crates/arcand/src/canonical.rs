@@ -918,6 +918,34 @@ async fn list_events(
     }))
 }
 
+/// Format an `EventRecord` as Vercel AI SDK v6 SSE data strings.
+///
+/// Returns zero or more raw data strings to be sent as individual SSE `data:`
+/// lines. Each string is already JSON-serialised.
+///
+/// Mapping:
+/// - `Message` / `AssistantMessageCommitted` → full lifecycle frames
+///   (`start-step`, `text-start`, `text-delta`, `text-end`, `finish-step`)
+/// - `TextDelta` / `AssistantTextDelta` → single `text-delta` frame
+/// - Everything else → no frames (filtered out)
+fn vercel_frames(event: &EventRecord) -> Vec<String> {
+    let id = event.event_id.to_string();
+    match &event.kind {
+        EventKind::Message { content, .. }
+        | EventKind::AssistantMessageCommitted { content, .. } => vec![
+            json!({"type": "start-step"}).to_string(),
+            json!({"type": "text-start"}).to_string(),
+            json!({"type": "text-delta", "id": id, "delta": content}).to_string(),
+            json!({"type": "text-end"}).to_string(),
+            json!({"type": "finish-step"}).to_string(),
+        ],
+        EventKind::TextDelta { delta, .. } | EventKind::AssistantTextDelta { delta, .. } => {
+            vec![json!({"type": "text-delta", "id": id, "delta": delta}).to_string()]
+        }
+        _ => vec![],
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/{session_id}/events/stream",
@@ -953,39 +981,85 @@ async fn stream_events(
         .map_err(internal_error)?;
 
     let mut subscription = state.runtime.subscribe_events();
-    let (tx, rx) = mpsc::channel::<EventRecord>(256);
+
+    // Channel carries (sse_id, data_string) pairs.
+    // For canonical format, sse_id = Some(sequence) for reconnection support.
+    // For Vercel format, sse_id = None (not needed by the client).
+    let (tx, rx) = mpsc::channel::<(Option<u64>, String)>(256);
     let session_filter = session_id.clone();
     let branch_filter = branch.clone();
+    let session_id_str = session_id.to_string();
 
     tokio::spawn(async move {
-        for event in replay {
-            let _ = tx.send(event).await;
+        // Vercel format: emit a `start` frame before any events.
+        if format == StreamFormat::VercelAiSdkV6 {
+            let start = json!({"type": "start", "messageId": session_id_str}).to_string();
+            let _ = tx.send((None, start)).await;
         }
+
+        // Replay historical events.
+        for event in replay {
+            let is_run_finished = matches!(event.kind, EventKind::RunFinished { .. });
+            match format {
+                StreamFormat::Canonical => {
+                    let seq = event.sequence;
+                    let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
+                    let _ = tx.send((Some(seq), data)).await;
+                }
+                StreamFormat::VercelAiSdkV6 => {
+                    for frame in vercel_frames(&event) {
+                        let _ = tx.send((None, frame)).await;
+                    }
+                }
+            }
+            if format == StreamFormat::VercelAiSdkV6 && is_run_finished {
+                let finish = json!({"type": "finish", "finishReason": "stop"}).to_string();
+                let _ = tx.send((None, finish)).await;
+                return;
+            }
+        }
+
+        // Live events from the broadcast subscription.
         while let Ok(event) = subscription.recv().await {
             if event.session_id == session_filter
                 && event.branch_id == branch_filter
                 && (event.sequence > cursor || event.sequence == 0)
             {
-                let _ = tx.send(event).await;
+                let is_run_finished = matches!(event.kind, EventKind::RunFinished { .. });
+                match format {
+                    StreamFormat::Canonical => {
+                        let seq = event.sequence;
+                        let data =
+                            serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
+                        let _ = tx.send((Some(seq), data)).await;
+                    }
+                    StreamFormat::VercelAiSdkV6 => {
+                        for frame in vercel_frames(&event) {
+                            let _ = tx.send((None, frame)).await;
+                        }
+                    }
+                }
+                if format == StreamFormat::VercelAiSdkV6 && is_run_finished {
+                    let finish = json!({"type": "finish", "finishReason": "stop"}).to_string();
+                    let _ = tx.send((None, finish)).await;
+                    return;
+                }
             }
+        }
+
+        // Subscription ended (runtime shutdown). Close Vercel streams cleanly.
+        if format == StreamFormat::VercelAiSdkV6 {
+            let finish = json!({"type": "finish", "finishReason": "stop"}).to_string();
+            let _ = tx.send((None, finish)).await;
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(move |event| {
-        let base = Event::default().id(event.sequence.to_string());
-        let frame = match format {
-            StreamFormat::Canonical => {
-                let payload = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
-                base.data(payload)
-            }
-            StreamFormat::VercelAiSdkV6 => {
-                let payload =
-                    serde_json::to_string(&json!({ "type": "data-aios-event", "data": event }))
-                        .unwrap_or_else(|_| "{}".to_owned());
-                base.data(payload)
-            }
-        };
-        Ok::<Event, Infallible>(frame)
+    let stream = ReceiverStream::new(rx).map(|(id, data)| {
+        let mut evt = Event::default().data(data);
+        if let Some(seq) = id {
+            evt = evt.id(seq.to_string());
+        }
+        Ok::<Event, Infallible>(evt)
     });
 
     let sse = Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)));

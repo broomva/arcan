@@ -215,6 +215,10 @@ pub fn to_ui_stream_parts(event: &AgentEvent) -> Vec<UiStreamPart> {
         AgentEvent::ContextCompacted { .. } | AgentEvent::ApprovalResolved { .. } => {
             vec![]
         }
+        // Forward-compatible catch-all: new variants added to AgentEvent that
+        // don't yet have a UI mapping are silently dropped.
+        #[allow(unreachable_patterns)]
+        _ => vec![],
     }
 }
 

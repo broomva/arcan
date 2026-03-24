@@ -286,20 +286,25 @@ async fn canonical_stream_vercel_v6_replays_protocol_events() {
             continue;
         };
         body.push_str(&String::from_utf8_lossy(&chunk));
-        if body.contains("\"type\":\"data-aios-event\"") {
+        // Stop once we see the terminal frame (or after 12 chunks).
+        if body.contains("\"type\":\"finish\"") {
             break;
         }
     }
 
+    // Vercel AI SDK v6 format: stream opens with a `start` frame and the
+    // `x-vercel-ai-ui-message-stream: v1` header (asserted above).
     assert!(
-        body.contains("\"type\":\"data-aios-event\""),
-        "expected v6 event wrapper, body: {body}"
+        body.contains("\"type\":\"start\""),
+        "expected Vercel v6 start frame, body: {body}"
     );
+    // Text content events produce lifecycle frames (start-step … finish-step)
+    // and/or a finish frame when the run completes.
     assert!(
-        body.contains("\"type\":\"SessionCreated\"")
-            || body.contains("\"type\":\"RunStarted\"")
-            || body.contains("\"type\":\"RunFinished\""),
-        "expected canonical event payload in stream, body: {body}"
+        body.contains("\"type\":\"start-step\"")
+            || body.contains("\"type\":\"text-delta\"")
+            || body.contains("\"type\":\"finish\""),
+        "expected Vercel v6 lifecycle frames in stream, body: {body}"
     );
 
     server.abort();
