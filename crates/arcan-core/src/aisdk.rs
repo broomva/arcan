@@ -212,7 +212,11 @@ pub fn to_ui_stream_parts(event: &AgentEvent) -> Vec<UiStreamPart> {
         }
 
         // Events with no UI representation
-        AgentEvent::ContextCompacted { .. } | AgentEvent::ApprovalResolved { .. } => {
+        AgentEvent::ContextCompacted { .. }
+        | AgentEvent::ApprovalResolved { .. }
+        | AgentEvent::MessageQueued { .. }
+        | AgentEvent::RunSteered { .. }
+        | AgentEvent::QueueDrained { .. } => {
             vec![]
         }
     }
