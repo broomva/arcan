@@ -1003,8 +1003,7 @@ async fn stream_events(
             match format {
                 StreamFormat::Canonical => {
                     let seq = event.sequence;
-                    let data =
-                        serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
+                    let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_owned());
                     let _ = tx.send((Some(seq), data)).await;
                 }
                 StreamFormat::VercelAiSdkV6 => {
@@ -1014,8 +1013,7 @@ async fn stream_events(
                 }
             }
             if format == StreamFormat::VercelAiSdkV6 && is_run_finished {
-                let finish =
-                    json!({"type": "finish", "finishReason": "stop"}).to_string();
+                let finish = json!({"type": "finish", "finishReason": "stop"}).to_string();
                 let _ = tx.send((None, finish)).await;
                 return;
             }
@@ -1042,8 +1040,7 @@ async fn stream_events(
                     }
                 }
                 if format == StreamFormat::VercelAiSdkV6 && is_run_finished {
-                    let finish =
-                        json!({"type": "finish", "finishReason": "stop"}).to_string();
+                    let finish = json!({"type": "finish", "finishReason": "stop"}).to_string();
                     let _ = tx.send((None, finish)).await;
                     return;
                 }
