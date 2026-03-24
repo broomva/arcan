@@ -244,6 +244,11 @@ struct StreamQuery {
     replay_limit: Option<usize>,
     /// Stream format: "canonical" (default) or "vercel_ai_sdk_v6"
     format: Option<String>,
+    /// Unique ID for the assistant message (used as `messageId` in the Vercel
+    /// AI SDK v6 `start` frame). Callers should supply a fresh UUID per turn so
+    /// React has a unique key for each assistant message in the same session.
+    /// Falls back to `session_id` when absent.
+    message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -995,11 +1000,16 @@ async fn stream_events(
     let session_filter = session_id.clone();
     let branch_filter = branch.clone();
     let session_id_str = session_id.to_string();
+    // Use the caller-supplied message_id for the Vercel start frame so each
+    // assistant turn in the same session gets a unique React key.
+    let message_id = query
+        .message_id
+        .unwrap_or_else(|| session_id_str.clone());
 
     tokio::spawn(async move {
         // Vercel format: emit a `start` frame before any events.
         if format == StreamFormat::VercelAiSdkV6 {
-            let start = json!({"type": "start", "messageId": session_id_str}).to_string();
+            let start = json!({"type": "start", "messageId": message_id}).to_string();
             let _ = tx.send((None, start)).await;
         }
 
