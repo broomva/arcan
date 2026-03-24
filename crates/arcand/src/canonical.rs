@@ -926,7 +926,9 @@ async fn list_events(
 /// Mapping:
 /// - `Message` / `AssistantMessageCommitted` → full lifecycle frames
 ///   (`start-step`, `text-start`, `text-delta`, `text-end`, `finish-step`)
-/// - `TextDelta` / `AssistantTextDelta` → single `text-delta` frame
+/// - `TextDelta` / `AssistantTextDelta` → full lifecycle frames with own id
+///   (`text-start`, `text-delta`, `text-end`) — each streaming delta gets its
+///   own text part so `useChat` always has an active text part to append to
 /// - Everything else → no frames (filtered out)
 fn vercel_frames(event: &EventRecord) -> Vec<String> {
     let id = event.event_id.to_string();
@@ -934,13 +936,17 @@ fn vercel_frames(event: &EventRecord) -> Vec<String> {
         EventKind::Message { content, .. }
         | EventKind::AssistantMessageCommitted { content, .. } => vec![
             json!({"type": "start-step"}).to_string(),
-            json!({"type": "text-start"}).to_string(),
+            json!({"type": "text-start", "id": id}).to_string(),
             json!({"type": "text-delta", "id": id, "delta": content}).to_string(),
-            json!({"type": "text-end"}).to_string(),
+            json!({"type": "text-end", "id": id}).to_string(),
             json!({"type": "finish-step"}).to_string(),
         ],
         EventKind::TextDelta { delta, .. } | EventKind::AssistantTextDelta { delta, .. } => {
-            vec![json!({"type": "text-delta", "id": id, "delta": delta}).to_string()]
+            vec![
+                json!({"type": "text-start", "id": id}).to_string(),
+                json!({"type": "text-delta", "id": id, "delta": delta}).to_string(),
+                json!({"type": "text-end", "id": id}).to_string(),
+            ]
         }
         _ => vec![],
     }
