@@ -25,16 +25,22 @@ use aios_protocol::{Capability, PolicySet};
 pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<Capability> {
     match tool_name {
         // ── Shell / subprocess ─────────────────────────────────────────────
-        // Requires exec:cmd:<command> capability.
+        // Requires exec:cmd:<binary> capability where <binary> is the program
+        // name extracted from the command string (e.g. "ls" from "ls -la").
+        //
+        // Using just the binary (not the full command string) enables precise
+        // per-command whitelisting in the PolicySet — free tier allows
+        // exec:cmd:cat, exec:cmd:ls, etc. while blocking exec:cmd:rm.
         "bash" | "shell" | "command" | "terminal" | "run_command" => {
             let cmd = input
                 .get("command")
                 .or_else(|| input.get("cmd"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("*");
-            // Use Capability::new to build "exec:cmd:<cmd>" without triggering the
+            // Use Capability::new to build "exec:cmd:<binary>" without triggering the
             // execFile lint (this is Rust, not JavaScript).
-            vec![Capability::new(format!("exec:cmd:{cmd}"))]
+            let binary = shell_binary(cmd);
+            vec![Capability::new(format!("exec:cmd:{binary}"))]
         }
 
         // ── Filesystem writes ──────────────────────────────────────────────
@@ -82,6 +88,19 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
         // ── All other tools: no capability required (pass-through) ─────────
         _ => Vec::new(),
     }
+}
+
+// ── Shell command binary extraction ───────────────────────────────────────────
+
+/// Extract the program binary from a shell command string.
+///
+/// Returns just the first whitespace-delimited token with path components
+/// stripped (e.g. `"ls -la"` → `"ls"`, `"/usr/bin/python3 script.py"` → `"python3"`).
+/// Falls back to `"*"` for empty input so the caller always gets a valid capability.
+fn shell_binary(cmd: &str) -> &str {
+    let token = cmd.trim().split_whitespace().next().unwrap_or("*");
+    // Strip leading path (e.g. /usr/bin/ls → ls).
+    token.rsplit('/').next().unwrap_or(token)
 }
 
 // ── Tier-aware tool catalog filtering ─────────────────────────────────────────
@@ -180,10 +199,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_derives_exec_cmd_capability() {
+    fn shell_derives_exec_cmd_binary_capability() {
+        // Only the binary name is used (not the full command string), enabling
+        // precise per-command whitelisting in the PolicySet (BRO-216).
         let caps = capabilities_for_tool("bash", &serde_json::json!({"command": "ls -la"}));
         assert_eq!(caps.len(), 1);
-        assert_eq!(caps[0].as_str(), "exec:cmd:ls -la");
+        assert_eq!(caps[0].as_str(), "exec:cmd:ls");
+    }
+
+    #[test]
+    fn shell_strips_path_prefix_from_binary() {
+        let caps = capabilities_for_tool(
+            "bash",
+            &serde_json::json!({"command": "/usr/bin/python3 script.py"}),
+        );
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].as_str(), "exec:cmd:python3");
     }
 
     #[test]
@@ -233,12 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn shell_cap_is_gated_by_anonymous_policy() {
-        // "exec:cmd:ls -la" starts with "exec:cmd:" — covered by the anonymous
-        // gate pattern "exec:cmd:*" (prefix after trimming trailing '*').
+    fn shell_cap_is_denied_by_anonymous_policy() {
+        // exec:cmd:<binary> is neither in allow_capabilities nor gate_capabilities
+        // for anonymous sessions — the StaticPolicyEngine puts it in `denied` (BRO-216).
         let cap = capabilities_for_tool("bash", &serde_json::json!({"command": "ls -la"}));
-        let gate_prefix = "exec:cmd:*".trim_end_matches('*');
-        assert!(cap[0].as_str().starts_with(gate_prefix));
+        assert_eq!(cap[0].as_str(), "exec:cmd:ls");
+        let anon = PolicySet::anonymous();
+        let exec_wildcard_in_gate = anon
+            .gate_capabilities
+            .iter()
+            .any(|c| c.as_str() == "exec:cmd:*");
+        assert!(
+            !exec_wildcard_in_gate,
+            "anonymous gate must not contain exec:cmd:* — exec is denied, not gated"
+        );
     }
 
     #[test]
