@@ -1,7 +1,8 @@
 # Multi-stage build for arcan agent runtime daemon
 # Clones all sibling workspace dependencies and builds the binary
+# Build bust: 2026-03-25b
 
-FROM rust:1-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
 
@@ -11,7 +12,9 @@ RUN git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS && \
     git clone --depth 1 https://github.com/broomva/praxis.git ../praxis && \
     git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic && \
     git clone --depth 1 https://github.com/broomva/vigil.git ../vigil && \
-    git clone --depth 1 https://github.com/broomva/haima.git ../haima
+    git clone --depth 1 https://github.com/broomva/haima.git ../haima && \
+    git clone --depth 1 https://github.com/broomva/nous.git ../nous && \
+    git clone --depth 1 https://github.com/broomva/anima.git ../anima
 
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
