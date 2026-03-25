@@ -710,10 +710,14 @@ async fn run_session(
     let tier_allowed_tools: Option<Vec<String>> =
         arcan_aios_adapters::tools_allowed_by_policy(&session_policy);
 
-    // BRO-217: Capture whether this is a restricted tier before tier_allowed_tools
-    // is consumed by the combined_allowed_tools computation below.
-    // Some(tools) = anonymous/free (restricted); None = pro/enterprise (unrestricted).
-    let is_restricted_tier = tier_allowed_tools.is_some();
+    // BRO-217: Detect anonymous sessions (no exec:cmd:* in allow_capabilities, no wildcard).
+    // Anonymous sessions have memory events discarded (ephemeral Lago isolation).
+    // Free sessions have exec:cmd:cat/ls/etc and keep their memory (BRO-218 adds TTL).
+    // Pro/enterprise have allow_capabilities: ["*"] and are never marked ephemeral.
+    let is_anonymous_tier = !session_policy
+        .allow_capabilities
+        .iter()
+        .any(|c| c.as_str().starts_with("exec:cmd:") || c.as_str() == "*");
 
     // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
     // Pro/enterprise sessions return None (full workspace root access).
@@ -842,11 +846,11 @@ async fn run_session(
         "running agent tick with identity"
     );
 
-    // BRO-217: For restricted tiers (anonymous / free), mark the session as
-    // ephemeral so that MemoryProposed / MemoryCommitted events written by the
-    // memory tools are discarded instead of persisted to Lago.
-    // Pro/enterprise sessions (is_restricted_tier == false) are never marked.
-    if is_restricted_tier {
+    // BRO-217: For anonymous sessions, mark as ephemeral so that MemoryProposed /
+    // MemoryCommitted events are discarded instead of persisted to Lago.
+    // Free sessions retain memory (BRO-218 adds 7-day TTL eviction for them).
+    // Pro/enterprise sessions are never marked ephemeral.
+    if is_anonymous_tier {
         if let Some(ref selector) = state.session_selector {
             selector.mark_ephemeral(session_id.as_str());
         }
@@ -870,7 +874,7 @@ async fn run_session(
 
     // Always unmark after tick completes (success or error) to avoid leaking the
     // ephemeral registration across future requests on the same session.
-    if is_restricted_tier {
+    if is_anonymous_tier {
         if let Some(ref selector) = state.session_selector {
             selector.unmark_ephemeral(session_id.as_str());
         }
