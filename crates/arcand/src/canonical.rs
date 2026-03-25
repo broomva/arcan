@@ -682,27 +682,62 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
+    // --- Tier-aware tool catalog filtering ---
+    // Computed up front so both skill-activation gating and catalog building can
+    // use the result.  Read the session's PolicySet and derive which tools are
+    // safe to expose for this tier.  The authoritative enforcement is still
+    // policy evaluation at execution time (BRO-213); this layer only affects
+    // what the LLM sees.
+    let tier_allowed_tools: Option<Vec<String>> = state
+        .runtime
+        .list_sessions()
+        .into_iter()
+        .find(|m| m.session_id == session_id)
+        .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
+        .and_then(|policy| arcan_aios_adapters::tools_allowed_by_policy(&policy));
+
     // --- Skill activation: detect `/skill-name` prefix in objective ---
+    // Activation is blocked when the skill's declared allowed_tools fall outside
+    // the tier's safe set, preventing privilege escalation via skill invocation.
     let (objective, skill_prompt, skill_allowed_tools) =
         if let Some(ref registry) = state.skill_registry {
             match praxis_skills::registry::try_activate_skill(registry, &request.objective) {
                 Ok(Some((skill_state, remaining))) => {
-                    let prompt = praxis_skills::registry::active_skill_prompt(&skill_state);
-                    tracing::info!(
-                        skill = %skill_state.name,
-                        "skill activated via liquid prompt"
-                    );
-                    let allowed = skill_state.allowed_tools.clone();
-                    // Use remaining text as objective, or a default if no remaining text
-                    let obj = if remaining.is_empty() {
-                        format!(
-                            "The user activated the '{}' skill. Follow its instructions.",
-                            skill_state.name
-                        )
+                    // Tier gating: block if skill requires tools beyond this tier.
+                    let tier_blocked = if let Some(ref safe_tools) = tier_allowed_tools {
+                        let safe_set: std::collections::HashSet<&str> =
+                            safe_tools.iter().map(String::as_str).collect();
+                        match &skill_state.allowed_tools {
+                            Some(tools) => !tools.iter().all(|t| safe_set.contains(t.as_str())),
+                            None => true, // unknown tool requirements → block for restricted tiers
+                        }
                     } else {
-                        remaining
+                        false // pro/enterprise: no restriction
                     };
-                    (obj, Some(prompt), allowed)
+                    if tier_blocked {
+                        tracing::warn!(
+                            skill = %skill_state.name,
+                            "skill activation blocked by tier policy"
+                        );
+                        (request.objective.clone(), None, None)
+                    } else {
+                        let prompt = praxis_skills::registry::active_skill_prompt(&skill_state);
+                        tracing::info!(
+                            skill = %skill_state.name,
+                            "skill activated via liquid prompt"
+                        );
+                        let allowed = skill_state.allowed_tools.clone();
+                        // Use remaining text as objective, or a default if no remaining text
+                        let obj = if remaining.is_empty() {
+                            format!(
+                                "The user activated the '{}' skill. Follow its instructions.",
+                                skill_state.name
+                            )
+                        } else {
+                            remaining
+                        };
+                        (obj, Some(prompt), allowed)
+                    }
                 }
                 Ok(None) => (request.objective.clone(), None, None),
                 Err(err) => {
@@ -714,28 +749,26 @@ async fn run_session(
             (request.objective.clone(), None, None)
         };
 
-    // Build system prompt: persona block (from identity) + skill prompt (if any).
-    let persona = state.identity.persona_block();
-    let system_prompt = match skill_prompt {
-        Some(skill) => Some(format!("{persona}\n\n---\n\n{skill}")),
-        None => Some(persona),
-    };
+    // Build tier-filtered skill catalog for per-session injection.
+    let skill_catalog = state
+        .skill_registry
+        .as_ref()
+        .map(|registry| build_tiered_skill_catalog(registry, tier_allowed_tools.as_deref()))
+        .unwrap_or_default();
 
-    // --- Tier-aware tool catalog filtering ---
-    // Read the session's PolicySet and derive which tools are safe to expose to
-    // the LLM for this tier.  This is a pre-filter that hides tools the policy
-    // would deny at execution time anyway, preventing the agent from planning
-    // actions it cannot carry out.
-    //
-    // The authoritative enforcement is still policy evaluation at execution time
-    // (BRO-213).  This layer only affects what the LLM sees in its tool catalog.
-    let tier_allowed_tools: Option<Vec<String>> = state
-        .runtime
-        .list_sessions()
-        .into_iter()
-        .find(|m| m.session_id == session_id)
-        .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
-        .and_then(|policy| arcan_aios_adapters::tools_allowed_by_policy(&policy));
+    // Build system prompt: tier-filtered skill catalog + persona + active skill.
+    let persona = state.identity.persona_block();
+    let system_prompt = Some({
+        let base = if skill_catalog.is_empty() {
+            persona
+        } else {
+            format!("{skill_catalog}\n\n---\n\n{persona}")
+        };
+        match skill_prompt {
+            Some(skill) => format!("{base}\n\n---\n\n{skill}"),
+            None => base,
+        }
+    });
 
     // Combine tier restriction with any active skill's allowed_tools.
     // When both restrict, use their intersection (more restrictive always wins).
@@ -1328,6 +1361,59 @@ fn bad_request(error: impl std::fmt::Display) -> (StatusCode, Json<serde_json::V
     (
         StatusCode::BAD_REQUEST,
         Json(json!({ "error": error.to_string() })),
+    )
+}
+
+// ─── Skill catalog helpers ────────────────────────────────────────────────────
+
+/// Build a tier-filtered skill catalog system prompt for per-session injection.
+///
+/// If `tier_tools` is `None` (pro/enterprise — no restriction), all skills are
+/// included.  If `tier_tools` is `Some(allowed)`, only skills whose declared
+/// `allowed_tools` are entirely within `allowed` are included.  Skills with no
+/// `allowed_tools` field are excluded from restricted tiers because their tool
+/// requirements are unknown.
+fn build_tiered_skill_catalog(
+    registry: &praxis_skills::registry::SkillRegistry,
+    tier_tools: Option<&[String]>,
+) -> String {
+    let safe_set: Option<std::collections::HashSet<&str>> =
+        tier_tools.map(|tools| tools.iter().map(String::as_str).collect());
+
+    let mut lines = vec!["Available skills:".to_string()];
+    for name in registry.skill_names() {
+        let Some(skill) = registry.activate(&name) else {
+            continue;
+        };
+        // If the tier restricts tools, only include skills whose declared
+        // allowed_tools are fully within the safe set.
+        if let Some(ref safe) = safe_set {
+            match &skill.meta.allowed_tools {
+                Some(tools) if tools.iter().all(|t| safe.contains(t.as_str())) => {}
+                _ => continue,
+            }
+        }
+        let invocable = if skill.meta.user_invocable == Some(true) {
+            " [user-invocable]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "- {}: {}{}",
+            skill.meta.name, skill.meta.description, invocable
+        ));
+    }
+
+    if lines.len() <= 1 {
+        return String::new();
+    }
+
+    let catalog = lines.join("\n");
+    format!(
+        "<skills>\n{catalog}\n\n\
+         To activate a skill, the user types `/skill-name` as their message.\n\
+         When a skill is active, follow its instructions for that interaction.\n\
+         </skills>"
     )
 }
 

@@ -191,6 +191,7 @@ pub fn print_cached_skills(data_dir: &Path) -> bool {
 }
 
 /// Build a system prompt from the skill registry for injection into provider calls.
+#[allow(dead_code)] // used in tests; per-session injection now happens in arcand/canonical.rs
 ///
 /// Wraps the skill catalog in a context block with instructions for the LLM.
 /// This is the "liquid prompt" — a dynamic system prompt that flows through the
