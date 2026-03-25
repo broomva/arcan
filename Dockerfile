@@ -1,10 +1,12 @@
 # Multi-stage build for arcan agent runtime daemon
 # Clones all sibling workspace dependencies and builds the binary
-# Build bust: 2026-03-25d
+# Build bust: 2026-03-25e
+# NOTE: WORKDIR must be /arcan — nous-middleware has a hardcoded path dep on /arcan/crates/arcan-core
 
 FROM rust:1.85-bookworm AS builder
 
-WORKDIR /build
+# Use /arcan so nous-middleware path dep (/arcan/crates/arcan-core) resolves correctly
+WORKDIR /arcan
 
 # Clone sibling dependencies (matches CI checkout pattern)
 RUN git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS && \
@@ -32,7 +34,7 @@ RUN apt-get update && \
 
 RUN useradd --create-home --shell /bin/bash arcan
 
-COPY --from=builder /build/target/release/arcan /usr/local/bin/arcan
+COPY --from=builder /arcan/target/release/arcan /usr/local/bin/arcan
 
 USER arcan
 WORKDIR /home/arcan
