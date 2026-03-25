@@ -15,6 +15,7 @@ pub use embedded_autonomic::EmbeddedAutonomicController;
 pub use gating_middleware::{AutonomicGatingMiddleware, AutonomicGatingState};
 #[cfg(feature = "haima")]
 pub use haima_middleware::HaimaPaymentMiddleware;
+pub use capability_map::tools_allowed_by_policy;
 pub use policy::ArcanPolicyAdapter;
 pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
 

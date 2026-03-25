@@ -721,9 +721,43 @@ async fn run_session(
         None => Some(persona),
     };
 
+    // --- Tier-aware tool catalog filtering ---
+    // Read the session's PolicySet and derive which tools are safe to expose to
+    // the LLM for this tier.  This is a pre-filter that hides tools the policy
+    // would deny at execution time anyway, preventing the agent from planning
+    // actions it cannot carry out.
+    //
+    // The authoritative enforcement is still policy evaluation at execution time
+    // (BRO-213).  This layer only affects what the LLM sees in its tool catalog.
+    let tier_allowed_tools: Option<Vec<String>> = state
+        .runtime
+        .list_sessions()
+        .into_iter()
+        .find(|m| m.session_id == session_id)
+        .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
+        .and_then(|policy| arcan_aios_adapters::tools_allowed_by_policy(&policy));
+
+    // Combine tier restriction with any active skill's allowed_tools.
+    // When both restrict, use their intersection (more restrictive always wins).
+    let combined_allowed_tools: Option<Vec<String>> =
+        match (tier_allowed_tools, skill_allowed_tools) {
+            (None, skill) => skill,
+            (tier, None) => tier,
+            (Some(tier), Some(skill)) => {
+                let tier_set: std::collections::HashSet<&str> =
+                    tier.iter().map(String::as_str).collect();
+                let intersection: Vec<String> = skill
+                    .into_iter()
+                    .filter(|t| tier_set.contains(t.as_str()))
+                    .collect();
+                Some(intersection)
+            }
+        };
+
     tracing::debug!(
         agent_id = %state.identity.agent_id(),
         did = state.identity.did().unwrap_or("none"),
+        tool_filter = ?combined_allowed_tools.as_ref().map(Vec::len),
         "running agent tick with identity"
     );
 
@@ -737,7 +771,7 @@ async fn run_session(
                 objective,
                 proposed_tool,
                 system_prompt,
-                allowed_tools: skill_allowed_tools,
+                allowed_tools: combined_allowed_tools,
             },
         )
         .instrument(agent_span)
