@@ -18,8 +18,8 @@ use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
 use arcan_lago::{
-    run_event_writer, LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool,
-    MemoryQueryTool,
+    LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
+    run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;

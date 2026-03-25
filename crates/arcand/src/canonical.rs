@@ -10,23 +10,23 @@ use aios_protocol::{
 use aios_runtime::{KernelRuntime, TickInput};
 use arcan_core::runtime::{ProviderFactory, SwappableProviderHandle};
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{fs, sync::mpsc};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tracing::Instrument;
 use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
-use crate::auth::{jwt_auth_middleware, AuthConfig};
+use crate::auth::{AuthConfig, jwt_auth_middleware};
 
 // ─── Mirror schemas for external aios-protocol types ─────────────────────────
 //

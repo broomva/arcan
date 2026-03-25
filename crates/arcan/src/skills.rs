@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 // Re-export activation types from praxis-skills for downstream consumers.
 #[allow(unused_imports)]
-pub use praxis_skills::registry::{active_skill_prompt, try_activate_skill, ActiveSkillState};
+pub use praxis_skills::registry::{ActiveSkillState, active_skill_prompt, try_activate_skill};
 
 /// Cached skill entry written to registry.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
