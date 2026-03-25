@@ -185,6 +185,8 @@ struct CanonicalState {
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
     started_at: Instant,
+    /// Root directory for per-session sandbox directories (BRO-215).
+    data_dir: Arc<std::path::PathBuf>,
     /// Shared skill registry for activation and tool filtering.
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
     /// Observers notified on run completion (async judge evaluators, EGRI bridge).
@@ -443,6 +445,7 @@ pub fn create_canonical_router(
         None,
         Vec::new(),
         None,
+        std::env::temp_dir(),
     )
 }
 
@@ -462,6 +465,7 @@ pub fn create_canonical_router_with_skills(
     score_store: Option<nous_api::ScoreStore>,
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     identity: Option<Arc<dyn AgentIdentityProvider>>,
+    data_dir: impl Into<std::path::PathBuf>,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -476,6 +480,7 @@ pub fn create_canonical_router_with_skills(
         provider_handle,
         provider_factory,
         started_at: Instant::now(),
+        data_dir: Arc::new(data_dir.into()),
         skill_registry,
         run_observers,
         identity,
@@ -682,19 +687,39 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
-    // --- Tier-aware tool catalog filtering ---
-    // Computed up front so both skill-activation gating and catalog building can
-    // use the result.  Read the session's PolicySet and derive which tools are
-    // safe to expose for this tier.  The authoritative enforcement is still
-    // policy evaluation at execution time (BRO-213); this layer only affects
-    // what the LLM sees.
-    let tier_allowed_tools: Option<Vec<String>> = state
+    // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215) ---
+    // Fetch the session policy once so it can be used for both tier-aware tool
+    // filtering and per-session sandbox directory creation.
+    let session_policy: aios_protocol::PolicySet = state
         .runtime
         .list_sessions()
         .into_iter()
         .find(|m| m.session_id == session_id)
         .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
-        .and_then(|policy| arcan_aios_adapters::tools_allowed_by_policy(&policy));
+        .unwrap_or_default();
+
+    // BRO-214: Derive which tools are safe to expose for this tier.
+    // The authoritative enforcement is still policy evaluation at execution time
+    // (BRO-213); this layer only affects what the LLM sees.
+    let tier_allowed_tools: Option<Vec<String>> =
+        arcan_aios_adapters::tools_allowed_by_policy(&session_policy);
+
+    // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
+    // Pro/enterprise sessions return None (full workspace root access).
+    let sandbox_path: Option<std::path::PathBuf> = {
+        let enforcer = arcan_aios_adapters::SandboxEnforcer::new(state.data_dir.as_ref());
+        match enforcer.prepare(session_id.as_str(), &session_policy) {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::warn!(
+                    session = %session_id,
+                    error = %err,
+                    "failed to create session sandbox directory (non-fatal)"
+                );
+                None
+            }
+        }
+    };
 
     // --- Skill activation: detect `/skill-name` prefix in objective ---
     // Activation is blocked when the skill's declared allowed_tools fall outside
@@ -756,13 +781,25 @@ async fn run_session(
         .map(|registry| build_tiered_skill_catalog(registry, tier_allowed_tools.as_deref()))
         .unwrap_or_default();
 
-    // Build system prompt: tier-filtered skill catalog + persona + active skill.
+    // Build system prompt: tier-filtered skill catalog + persona + sandbox note + active skill.
     let persona = state.identity.persona_block();
+    // Append sandbox workspace note to persona so the LLM knows where to write files.
+    let sandbox_note = sandbox_path
+        .as_ref()
+        .map(|p| {
+            format!(
+                "\n\n## Session Workspace\n\
+                 Your isolated workspace for this session is: `{}`\n\
+                 Use this directory for all file read and write operations.",
+                p.display()
+            )
+        })
+        .unwrap_or_default();
     let system_prompt = Some({
         let base = if skill_catalog.is_empty() {
-            persona
+            format!("{persona}{sandbox_note}")
         } else {
-            format!("{skill_catalog}\n\n---\n\n{persona}")
+            format!("{skill_catalog}\n\n---\n\n{persona}{sandbox_note}")
         };
         match skill_prompt {
             Some(skill) => format!("{base}\n\n---\n\n{skill}"),

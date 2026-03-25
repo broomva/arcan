@@ -7,6 +7,7 @@ pub mod gating_middleware;
 pub mod haima_middleware;
 pub mod policy;
 pub mod provider;
+pub mod sandbox;
 pub mod tools;
 
 pub use approval::ArcanApprovalAdapter;
@@ -18,6 +19,7 @@ pub use gating_middleware::{AutonomicGatingMiddleware, AutonomicGatingState};
 pub use haima_middleware::HaimaPaymentMiddleware;
 pub use policy::ArcanPolicyAdapter;
 pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
+pub use sandbox::SandboxEnforcer;
 
 // Re-export for convenience (the canonical type lives in arcan-core).
 pub use arcan_core::runtime::SwappableProviderHandle;
