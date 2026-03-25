@@ -11,6 +11,7 @@ pub mod tools;
 
 pub use approval::ArcanApprovalAdapter;
 pub use autonomic::{AutonomicPolicyAdapter, EconomicGateHandle, GatingProfileHandle};
+pub use capability_map::tools_allowed_by_policy;
 pub use embedded_autonomic::EmbeddedAutonomicController;
 pub use gating_middleware::{AutonomicGatingMiddleware, AutonomicGatingState};
 #[cfg(feature = "haima")]

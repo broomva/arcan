@@ -15,7 +15,7 @@
 //!
 //! Unknown tools return an empty vec (pass-through, backwards-compatible).
 
-use aios_protocol::Capability;
+use aios_protocol::{Capability, PolicySet};
 
 /// Derive the capabilities required to execute a tool call.
 ///
@@ -49,7 +49,7 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
         }
 
         // ── Filesystem reads ───────────────────────────────────────────────
-        "read_file" | "glob" | "grep" | "list_directory" | "read" | "view_file" => {
+        "read_file" | "glob" | "grep" | "list_dir" | "list_directory" | "read" | "view_file" => {
             let path = input
                 .get("path")
                 .or_else(|| input.get("file_path"))
@@ -82,6 +82,97 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
         // ── All other tools: no capability required (pass-through) ─────────
         _ => Vec::new(),
     }
+}
+
+// ── Tier-aware tool catalog filtering ─────────────────────────────────────────
+
+/// Derive an allowlist of tool names visible in the LLM tool catalog based on
+/// the session's [`PolicySet`].
+///
+/// This is a *pre-filter* for what the LLM sees — it hides tools that the
+/// policy would deny at execution time anyway, preventing the agent from
+/// planning actions it cannot carry out.
+///
+/// Returns `None` if the policy is fully permissive (wildcard `"*"` allow) so
+/// the full tool catalog is shown.  Returns `Some(allowlist)` with the names of
+/// tools that are safe to expose for the current tier.
+///
+/// ## Tier mapping
+///
+/// | Tier        | `exec:cmd:*` | `fs:write:*` | Visible extras         |
+/// |-------------|:------------:|:------------:|------------------------|
+/// | anonymous   | gated        | gated        | read-only tools only   |
+/// | free        | gated        | gated        | read + net (no write)  |
+/// | pro/enterprise | allowed   | allowed      | all tools (None)       |
+pub fn tools_allowed_by_policy(policy: &PolicySet) -> Option<Vec<String>> {
+    let allow = &policy.allow_capabilities;
+
+    // Full wildcard — show everything.
+    if allow.iter().any(|c| c.as_str() == "*") {
+        return None;
+    }
+
+    // Determine which high-privilege capability categories are broadly granted.
+    let exec_allowed = broadly_allows_category(allow, "exec:cmd:");
+    let fs_write_allowed = broadly_allows_category(allow, "fs:write:");
+
+    // If both are broadly allowed there is no useful filtering to apply.
+    if exec_allowed && fs_write_allowed {
+        return None;
+    }
+
+    // Safe tools — always visible regardless of tier (require only fs:read or
+    // no capability at all).
+    let mut visible: Vec<String> = vec![
+        "read_file".to_owned(),
+        "list_dir".to_owned(),
+        "glob".to_owned(),
+        "grep".to_owned(),
+        "read_memory".to_owned(),
+        "memory_query".to_owned(),
+    ];
+
+    if exec_allowed {
+        visible.push("bash".to_owned());
+    }
+
+    if fs_write_allowed {
+        visible.extend([
+            "write_file".to_owned(),
+            "edit_file".to_owned(),
+            "write_memory".to_owned(),
+            "memory_propose".to_owned(),
+            "memory_commit".to_owned(),
+        ]);
+    }
+
+    Some(visible)
+}
+
+/// Returns `true` if `allow` contains a wildcard pattern that broadly covers
+/// every capability in `category`.
+///
+/// A pattern broadly covers a category when:
+/// - It is the full wildcard `"*"` (allow everything), or
+/// - It ends with `'*'` and the trimmed prefix exactly equals `category`
+///   (e.g. `"exec:cmd:*"` → trimmed prefix `"exec:cmd:"` covers
+///   the `"exec:cmd:"` category).
+///
+/// A path-restricted pattern like `"fs:write:/session/artifacts/**"` does
+/// **not** broadly cover `"fs:write:"` — its trimmed prefix is
+/// `"fs:write:/session/artifacts/"`, not `"fs:write:"`.
+fn broadly_allows_category(allow: &[Capability], category: &str) -> bool {
+    allow.iter().any(|cap| {
+        let s = cap.as_str();
+        if s == "*" {
+            return true;
+        }
+        if s.ends_with('*') {
+            let pat = s.trim_end_matches('*');
+            return pat == category;
+        }
+        false
+    })
 }
 
 #[cfg(test)]
@@ -175,5 +266,113 @@ mod tests {
         );
         let allow_prefix = "fs:read:/session/**".trim_end_matches('*');
         assert!(cap[0].as_str().starts_with(allow_prefix));
+    }
+
+    #[test]
+    fn list_dir_derives_fs_read_capability() {
+        let caps = capabilities_for_tool("list_dir", &serde_json::json!({"path": "/session/"}));
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].as_str(), "fs:read:/session/");
+    }
+
+    // ── tools_allowed_by_policy ──────────────────────────────────────────────
+
+    #[test]
+    fn anonymous_policy_blocks_bash_and_write_tools() {
+        let policy = PolicySet::anonymous();
+        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        assert!(
+            !allowed.contains(&"bash".to_owned()),
+            "bash should be hidden"
+        );
+        assert!(
+            !allowed.contains(&"write_file".to_owned()),
+            "write_file should be hidden"
+        );
+        assert!(
+            !allowed.contains(&"edit_file".to_owned()),
+            "edit_file should be hidden"
+        );
+    }
+
+    #[test]
+    fn anonymous_policy_exposes_read_tools() {
+        let policy = PolicySet::anonymous();
+        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        assert!(allowed.contains(&"read_file".to_owned()));
+        assert!(allowed.contains(&"list_dir".to_owned()));
+        assert!(allowed.contains(&"glob".to_owned()));
+        assert!(allowed.contains(&"grep".to_owned()));
+        assert!(allowed.contains(&"read_memory".to_owned()));
+        assert!(allowed.contains(&"memory_query".to_owned()));
+    }
+
+    #[test]
+    fn free_policy_blocks_bash_and_write_tools() {
+        let policy = PolicySet::free();
+        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        assert!(!allowed.contains(&"bash".to_owned()));
+        assert!(!allowed.contains(&"write_file".to_owned()));
+        assert!(!allowed.contains(&"edit_file".to_owned()));
+        // read tools still visible
+        assert!(allowed.contains(&"read_file".to_owned()));
+    }
+
+    #[test]
+    fn pro_policy_returns_none_all_tools_visible() {
+        let policy = PolicySet::pro();
+        assert!(
+            tools_allowed_by_policy(&policy).is_none(),
+            "pro should allow all tools"
+        );
+    }
+
+    #[test]
+    fn enterprise_policy_returns_none_all_tools_visible() {
+        let policy = PolicySet::enterprise();
+        assert!(tools_allowed_by_policy(&policy).is_none());
+    }
+
+    #[test]
+    fn default_policy_blocks_bash_restricts_writes() {
+        // default() allows exec:git (not exec:cmd:*) and fs:write:/session/artifacts/**
+        // (not broadly fs:write:*) — so bash and write tools should be hidden.
+        let policy = PolicySet::default();
+        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        assert!(
+            !allowed.contains(&"bash".to_owned()),
+            "bash hidden (only exec:git allowed)"
+        );
+        assert!(
+            !allowed.contains(&"write_file".to_owned()),
+            "write_file hidden (only /session/artifacts/** allowed)"
+        );
+    }
+
+    #[test]
+    fn broadly_allows_category_exec_cmd_wildcard() {
+        let caps = vec![Capability::new("exec:cmd:*")];
+        assert!(broadly_allows_category(&caps, "exec:cmd:"));
+    }
+
+    #[test]
+    fn broadly_allows_category_full_wildcard() {
+        let caps = vec![Capability::new("*")];
+        assert!(broadly_allows_category(&caps, "exec:cmd:"));
+        assert!(broadly_allows_category(&caps, "fs:write:"));
+    }
+
+    #[test]
+    fn broadly_allows_category_specific_does_not_match() {
+        // exec:git is specific — does not broadly allow exec:cmd:
+        let caps = vec![Capability::new("exec:git")];
+        assert!(!broadly_allows_category(&caps, "exec:cmd:"));
+    }
+
+    #[test]
+    fn broadly_allows_category_path_restricted_does_not_match() {
+        // fs:write:/session/artifacts/** is path-restricted — not a broad fs:write: grant
+        let caps = vec![Capability::new("fs:write:/session/artifacts/**")];
+        assert!(!broadly_allows_category(&caps, "fs:write:"));
     }
 }

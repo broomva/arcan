@@ -419,7 +419,6 @@ fn run_serve(
     registry.register(MemoryCommitTool::new(journal.clone()));
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
-    let mut skill_system_prompt = String::new();
     let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
     if resolved.skills_enabled {
         let skills_dir = data_dir.join("skills");
@@ -444,7 +443,6 @@ fn run_serve(
                         count = skill_registry.count(),
                         "skills discovered and registered"
                     );
-                    skill_system_prompt = skills::build_system_prompt(&skill_registry);
                     skill_registry_arc = Some(Arc::new(skill_registry));
                 }
             }
@@ -516,18 +514,15 @@ fn run_serve(
     // Shared handle: starts empty, filled after runtime creation.
     let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
     let tool_definitions = registry.definitions();
-    let mut adapter = ArcanProviderAdapter::from_handle(
+    let adapter = ArcanProviderAdapter::from_handle(
         provider_handle.clone(),
         tool_definitions,
         streaming_sender.clone(),
     )
     .with_economic_handle(economic_handle);
 
-    // Inject the skill catalog as a liquid prompt (system message on every call).
-    if !skill_system_prompt.is_empty() {
-        adapter = adapter.with_system_prompt(skill_system_prompt);
-        tracing::info!("liquid prompt: skill catalog injected into provider adapter");
-    }
+    // The skill catalog is now injected per-session in arcand/src/canonical.rs,
+    // filtered by the session's tier policy (BRO-214).
 
     let provider_adapter: Arc<dyn ModelProviderPort> = Arc::new(adapter);
 
