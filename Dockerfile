@@ -1,8 +1,8 @@
 # Multi-stage build for arcan agent runtime daemon
 # Clones all sibling workspace dependencies and builds the binary
-# Build bust: 2026-03-25c
+# Build bust: 2026-03-25d
 
-FROM rust:1.84-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /build
 
