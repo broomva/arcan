@@ -622,6 +622,7 @@ fn run_serve(
             Some(score_store),
             run_observers,
             None, // identity — use BasicIdentity default; Anima can be wired later
+            data_dir,
         );
 
         // --- Console UI ---
