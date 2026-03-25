@@ -388,6 +388,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]
@@ -499,6 +500,7 @@ dependencies = [
  "aios-tools",
  "arcan-aios-adapters",
  "arcan-core",
+ "arcan-lago",
  "async-trait",
  "axum 0.8.8",
  "chrono",

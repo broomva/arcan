@@ -193,6 +193,8 @@ struct CanonicalState {
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     /// Agent identity provider — supplies persona, DID, capabilities, and policy.
     identity: Arc<dyn AgentIdentityProvider>,
+    /// Routes memory events for anonymous/free-tier sessions to ephemeral discard (BRO-217).
+    session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -446,6 +448,7 @@ pub fn create_canonical_router(
         Vec::new(),
         None,
         std::env::temp_dir(),
+        None,
     )
 }
 
@@ -457,6 +460,7 @@ pub fn create_canonical_router(
 /// All other endpoints are protected by JWT auth middleware when
 /// `ARCAN_JWT_SECRET` or `AUTH_SECRET` is configured. If neither env var
 /// is set, auth is disabled and all routes are open (local dev mode).
+#[allow(clippy::too_many_arguments)]
 pub fn create_canonical_router_with_skills(
     runtime: Arc<KernelRuntime>,
     provider_handle: SwappableProviderHandle,
@@ -466,6 +470,7 @@ pub fn create_canonical_router_with_skills(
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     identity: Option<Arc<dyn AgentIdentityProvider>>,
     data_dir: impl Into<std::path::PathBuf>,
+    session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -484,6 +489,7 @@ pub fn create_canonical_router_with_skills(
         skill_registry,
         run_observers,
         identity,
+        session_selector,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -704,6 +710,11 @@ async fn run_session(
     let tier_allowed_tools: Option<Vec<String>> =
         arcan_aios_adapters::tools_allowed_by_policy(&session_policy);
 
+    // BRO-217: Capture whether this is a restricted tier before tier_allowed_tools
+    // is consumed by the combined_allowed_tools computation below.
+    // Some(tools) = anonymous/free (restricted); None = pro/enterprise (unrestricted).
+    let is_restricted_tier = tier_allowed_tools.is_some();
+
     // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
     // Pro/enterprise sessions return None (full workspace root access).
     let sandbox_path: Option<std::path::PathBuf> = {
@@ -831,8 +842,18 @@ async fn run_session(
         "running agent tick with identity"
     );
 
+    // BRO-217: For restricted tiers (anonymous / free), mark the session as
+    // ephemeral so that MemoryProposed / MemoryCommitted events written by the
+    // memory tools are discarded instead of persisted to Lago.
+    // Pro/enterprise sessions (is_restricted_tier == false) are never marked.
+    if is_restricted_tier {
+        if let Some(ref selector) = state.session_selector {
+            selector.mark_ephemeral(session_id.as_str());
+        }
+    }
+
     let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
-    let tick = state
+    let tick_result = state
         .runtime
         .tick_on_branch(
             &session_id,
@@ -845,8 +866,17 @@ async fn run_session(
             },
         )
         .instrument(agent_span)
-        .await
-        .map_err(internal_error)?;
+        .await;
+
+    // Always unmark after tick completes (success or error) to avoid leaking the
+    // ephemeral registration across future requests on the same session.
+    if is_restricted_tier {
+        if let Some(ref selector) = state.session_selector {
+            selector.unmark_ephemeral(session_id.as_str());
+        }
+    }
+
+    let tick = tick_result.map_err(internal_error)?;
 
     persist_last_session_hint(state.runtime.as_ref(), &tick.session_id).await;
 

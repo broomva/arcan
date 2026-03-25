@@ -1,4 +1,5 @@
 pub mod approval_gate;
+pub mod ephemeral;
 pub mod event_map;
 pub mod learning;
 pub mod memory_projection;
@@ -13,6 +14,7 @@ pub mod state_projection;
 pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
+pub use ephemeral::{EphemeralJournal, SessionJournalSelector};
 // Re-export the traits that ApprovalGate implements, for convenience
 pub use arcan_core::runtime::{ApprovalGateHook, ApprovalResolver};
 pub use learning::{LearningEntry, LearningMiddleware};

@@ -19,7 +19,7 @@ use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
 use arcan_lago::{
     LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
-    run_event_writer,
+    SessionJournalSelector, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -413,10 +413,17 @@ fn run_serve(
     registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
 
     // --- Governed memory tools (event-sourced via Lago) ---
+    // BRO-217: Wrap the journal in a SessionJournalSelector so that memory
+    // events from anonymous/free-tier sessions are discarded (not persisted).
+    // The raw journal is retained for LagoAiosEventStoreAdapter (audit events
+    // must always persist regardless of tier).
+    let session_selector = Arc::new(SessionJournalSelector::new(journal.clone()));
+    let memory_journal: Arc<dyn lago_core::Journal> = session_selector.clone();
+
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
     registry.register(MemoryQueryTool::new(memory_projection));
-    registry.register(MemoryProposeTool::new(journal.clone()));
-    registry.register(MemoryCommitTool::new(journal.clone()));
+    registry.register(MemoryProposeTool::new(memory_journal.clone()));
+    registry.register(MemoryCommitTool::new(memory_journal));
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
     let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
@@ -623,6 +630,7 @@ fn run_serve(
             run_observers,
             None, // identity — use BasicIdentity default; Anima can be wired later
             data_dir,
+            Some(session_selector), // BRO-217: ephemeral journal routing for restricted tiers
         );
 
         // --- Console UI ---
