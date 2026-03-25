@@ -98,7 +98,7 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
 /// stripped (e.g. `"ls -la"` → `"ls"`, `"/usr/bin/python3 script.py"` → `"python3"`).
 /// Falls back to `"*"` for empty input so the caller always gets a valid capability.
 fn shell_binary(cmd: &str) -> &str {
-    let token = cmd.trim().split_whitespace().next().unwrap_or("*");
+    let token = cmd.split_whitespace().next().unwrap_or("*");
     // Strip leading path (e.g. /usr/bin/ls → ls).
     token.rsplit('/').next().unwrap_or(token)
 }

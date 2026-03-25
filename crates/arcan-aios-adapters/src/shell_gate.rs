@@ -123,7 +123,7 @@ pub fn validate_shell_command(cmd: &str, policy: &ShellPolicy) -> Result<(), Str
 /// - `"/usr/bin/python3 script.py"` → `"python3"`
 /// - `""` → `"*"`
 fn shell_binary(cmd: &str) -> &str {
-    let token = cmd.trim().split_whitespace().next().unwrap_or("*");
+    let token = cmd.split_whitespace().next().unwrap_or("*");
     token.rsplit('/').next().unwrap_or(token)
 }
 
