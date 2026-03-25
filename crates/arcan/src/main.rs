@@ -418,14 +418,19 @@ fn run_serve(
     // The raw journal is retained for LagoAiosEventStoreAdapter (audit events
     // must always persist regardless of tier).
     let session_selector = Arc::new(SessionJournalSelector::new(journal.clone()));
-    // BRO-218: Wrap the journal for free-tier TTL tagging (7-day retention, shared namespace).
-    // The FreeTierJournal sits between the raw journal and the memory tools so that events
-    // appended by registered sessions get tagged with lago:expires_at / lago:user_id metadata.
+    // BRO-218/219: The retention journal wraps session_selector so that the write chain is:
+    //   memory_tools → free_tier_journal (TTL-tag if registered) → session_selector (discard if
+    //   anonymous/ephemeral) → raw_journal.
+    //
+    // This ordering ensures:
+    //  - Anonymous sessions: selector discards memory events before they reach the raw journal.
+    //  - Free sessions: free_tier_journal tags with 7-day TTL, selector passes through.
+    //  - Pro sessions: free_tier_journal tags with 90-day TTL, selector passes through.
     let free_tier_journal = Arc::new(FreeTierJournal::new(
-        journal.clone(),
+        session_selector.clone() as Arc<dyn lago_core::Journal>,
         LagoPolicyConfig::default(),
     ));
-    let memory_journal: Arc<dyn lago_core::Journal> = session_selector.clone();
+    let memory_journal: Arc<dyn lago_core::Journal> = free_tier_journal.clone();
 
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
     registry.register(MemoryQueryTool::new(memory_projection));

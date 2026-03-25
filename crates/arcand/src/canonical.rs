@@ -195,7 +195,9 @@ struct CanonicalState {
     identity: Arc<dyn AgentIdentityProvider>,
     /// Routes memory events for anonymous sessions to ephemeral discard (BRO-217).
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
-    /// Applies TTL tagging to free-tier session events for 7-day rolling retention (BRO-218).
+    /// Retention journal — TTL-tags free-tier (7-day) and pro-tier (90-day) session events.
+    /// BRO-218: free sessions registered with default config.
+    /// BRO-219: pro sessions registered with LagoPolicyConfig::pro().
     free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
 }
 
@@ -527,6 +529,9 @@ pub fn create_canonical_router_with_skills(
             post(resolve_approval),
         )
         .route("/provider", get(get_provider).put(set_provider))
+        // BRO-219: Memory export and migration endpoints.
+        .route("/user/memory/export", get(export_memory_jsonl))
+        .route("/user/memory/migrate-to-pro", post(migrate_memory_to_pro))
         .layer(axum::middleware::from_fn_with_state(
             auth_config,
             jwt_auth_middleware,
@@ -732,11 +737,13 @@ async fn run_session(
 
     // BRO-218: Detect free-tier sessions (has exec:cmd:* capabilities but no wildcard).
     // Free sessions get TTL-tagged memory events (7-day rolling retention).
-    let is_free_tier = !is_anonymous_tier
-        && !session_policy
-            .allow_capabilities
-            .iter()
-            .any(|c| c.as_str() == "*");
+    let has_wildcard = session_policy
+        .allow_capabilities
+        .iter()
+        .any(|c| c.as_str() == "*");
+    let is_free_tier = !is_anonymous_tier && !has_wildcard;
+    // BRO-219: Pro/enterprise sessions have the wildcard capability grant.
+    let is_pro_tier = has_wildcard;
 
     // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
     // Pro/enterprise sessions return None (full workspace root access).
@@ -875,11 +882,20 @@ async fn run_session(
         }
     }
 
-    // BRO-218: For free-tier sessions, register with the TTL journal so that all
-    // memory events are tagged with lago:expires_at and lago:user_id metadata.
+    // BRO-218/219: Register with the retention journal before the tick so that
+    // all memory events appended during this tick are TTL-tagged with the
+    // appropriate tier policy.
     if is_free_tier {
         if let Some(ref ftj) = state.free_tier_journal {
             ftj.register_session(session_id.as_str(), &session_owner);
+        }
+    } else if is_pro_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.register_session_with_config(
+                session_id.as_str(),
+                &session_owner,
+                arcan_lago::LagoPolicyConfig::pro(),
+            );
         }
     }
 
@@ -907,9 +923,9 @@ async fn run_session(
         }
     }
 
-    // BRO-218: Always unregister the free-tier session after tick completes so the
-    // TTL journal does not accumulate stale session → user_id mappings.
-    if is_free_tier {
+    // BRO-218/219: Always unregister after tick completes (free or pro) so the
+    // retention journal does not accumulate stale session → user_id mappings.
+    if is_free_tier || is_pro_tier {
         if let Some(ref ftj) = state.free_tier_journal {
             ftj.unregister_session(session_id.as_str());
         }
@@ -1521,6 +1537,83 @@ fn build_tiered_skill_catalog(
          When a skill is active, follow its instructions for that interaction.\n\
          </skills>"
     )
+}
+
+// ─── BRO-219: Memory export and migration handlers ────────────────────────────
+
+/// Query parameters for the memory export endpoint.
+#[derive(Debug, Deserialize)]
+struct ExportMemoryQuery {
+    user_id: String,
+}
+
+/// `GET /user/memory/export?user_id=<id>`
+///
+/// Returns all non-expired memory events for the given user as JSONL
+/// (newline-delimited JSON). Each line is a serialized `EventEnvelope`.
+async fn export_memory_jsonl(
+    State(state): State<CanonicalState>,
+    Query(params): Query<ExportMemoryQuery>,
+) -> impl IntoResponse {
+    let Some(ref ftj) = state.free_tier_journal else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::http::HeaderMap::new(),
+            "memory export not available".to_owned(),
+        )
+            .into_response();
+    };
+
+    match ftj.export_user_events(&params.user_id).await {
+        Ok(events) => {
+            let jsonl = events
+                .iter()
+                .filter_map(|e| serde_json::to_string(e).ok())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/x-ndjson"),
+            );
+            (StatusCode::OK, headers, jsonl).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::http::HeaderMap::new(),
+            e.to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for the migration endpoint.
+#[derive(Debug, Deserialize)]
+struct MigrateMemoryBody {
+    user_id: String,
+}
+
+/// `POST /user/memory/migrate-to-pro`
+///
+/// Re-tags free-tier (`lago:namespace=shared`) events for `user_id` with
+/// pro-tier metadata (`lago:namespace=pro`, 90-day TTL). The original
+/// free-tier events are left intact and expire naturally after 7 days.
+async fn migrate_memory_to_pro(
+    State(state): State<CanonicalState>,
+    Json(body): Json<MigrateMemoryBody>,
+) -> impl IntoResponse {
+    let Some(ref ftj) = state.free_tier_journal else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "memory migration not available" })),
+        )
+            .into_response();
+    };
+
+    match ftj.migrate_user_to_pro(&body.user_id).await {
+        Ok(migrated) => (StatusCode::OK, Json(json!({ "migrated": migrated }))).into_response(),
+        Err(e) => internal_error(e).into_response(),
+    }
 }
 
 #[cfg(test)]

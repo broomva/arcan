@@ -16,7 +16,7 @@ pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
 pub use ephemeral::{EphemeralJournal, SessionJournalSelector};
-pub use retention::{FreeTierJournal, LagoPolicyConfig};
+pub use retention::{FreeTierJournal, LagoPolicyConfig, ProTierJournal};
 // Re-export the traits that ApprovalGate implements, for convenience
 pub use arcan_core::runtime::{ApprovalGateHook, ApprovalResolver};
 pub use learning::{LearningEntry, LearningMiddleware};

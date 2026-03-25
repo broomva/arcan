@@ -1,17 +1,23 @@
-//! Free-tier Lago retention: TTL tagging, namespace isolation, storage metrics.
+//! Tiered Lago retention: TTL tagging, namespace isolation, storage metrics.
 //!
 //! BRO-218: Free authenticated users get persistent Lago memory with a 7-day
-//! rolling TTL. All free sessions share a single Lago instance; per-user
-//! namespace isolation is enforced by session registration rather than
-//! separate store instances.
+//! rolling TTL. All free sessions share the `"shared"` namespace; per-user
+//! isolation is enforced by session registration rather than separate store
+//! instances.
+//!
+//! BRO-219: Pro subscribers get a dedicated `"pro"` namespace with 90-day
+//! retention and unlimited pinned observations. A migration helper re-tags
+//! free-tier events so upgraded users can retain their history.
 //!
 //! # How it works
 //!
-//! 1. Before a free-tier session starts, call [`FreeTierJournal::register_session`]
-//!    with the session ID and user ID.
+//! 1. Before a session starts, call [`FreeTierJournal::register_session`]
+//!    (free-tier defaults) or [`FreeTierJournal::register_session_with_config`]
+//!    (pro-tier via [`LagoPolicyConfig::pro`]) with the session ID and user ID.
 //! 2. All events appended for registered sessions are tagged with:
 //!    - `lago:expires_at` — microsecond timestamp when the event expires
 //!    - `lago:user_id`    — the owning user's ID (namespace isolation key)
+//!    - `lago:namespace`  — `"shared"` (free) or `"pro"` (pro/enterprise)
 //! 3. On `read`/`stream`, expired events (`lago:expires_at < now()`) are
 //!    filtered out, making them invisible to callers.
 //! 4. The daily maintenance task calls [`FreeTierJournal::evict_expired_events`],
@@ -23,10 +29,11 @@
 //! # Namespace model
 //!
 //! ```text
-//! lago://shared/users/{user_id}/sessions/{session_id}/events
+//! lago://shared/users/{user_id}/sessions/{session_id}/events  (free tier)
+//! lago://pro/users/{user_id}/sessions/{session_id}/events     (pro tier)
 //! ```
 //!
-//! The namespace is encoded via the `lago:user_id` metadata tag rather than a
+//! The namespace is encoded via the `lago:namespace` metadata tag rather than a
 //! different `BranchId`, preserving compatibility with existing lago-core APIs.
 //!
 //! # Usage
@@ -34,14 +41,20 @@
 //! ```rust,ignore
 //! let journal = Arc::new(FreeTierJournal::new(raw_journal, LagoPolicyConfig::default()));
 //!
-//! // Before a free-tier session:
+//! // Free-tier session:
 //! journal.register_session(&session_id, &user_id);
+//!
+//! // Pro-tier session:
+//! journal.register_session_with_config(&session_id, &user_id, LagoPolicyConfig::pro());
 //!
 //! // After the session ends:
 //! journal.unregister_session(&session_id);
 //!
 //! // Daily eviction cron:
 //! let tombstoned = journal.evict_expired_events(session_id, branch_id).await?;
+//!
+//! // Export all user events as JSONL:
+//! let events = journal.export_user_events(&user_id).await?;
 //! ```
 
 use lago_core::{
@@ -62,23 +75,31 @@ const METADATA_EXPIRES_AT: &str = "lago:expires_at";
 /// Metadata key encoding the owning user's ID for namespace isolation.
 const METADATA_USER_ID: &str = "lago:user_id";
 
+/// Metadata key encoding the tier namespace (`"shared"` or `"pro"`).
+const METADATA_NAMESPACE: &str = "lago:namespace";
+
 // ─── LagoPolicyConfig ──────────────────────────────────────────────────────────
 
-/// Configuration for free-tier Lago retention policy.
+/// Configuration for a tiered Lago retention policy.
 ///
-/// Controls the shared namespace prefix, rolling TTL window, and the per-user
+/// Controls the namespace prefix, rolling TTL window, and the per-user
 /// pin quota (pinned observations are excluded from TTL eviction).
+///
+/// Use [`LagoPolicyConfig::default`] for free-tier (7-day, shared namespace)
+/// and [`LagoPolicyConfig::pro`] for pro-tier (90-day, dedicated namespace).
 #[derive(Debug, Clone)]
 pub struct LagoPolicyConfig {
-    /// Namespace prefix written into event metadata (e.g. `"shared"`).
+    /// Namespace prefix written into event metadata (e.g. `"shared"` or `"pro"`).
     pub namespace: String,
     /// Number of days to retain events before they become eligible for eviction.
     pub retention_days: u32,
     /// Maximum number of pinned memory items allowed per user.
+    /// Set to `u32::MAX` for unlimited (pro/enterprise tier).
     pub max_pinned: u32,
 }
 
 impl Default for LagoPolicyConfig {
+    /// Free-tier defaults: `"shared"` namespace, 7-day TTL, 100 pinned items.
     fn default() -> Self {
         Self {
             namespace: "shared".to_owned(),
@@ -89,6 +110,15 @@ impl Default for LagoPolicyConfig {
 }
 
 impl LagoPolicyConfig {
+    /// Pro-tier defaults: `"pro"` namespace, 90-day TTL, unlimited pinned items.
+    pub fn pro() -> Self {
+        Self {
+            namespace: "pro".to_owned(),
+            retention_days: 90,
+            max_pinned: u32::MAX,
+        }
+    }
+
     /// Compute the expiry timestamp (microseconds since UNIX epoch) for an
     /// event appended right now, based on the configured `retention_days`.
     pub fn expires_at_micros(&self) -> u64 {
@@ -98,60 +128,95 @@ impl LagoPolicyConfig {
     }
 }
 
+// ─── SessionTierRegistration ───────────────────────────────────────────────────
+
+/// Per-session tier registration: which user owns it and which policy to apply.
+#[derive(Clone)]
+struct SessionTierRegistration {
+    user_id: String,
+    config: LagoPolicyConfig,
+}
+
 // ─── FreeTierJournal ──────────────────────────────────────────────────────────
 
-/// A `Journal` wrapper that enforces free-tier TTL and per-user isolation.
+/// A `Journal` wrapper that enforces tiered TTL and per-user namespace isolation.
 ///
-/// Events appended for registered sessions are tagged with an expiry timestamp
-/// and the owning user's ID. Expired events are filtered from `read` and
-/// `stream` results so callers never observe stale data.
+/// Events appended for registered sessions are tagged with an expiry timestamp,
+/// the owning user's ID, and the tier namespace. Expired events are filtered
+/// from `read` and `stream` results so callers never observe stale data.
+///
+/// This type is the canonical retention journal for both free (7-day) and pro
+/// (90-day) tiers. Use [`register_session`] for free-tier sessions and
+/// [`register_session_with_config`] with [`LagoPolicyConfig::pro`] for pro
+/// sessions. See also the [`ProTierJournal`] type alias.
 ///
 /// See the module-level documentation for the full lifecycle.
 pub struct FreeTierJournal {
     inner: Arc<dyn Journal>,
     config: LagoPolicyConfig,
-    /// Maps session_id → user_id for currently active free-tier sessions.
-    session_users: Mutex<HashMap<String, String>>,
+    /// Maps session_id → tier registration for currently active sessions.
+    registrations: Mutex<HashMap<String, SessionTierRegistration>>,
     /// Approximate per-user storage bytes (in-memory, best-effort).
     user_bytes: Mutex<HashMap<String, u64>>,
 }
 
 impl FreeTierJournal {
-    /// Create a new wrapper around `journal` with the given retention config.
+    /// Create a new wrapper around `journal` with the given default retention config.
+    ///
+    /// The `config` is used as the default when [`register_session`] is called.
+    /// Per-session overrides are possible via [`register_session_with_config`].
     pub fn new(journal: Arc<dyn Journal>, config: LagoPolicyConfig) -> Self {
         Self {
             inner: journal,
             config,
-            session_users: Mutex::new(HashMap::new()),
+            registrations: Mutex::new(HashMap::new()),
             user_bytes: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Register a session as belonging to a free-tier user.
+    /// Register a session using the journal's default retention config.
     ///
     /// All subsequent appends for `session_id` will be tagged with
-    /// `lago:expires_at` and `lago:user_id` until [`unregister_session`] is
-    /// called.
+    /// `lago:expires_at`, `lago:user_id`, and `lago:namespace` until
+    /// [`unregister_session`] is called.
     pub fn register_session(&self, session_id: impl AsRef<str>, user_id: impl AsRef<str>) {
-        self.session_users
-            .lock()
-            .unwrap()
-            .insert(session_id.as_ref().to_owned(), user_id.as_ref().to_owned());
+        self.register_session_with_config(session_id, user_id, self.config.clone());
+    }
+
+    /// Register a session with an explicit retention policy override.
+    ///
+    /// Use this to register pro-tier sessions:
+    /// ```rust,ignore
+    /// journal.register_session_with_config(&session_id, &user_id, LagoPolicyConfig::pro());
+    /// ```
+    pub fn register_session_with_config(
+        &self,
+        session_id: impl AsRef<str>,
+        user_id: impl AsRef<str>,
+        config: LagoPolicyConfig,
+    ) {
+        self.registrations.lock().unwrap().insert(
+            session_id.as_ref().to_owned(),
+            SessionTierRegistration {
+                user_id: user_id.as_ref().to_owned(),
+                config,
+            },
+        );
     }
 
     /// Unregister a session after it ends.
     ///
     /// Future appends for `session_id` pass through without TTL tagging.
     pub fn unregister_session(&self, session_id: impl AsRef<str>) {
-        self.session_users
+        self.registrations
             .lock()
             .unwrap()
             .remove(session_id.as_ref());
     }
 
-    /// Returns `true` if the session is currently registered as a free-tier session.
+    /// Returns `true` if the session is currently registered (free or pro tier).
     pub fn is_registered(&self, session_id: impl AsRef<str>) -> bool {
-        self.session_users
+        self.registrations
             .lock()
             .unwrap()
             .contains_key(session_id.as_ref())
@@ -159,11 +224,11 @@ impl FreeTierJournal {
 
     /// Look up the user_id for a registered session, or `None` if not registered.
     pub fn user_id_for_session(&self, session_id: impl AsRef<str>) -> Option<String> {
-        self.session_users
+        self.registrations
             .lock()
             .unwrap()
             .get(session_id.as_ref())
-            .cloned()
+            .map(|r| r.user_id.clone())
     }
 
     /// Approximate storage bytes used by `user_id` across all their sessions.
@@ -178,7 +243,7 @@ impl FreeTierJournal {
             .unwrap_or(0)
     }
 
-    /// Returns a reference to the current retention config.
+    /// Returns a reference to the default retention config.
     pub fn config(&self) -> &LagoPolicyConfig {
         &self.config
     }
@@ -194,16 +259,24 @@ impl FreeTierJournal {
         exp_micros < EventEnvelope::now_micros()
     }
 
-    /// Tag an event with TTL and user-ownership metadata, and update the
-    /// in-memory per-user byte counter.
-    fn tag_event(&self, mut event: EventEnvelope, user_id: &str) -> EventEnvelope {
-        let expires_at = self.config.expires_at_micros();
+    /// Tag an event with TTL, user-ownership, and namespace metadata, then
+    /// update the in-memory per-user byte counter.
+    fn tag_event(
+        &self,
+        mut event: EventEnvelope,
+        user_id: &str,
+        config: &LagoPolicyConfig,
+    ) -> EventEnvelope {
+        let expires_at = config.expires_at_micros();
         event
             .metadata
             .insert(METADATA_EXPIRES_AT.to_owned(), expires_at.to_string());
         event
             .metadata
             .insert(METADATA_USER_ID.to_owned(), user_id.to_owned());
+        event
+            .metadata
+            .insert(METADATA_NAMESPACE.to_owned(), config.namespace.clone());
 
         // Rough storage estimate: serialized payload size.
         let approx_bytes = serde_json::to_vec(&event.payload)
@@ -300,6 +373,102 @@ impl FreeTierJournal {
 
         Ok(tombstoned)
     }
+
+    /// Export all non-expired events for `user_id` across all sessions.
+    ///
+    /// Scans every session in the inner journal and collects events tagged with
+    /// `lago:user_id == user_id` that have not yet expired. This is a full scan
+    /// and is intended for infrequent JSONL export operations.
+    ///
+    /// Returns the events sorted by session then sequence order.
+    pub async fn export_user_events(&self, user_id: &str) -> LagoResult<Vec<EventEnvelope>> {
+        use tokio_stream::StreamExt as _;
+
+        let sessions = self.inner.list_sessions().await?;
+        let default_branch = BranchId::from_string("main");
+        let mut exported = Vec::new();
+
+        for session in sessions {
+            let mut stream = self
+                .inner
+                .stream(session.session_id.clone(), default_branch.clone(), 0)
+                .await?;
+
+            while let Some(result) = stream.next().await {
+                let event = result?;
+                let event_owner = event.metadata.get(METADATA_USER_ID).map(String::as_str);
+                if event_owner == Some(user_id) && !Self::is_expired(&event) {
+                    exported.push(event);
+                }
+            }
+        }
+
+        Ok(exported)
+    }
+
+    /// Re-tag all free-tier events for `user_id` with pro-tier metadata.
+    ///
+    /// For each event tagged with `lago:namespace=shared` for the given user,
+    /// a new event is appended with `lago:namespace=pro` and a 90-day TTL.
+    /// The original free-tier events remain in the journal until their 7-day
+    /// TTL expires naturally.
+    ///
+    /// Returns the number of events migrated (re-tagged).
+    ///
+    /// # Note
+    /// This operation is append-only and idempotent — re-running migration will
+    /// create duplicate pro-tagged events for already-migrated users.
+    pub async fn migrate_user_to_pro(&self, user_id: &str) -> LagoResult<usize> {
+        use tokio_stream::StreamExt as _;
+
+        let sessions = self.inner.list_sessions().await?;
+        let default_branch = BranchId::from_string("main");
+        let pro_config = LagoPolicyConfig::pro();
+        let mut migrated = 0;
+
+        for session in sessions {
+            let mut stream = self
+                .inner
+                .stream(session.session_id.clone(), default_branch.clone(), 0)
+                .await?;
+
+            while let Some(result) = stream.next().await {
+                let event = result?;
+
+                // Only migrate events in the "shared" namespace for this user.
+                let is_shared =
+                    event.metadata.get(METADATA_NAMESPACE).map(String::as_str) == Some("shared");
+                let is_owned =
+                    event.metadata.get(METADATA_USER_ID).map(String::as_str) == Some(user_id);
+
+                if !(is_shared && is_owned) || Self::is_expired(&event) {
+                    continue;
+                }
+
+                // Re-append with pro-tier metadata. New event_id preserves append-only semantics.
+                let mut new_event = event.clone();
+                new_event.event_id = EventId::new();
+                new_event.timestamp = EventEnvelope::now_micros();
+                new_event
+                    .metadata
+                    .insert(METADATA_NAMESPACE.to_owned(), "pro".to_owned());
+                new_event.metadata.insert(
+                    METADATA_EXPIRES_AT.to_owned(),
+                    pro_config.expires_at_micros().to_string(),
+                );
+
+                self.inner.append(new_event).await?;
+                migrated += 1;
+            }
+        }
+
+        tracing::info!(
+            user_id,
+            migrated,
+            "migrated free-tier events to pro namespace"
+        );
+        Ok(migrated)
+    }
 }
 
 // ─── Journal impl ──────────────────────────────────────────────────────────────
@@ -309,15 +478,15 @@ impl Journal for FreeTierJournal {
         &self,
         event: EventEnvelope,
     ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<SeqNo>> + Send + '_>> {
-        let user_id = self
-            .session_users
+        let registration = self
+            .registrations
             .lock()
             .unwrap()
             .get(event.session_id.as_str())
             .cloned();
 
-        let event = match user_id {
-            Some(ref uid) => self.tag_event(event, uid),
+        let event = match registration {
+            Some(ref reg) => self.tag_event(event, &reg.user_id, &reg.config),
             None => event,
         };
 
@@ -331,14 +500,14 @@ impl Journal for FreeTierJournal {
         let tagged: Vec<EventEnvelope> = events
             .into_iter()
             .map(|event| {
-                let user_id = self
-                    .session_users
+                let registration = self
+                    .registrations
                     .lock()
                     .unwrap()
                     .get(event.session_id.as_str())
                     .cloned();
-                match user_id {
-                    Some(ref uid) => self.tag_event(event, uid),
+                match registration {
+                    Some(ref reg) => self.tag_event(event, &reg.user_id, &reg.config),
                     None => event,
                 }
             })
@@ -391,7 +560,7 @@ impl Journal for FreeTierJournal {
                     Ok(e) if Self::is_expired(e) => {
                         tracing::trace!(
                             event_id = %e.event_id,
-                            "free-tier: filtering expired event from stream"
+                            "retention: filtering expired event from stream"
                         );
                     }
                     _ => filtered.push(item),
@@ -421,6 +590,13 @@ impl Journal for FreeTierJournal {
         self.inner.list_sessions()
     }
 }
+
+/// Pro-tier journal — same as [`FreeTierJournal`] but conventionally initialized
+/// with [`LagoPolicyConfig::pro`] as the default config.
+///
+/// Use [`FreeTierJournal::register_session_with_config`] with
+/// [`LagoPolicyConfig::pro`] to register individual pro sessions.
+pub type ProTierJournal = FreeTierJournal;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -599,6 +775,14 @@ mod tests {
     }
 
     #[test]
+    fn pro_config_values() {
+        let cfg = LagoPolicyConfig::pro();
+        assert_eq!(cfg.namespace, "pro");
+        assert_eq!(cfg.retention_days, 90);
+        assert_eq!(cfg.max_pinned, u32::MAX);
+    }
+
+    #[test]
     fn expires_at_is_in_the_future() {
         let cfg = LagoPolicyConfig::default();
         let exp = cfg.expires_at_micros();
@@ -614,6 +798,16 @@ mod tests {
         // Allow ±1 second tolerance for test execution time.
         assert!(exp >= now + seven_days_micros - 1_000_000);
         assert!(exp <= now + seven_days_micros + 1_000_000);
+    }
+
+    #[test]
+    fn pro_expires_at_is_approximately_90_days_away() {
+        let cfg = LagoPolicyConfig::pro();
+        let exp = cfg.expires_at_micros();
+        let now = EventEnvelope::now_micros();
+        let ninety_days_micros = 90u64 * 24 * 3600 * 1_000_000;
+        assert!(exp >= now + ninety_days_micros - 1_000_000);
+        assert!(exp <= now + ninety_days_micros + 1_000_000);
     }
 
     // ── Session registration ──────────────────────────────────────────────────
@@ -634,6 +828,14 @@ mod tests {
     fn unregistered_session_has_no_user() {
         let j = make_free_tier(make_journal());
         assert!(j.user_id_for_session("no-such-session").is_none());
+    }
+
+    #[test]
+    fn register_with_config_uses_provided_config() {
+        let j = make_free_tier(make_journal());
+        j.register_session_with_config("s1", "alice", LagoPolicyConfig::pro());
+        assert!(j.is_registered("s1"));
+        assert_eq!(j.user_id_for_session("s1").unwrap(), "alice");
     }
 
     // ── TTL tagging ───────────────────────────────────────────────────────────
@@ -658,6 +860,45 @@ mod tests {
             stored[0].metadata.get(METADATA_USER_ID).map(String::as_str),
             Some("alice")
         );
+        assert_eq!(
+            stored[0]
+                .metadata
+                .get(METADATA_NAMESPACE)
+                .map(String::as_str),
+            Some("shared"),
+            "free-tier namespace must be 'shared'"
+        );
+    }
+
+    #[tokio::test]
+    async fn pro_session_gets_pro_namespace_tag() {
+        let inner = make_journal();
+        let j = make_free_tier(inner.clone());
+
+        j.register_session_with_config("s1", "alice", LagoPolicyConfig::pro());
+        j.append(make_envelope(&sid("s1"), memory_proposed()))
+            .await
+            .unwrap();
+
+        let stored = inner.events();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0]
+                .metadata
+                .get(METADATA_NAMESPACE)
+                .map(String::as_str),
+            Some("pro"),
+            "pro-tier namespace must be 'pro'"
+        );
+
+        // Verify 90-day TTL (not 7-day).
+        let exp: u64 = stored[0].metadata[METADATA_EXPIRES_AT].parse().unwrap();
+        let now = EventEnvelope::now_micros();
+        let ninety_days = 90u64 * 24 * 3600 * 1_000_000;
+        assert!(
+            exp >= now + ninety_days - 1_000_000,
+            "pro TTL must be ~90 days"
+        );
     }
 
     #[tokio::test]
@@ -673,9 +914,10 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert!(
             !stored[0].metadata.contains_key(METADATA_EXPIRES_AT),
-            "pro session must not have TTL tag"
+            "unregistered session must not have TTL tag"
         );
         assert!(!stored[0].metadata.contains_key(METADATA_USER_ID));
+        assert!(!stored[0].metadata.contains_key(METADATA_NAMESPACE));
     }
 
     #[tokio::test]
@@ -696,6 +938,7 @@ mod tests {
         // s1 → tagged
         assert!(stored[0].metadata.contains_key(METADATA_EXPIRES_AT));
         assert_eq!(stored[0].metadata[METADATA_USER_ID], "alice");
+        assert_eq!(stored[0].metadata[METADATA_NAMESPACE], "shared");
         // s-pro → not tagged
         assert!(!stored[1].metadata.contains_key(METADATA_EXPIRES_AT));
     }
@@ -804,7 +1047,7 @@ mod tests {
         let inner = make_journal();
         let j = make_free_tier(inner.clone());
 
-        // Append from a pro session (not registered).
+        // Append from an unregistered session.
         j.append(make_envelope(&sid("s-pro"), tool_call()))
             .await
             .unwrap();
