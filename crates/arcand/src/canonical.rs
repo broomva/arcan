@@ -193,8 +193,10 @@ struct CanonicalState {
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     /// Agent identity provider — supplies persona, DID, capabilities, and policy.
     identity: Arc<dyn AgentIdentityProvider>,
-    /// Routes memory events for anonymous/free-tier sessions to ephemeral discard (BRO-217).
+    /// Routes memory events for anonymous sessions to ephemeral discard (BRO-217).
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
+    /// Applies TTL tagging to free-tier session events for 7-day rolling retention (BRO-218).
+    free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -448,7 +450,8 @@ pub fn create_canonical_router(
         Vec::new(),
         None,
         std::env::temp_dir(),
-        None,
+        None, // session_selector (BRO-217)
+        None, // free_tier_journal (BRO-218)
     )
 }
 
@@ -471,6 +474,7 @@ pub fn create_canonical_router_with_skills(
     identity: Option<Arc<dyn AgentIdentityProvider>>,
     data_dir: impl Into<std::path::PathBuf>,
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
+    free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -490,6 +494,7 @@ pub fn create_canonical_router_with_skills(
         run_observers,
         identity,
         session_selector,
+        free_tier_journal,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -693,16 +698,22 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
-    // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215) ---
-    // Fetch the session policy once so it can be used for both tier-aware tool
-    // filtering and per-session sandbox directory creation.
-    let session_policy: aios_protocol::PolicySet = state
+    // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215 / BRO-218) ---
+    // Fetch the session manifest once: used for policy, owner (user_id), and tier detection.
+    let session_manifest = state
         .runtime
         .list_sessions()
         .into_iter()
-        .find(|m| m.session_id == session_id)
+        .find(|m| m.session_id == session_id);
+    let session_policy: aios_protocol::PolicySet = session_manifest
+        .as_ref()
         .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
         .unwrap_or_default();
+    // Session owner is used as the user_id for free-tier namespace isolation (BRO-218).
+    let session_owner: String = session_manifest
+        .as_ref()
+        .map(|m| m.owner.clone())
+        .unwrap_or_else(|| "anonymous".to_owned());
 
     // BRO-214: Derive which tools are safe to expose for this tier.
     // The authoritative enforcement is still policy evaluation at execution time
@@ -718,6 +729,14 @@ async fn run_session(
         .allow_capabilities
         .iter()
         .any(|c| c.as_str().starts_with("exec:cmd:") || c.as_str() == "*");
+
+    // BRO-218: Detect free-tier sessions (has exec:cmd:* capabilities but no wildcard).
+    // Free sessions get TTL-tagged memory events (7-day rolling retention).
+    let is_free_tier = !is_anonymous_tier
+        && !session_policy
+            .allow_capabilities
+            .iter()
+            .any(|c| c.as_str() == "*");
 
     // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
     // Pro/enterprise sessions return None (full workspace root access).
@@ -848,11 +867,19 @@ async fn run_session(
 
     // BRO-217: For anonymous sessions, mark as ephemeral so that MemoryProposed /
     // MemoryCommitted events are discarded instead of persisted to Lago.
-    // Free sessions retain memory (BRO-218 adds 7-day TTL eviction for them).
+    // Free sessions retain memory with 7-day TTL (BRO-218).
     // Pro/enterprise sessions are never marked ephemeral.
     if is_anonymous_tier {
         if let Some(ref selector) = state.session_selector {
             selector.mark_ephemeral(session_id.as_str());
+        }
+    }
+
+    // BRO-218: For free-tier sessions, register with the TTL journal so that all
+    // memory events are tagged with lago:expires_at and lago:user_id metadata.
+    if is_free_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.register_session(session_id.as_str(), &session_owner);
         }
     }
 
@@ -877,6 +904,14 @@ async fn run_session(
     if is_anonymous_tier {
         if let Some(ref selector) = state.session_selector {
             selector.unmark_ephemeral(session_id.as_str());
+        }
+    }
+
+    // BRO-218: Always unregister the free-tier session after tick completes so the
+    // TTL journal does not accumulate stale session → user_id mappings.
+    if is_free_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.unregister_session(session_id.as_str());
         }
     }
 

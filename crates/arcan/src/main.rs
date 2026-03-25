@@ -18,8 +18,8 @@ use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
 use arcan_lago::{
-    LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
-    SessionJournalSelector, run_event_writer,
+    FreeTierJournal, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool, MemoryProjection,
+    MemoryProposeTool, MemoryQueryTool, SessionJournalSelector, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -418,6 +418,13 @@ fn run_serve(
     // The raw journal is retained for LagoAiosEventStoreAdapter (audit events
     // must always persist regardless of tier).
     let session_selector = Arc::new(SessionJournalSelector::new(journal.clone()));
+    // BRO-218: Wrap the journal for free-tier TTL tagging (7-day retention, shared namespace).
+    // The FreeTierJournal sits between the raw journal and the memory tools so that events
+    // appended by registered sessions get tagged with lago:expires_at / lago:user_id metadata.
+    let free_tier_journal = Arc::new(FreeTierJournal::new(
+        journal.clone(),
+        LagoPolicyConfig::default(),
+    ));
     let memory_journal: Arc<dyn lago_core::Journal> = session_selector.clone();
 
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
@@ -630,7 +637,8 @@ fn run_serve(
             run_observers,
             None, // identity — use BasicIdentity default; Anima can be wired later
             data_dir,
-            Some(session_selector), // BRO-217: ephemeral journal routing for restricted tiers
+            Some(session_selector), // BRO-217: ephemeral journal routing for anonymous tiers
+            Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
         );
 
         // --- Console UI ---
