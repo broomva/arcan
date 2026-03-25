@@ -1002,9 +1002,7 @@ async fn stream_events(
     let session_id_str = session_id.to_string();
     // Use the caller-supplied message_id for the Vercel start frame so each
     // assistant turn in the same session gets a unique React key.
-    let message_id = query
-        .message_id
-        .unwrap_or_else(|| session_id_str.clone());
+    let message_id = query.message_id.unwrap_or_else(|| session_id_str.clone());
 
     tokio::spawn(async move {
         // Vercel format: emit a `start` frame before any events.
