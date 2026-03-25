@@ -26,8 +26,8 @@ COPY crates/ crates/
 # Build release binary
 RUN cargo build --release -p arcan
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage — trixie ships GLIBC 2.39+ which rust:latest requires
+FROM debian:trixie-slim
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
