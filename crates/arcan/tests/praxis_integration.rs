@@ -473,9 +473,20 @@ async fn mock_provider_triggers_write_file() {
     let (base, server) = start_test_server(runtime, handle, factory).await;
     let client = reqwest::Client::new();
 
+    // Create session with a permissive policy so the mock provider's write_file
+    // call isn't blocked by capability enforcement (this test exercises tool
+    // execution, not policy gating — policy tests live in arcan-aios-adapters).
     client
         .post(format!("{base}/sessions"))
-        .json(&json!({ "session_id": "test-session" }))
+        .json(&json!({
+            "session_id": "test-session",
+            "policy": {
+                "allow_capabilities": ["*"],
+                "gate_capabilities": [],
+                "max_tool_runtime_secs": 30,
+                "max_events_per_turn": 256
+            }
+        }))
         .send()
         .await
         .unwrap();
