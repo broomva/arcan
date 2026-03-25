@@ -244,6 +244,11 @@ struct StreamQuery {
     replay_limit: Option<usize>,
     /// Stream format: "canonical" (default) or "vercel_ai_sdk_v6"
     format: Option<String>,
+    /// Unique ID for the assistant message (used as `messageId` in the Vercel
+    /// AI SDK v6 `start` frame). Callers should supply a fresh UUID per turn so
+    /// React has a unique key for each assistant message in the same session.
+    /// Falls back to `session_id` when absent.
+    message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -926,7 +931,9 @@ async fn list_events(
 /// Mapping:
 /// - `Message` / `AssistantMessageCommitted` → full lifecycle frames
 ///   (`start-step`, `text-start`, `text-delta`, `text-end`, `finish-step`)
-/// - `TextDelta` / `AssistantTextDelta` → single `text-delta` frame
+/// - `TextDelta` / `AssistantTextDelta` → full lifecycle frames with own id
+///   (`text-start`, `text-delta`, `text-end`) — each streaming delta gets its
+///   own text part so `useChat` always has an active text part to append to
 /// - Everything else → no frames (filtered out)
 fn vercel_frames(event: &EventRecord) -> Vec<String> {
     let id = event.event_id.to_string();
@@ -934,13 +941,17 @@ fn vercel_frames(event: &EventRecord) -> Vec<String> {
         EventKind::Message { content, .. }
         | EventKind::AssistantMessageCommitted { content, .. } => vec![
             json!({"type": "start-step"}).to_string(),
-            json!({"type": "text-start"}).to_string(),
+            json!({"type": "text-start", "id": id}).to_string(),
             json!({"type": "text-delta", "id": id, "delta": content}).to_string(),
-            json!({"type": "text-end"}).to_string(),
+            json!({"type": "text-end", "id": id}).to_string(),
             json!({"type": "finish-step"}).to_string(),
         ],
         EventKind::TextDelta { delta, .. } | EventKind::AssistantTextDelta { delta, .. } => {
-            vec![json!({"type": "text-delta", "id": id, "delta": delta}).to_string()]
+            vec![
+                json!({"type": "text-start", "id": id}).to_string(),
+                json!({"type": "text-delta", "id": id, "delta": delta}).to_string(),
+                json!({"type": "text-end", "id": id}).to_string(),
+            ]
         }
         _ => vec![],
     }
@@ -989,11 +1000,14 @@ async fn stream_events(
     let session_filter = session_id.clone();
     let branch_filter = branch.clone();
     let session_id_str = session_id.to_string();
+    // Use the caller-supplied message_id for the Vercel start frame so each
+    // assistant turn in the same session gets a unique React key.
+    let message_id = query.message_id.unwrap_or_else(|| session_id_str.clone());
 
     tokio::spawn(async move {
         // Vercel format: emit a `start` frame before any events.
         if format == StreamFormat::VercelAiSdkV6 {
-            let start = json!({"type": "start", "messageId": session_id_str}).to_string();
+            let start = json!({"type": "start", "messageId": message_id}).to_string();
             let _ = tx.send((None, start)).await;
         }
 
