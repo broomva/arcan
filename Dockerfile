@@ -1,9 +1,10 @@
 # Multi-stage build for arcan agent runtime daemon
 # Clones all sibling workspace dependencies and builds the binary
-# Build bust: 2026-03-25e
+# Build bust: 2026-03-25f
 # NOTE: WORKDIR must be /arcan — nous-middleware has a hardcoded path dep on /arcan/crates/arcan-core
+# NOTE: rust:latest required — workspace deps require rustc >= 1.88.0
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:latest AS builder
 
 # Use /arcan so nous-middleware path dep (/arcan/crates/arcan-core) resolves correctly
 WORKDIR /arcan
