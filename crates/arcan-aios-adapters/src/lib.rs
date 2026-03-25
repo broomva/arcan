@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod autonomic;
+pub mod capability_map;
 pub mod embedded_autonomic;
 pub mod gating_middleware;
 #[cfg(feature = "haima")]

@@ -5,6 +5,8 @@ use aios_protocol::{
     EventKind, EventRecord, KernelError, ModelCompletion, ModelCompletionRequest, ModelDirective,
     ModelProviderPort, ModelStopReason, TokenUsage, ToolCall,
 };
+
+use crate::capability_map::capabilities_for_tool;
 use arcan_core::protocol::{
     ChatMessage, ModelDirective as ArcanDirective, ModelStopReason as ArcanStopReason,
 };
@@ -277,10 +279,13 @@ impl ModelProviderPort for ArcanProviderAdapter {
                 ArcanDirective::ToolCall { call } => {
                     directives.push(ModelDirective::ToolCall {
                         call: ToolCall {
+                            requested_capabilities: capabilities_for_tool(
+                                &call.tool_name,
+                                &call.input,
+                            ),
                             call_id: call.call_id,
                             tool_name: call.tool_name,
                             input: call.input,
-                            requested_capabilities: Vec::new(),
                         },
                     });
                 }
