@@ -281,7 +281,10 @@ mod tests {
     fn anonymous_policy_blocks_bash_and_write_tools() {
         let policy = PolicySet::anonymous();
         let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
-        assert!(!allowed.contains(&"bash".to_owned()), "bash should be hidden");
+        assert!(
+            !allowed.contains(&"bash".to_owned()),
+            "bash should be hidden"
+        );
         assert!(
             !allowed.contains(&"write_file".to_owned()),
             "write_file should be hidden"
@@ -336,7 +339,10 @@ mod tests {
         // (not broadly fs:write:*) — so bash and write tools should be hidden.
         let policy = PolicySet::default();
         let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
-        assert!(!allowed.contains(&"bash".to_owned()), "bash hidden (only exec:git allowed)");
+        assert!(
+            !allowed.contains(&"bash".to_owned()),
+            "bash hidden (only exec:git allowed)"
+        );
         assert!(
             !allowed.contains(&"write_file".to_owned()),
             "write_file hidden (only /session/artifacts/** allowed)"
