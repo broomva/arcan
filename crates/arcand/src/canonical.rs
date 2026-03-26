@@ -215,6 +215,12 @@ struct RunRequest {
     branch: Option<String>,
     /// Optional pre-proposed tool call
     proposed_tool: Option<ProposedToolRequest>,
+    /// Per-run policy override — when provided, takes precedence over the
+    /// session's stored policy. Allows the caller to enforce the correct
+    /// tier policy even for sessions that were auto-created with the default
+    /// policy (e.g. sessions created via the run_session fallback path).
+    #[schema(schema_with = PolicySetSchema::schema)]
+    policy: Option<PolicySet>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -688,15 +694,25 @@ async fn run_session(
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
     // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215) ---
-    // Fetch the session policy once so it can be used for both tier-aware tool
-    // filtering and per-session sandbox directory creation.
-    let session_policy: aios_protocol::PolicySet = state
-        .runtime
-        .list_sessions()
-        .into_iter()
-        .find(|m| m.session_id == session_id)
-        .and_then(|m| serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok())
-        .unwrap_or_default();
+    // Resolve the effective policy: per-run override takes precedence over the
+    // session's stored policy. This allows the TypeScript client to pass the
+    // caller's tier policy on every run, fixing sessions that were auto-created
+    // with PolicySet::default() (owner: "arcan") before proper session
+    // management was deployed.
+    let session_policy: aios_protocol::PolicySet = request
+        .policy
+        .clone()
+        .unwrap_or_else(|| {
+            state
+                .runtime
+                .list_sessions()
+                .into_iter()
+                .find(|m| m.session_id == session_id)
+                .and_then(|m| {
+                    serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok()
+                })
+                .unwrap_or_default()
+        });
 
     // BRO-214: Derive which tools are safe to expose for this tier.
     // The authoritative enforcement is still policy evaluation at execution time
