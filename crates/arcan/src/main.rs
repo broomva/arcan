@@ -19,7 +19,7 @@ use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
 use arcan_lago::{
     LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
-    run_event_writer,
+    RemoteLagoJournal, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -356,23 +356,38 @@ fn run_serve(
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
-    let journal_path = data_dir.join("journal.redb");
+    //
+    // When LAGO_URL is set arcan forwards all events to the remote Lago daemon
+    // (durable across redeploys).  Otherwise it opens a local RedbJournal
+    // (suitable for dev and single-container deployments).
     let blobs_path = data_dir.join("blobs");
     std::fs::create_dir_all(&blobs_path)?;
 
-    tracing::info!(
-        workspace = %workspace_root.display(),
-        journal = %journal_path.display(),
-        blobs = %blobs_path.display(),
-        provider = %resolved.provider,
-        model = ?resolved.model,
-        port = resolved.port,
-        "Starting arcan"
-    );
+    let journal: Arc<dyn lago_core::Journal> = if let Ok(lago_url) = std::env::var("LAGO_URL") {
+        tracing::info!(
+            workspace = %workspace_root.display(),
+            lago_url = %lago_url,
+            provider = %resolved.provider,
+            model = ?resolved.model,
+            port = resolved.port,
+            "Starting arcan (remote Lago journal)"
+        );
+        Arc::new(RemoteLagoJournal::new(lago_url))
+    } else {
+        let journal_path = data_dir.join("journal.redb");
+        tracing::info!(
+            workspace = %workspace_root.display(),
+            journal = %journal_path.display(),
+            blobs = %blobs_path.display(),
+            provider = %resolved.provider,
+            model = ?resolved.model,
+            port = resolved.port,
+            "Starting arcan (local RedbJournal)"
+        );
+        Arc::new(RedbJournal::open(&journal_path)?)
+    };
 
-    let journal = RedbJournal::open(&journal_path)?;
     let blob_store = Arc::new(lago_store::BlobStore::open(&blobs_path)?);
-    let journal: Arc<dyn lago_core::Journal> = Arc::new(journal);
 
     // --- Lago-tracked filesystem (O(1) write tracking via FsTracker) ---
     let fs_policy = FsPolicy::new(workspace_root.clone());

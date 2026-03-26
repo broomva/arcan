@@ -1,4 +1,5 @@
 pub mod approval_gate;
+pub mod remote_journal;
 pub mod event_map;
 pub mod learning;
 pub mod memory_projection;
@@ -21,6 +22,7 @@ pub use memory_scope::{MemoryEntry, MemoryScopeConfig};
 pub use memory_tools::{MemoryCommitTool, MemoryProposeTool, MemoryQueryTool};
 pub use observation::{Observation, Observer, Reflector};
 pub use policy_middleware::LagoPolicyMiddleware;
+pub use remote_journal::RemoteLagoJournal;
 pub use repository::LagoSessionRepository;
 pub use skill_events::SkillProjection;
 pub use sse_bridge::{SseBridge, select_format};
