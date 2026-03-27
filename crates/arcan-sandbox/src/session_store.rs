@@ -74,6 +74,20 @@ pub trait SandboxSessionStoreExt: SandboxSessionStore {
 
 impl<T: SandboxSessionStore> SandboxSessionStoreExt for T {}
 
+// ── Named-sandbox helpers ─────────────────────────────────────────────────────
+
+/// Derive a stable Vercel sandbox name from an Arcan session ID.
+///
+/// The convention is `arcan-{session_id}`, which is unique per project and
+/// easy to filter with [`VercelSandboxProvider::list_prefixed("arcan-")`].
+///
+/// This is used by the Vercel provider and the session store when creating
+/// persistent named sandboxes.  The name is deterministic, so it survives
+/// process restarts and can be looked up without consulting the store.
+pub fn sandbox_name_for_session(session_id: &str) -> String {
+    format!("arcan-{}", session_id)
+}
+
 // ── InMemorySessionStore ─────────────────────────────────────────────────────
 
 struct SessionEntry {
