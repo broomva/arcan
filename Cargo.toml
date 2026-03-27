@@ -2,6 +2,7 @@
 [workspace]
 members = [
   "crates/arcan-sandbox",
+  "crates/arcan-provider-vercel",
   "crates/arcan-provider-bubblewrap",
   "crates/arcan-provider-local",
   "crates/arcan-anima",
