@@ -26,12 +26,14 @@
 //! | Value | Provider |
 //! |-------|----------|
 //! | `"local"` | [`LocalSandboxProvider`] (Docker or nsjail — falls back to bwrap on error) |
+//! | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API — requires `VERCEL_TOKEN`) |
 //! | `"bubblewrap"` / `"bwrap"` / *(unset)* | [`BubblewrapProvider`] (Linux namespaces, falls back to plain subprocess) |
 
 use std::sync::Arc;
 
 use arcan_provider_bubblewrap::BubblewrapProvider;
 use arcan_provider_local::LocalSandboxProvider;
+use arcan_provider_vercel::VercelSandboxProvider;
 use arcan_sandbox::{ExecRequest, SandboxProvider, SandboxSpec};
 use praxis_core::error::{PraxisError, PraxisResult};
 use praxis_core::sandbox::{CommandRequest, CommandResult, CommandRunner, SandboxPolicy};
@@ -45,6 +47,7 @@ use tracing::{debug, warn};
 /// | `ARCAN_SANDBOX_PROVIDER` | Provider |
 /// |--------------------------|----------|
 /// | `"local"` | [`LocalSandboxProvider`] (Docker/nsjail) — falls back to bwrap if unavailable |
+/// | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API) — falls back to bwrap if token missing |
 /// | `"bubblewrap"` / `"bwrap"` / *(anything else / unset)* | [`BubblewrapProvider`] |
 pub fn build_provider() -> Arc<dyn SandboxProvider> {
     let name = std::env::var("ARCAN_SANDBOX_PROVIDER").unwrap_or_default();
@@ -56,6 +59,16 @@ pub fn build_provider() -> Arc<dyn SandboxProvider> {
             }
             Err(e) => {
                 warn!(error = %e, "local provider unavailable, falling back to bubblewrap");
+                Arc::new(BubblewrapProvider::from_env())
+            }
+        },
+        "vercel" => match VercelSandboxProvider::from_env() {
+            Ok(p) => {
+                debug!("sandbox provider: vercel (Sandbox HTTP API)");
+                Arc::new(p)
+            }
+            Err(e) => {
+                warn!(error = %e, "vercel provider unavailable (missing VERCEL_TOKEN?), falling back to bubblewrap");
                 Arc::new(BubblewrapProvider::from_env())
             }
         },
