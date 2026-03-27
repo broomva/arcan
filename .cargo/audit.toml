@@ -1,0 +1,10 @@
+# cargo audit configuration
+#
+# RUSTSEC-2023-0071 — rsa crate Marvin Attack timing side-channel
+# Pulled in transitively by sqlx-mysql (part of sqlx 0.8.x crate graph) even
+# when only the "postgres" feature is enabled. We have no MySQL connections and
+# no code path that performs RSA operations exposed to network-observable
+# timing. Suppress until sqlx restructures to exclude sqlx-mysql for
+# postgres-only builds (tracked upstream: https://github.com/launchbadge/sqlx/issues/3437).
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
