@@ -257,6 +257,22 @@ impl ExecResult {
     }
 }
 
+// ── File I/O ──────────────────────────────────────────────────────────────────
+
+/// A single file to write into a sandbox filesystem.
+///
+/// Used by [`crate::SandboxProvider::write_files`] to stage one or more files
+/// in a single call. Each write is atomic at the file level.
+#[derive(Debug, Clone)]
+pub struct FileWrite {
+    /// Absolute path inside the sandbox (e.g. `/workspace/main.py`).
+    pub path: String,
+    /// Raw file contents.
+    pub content: Vec<u8>,
+    /// Unix permission bits (e.g. `0o644`, `0o755`).
+    pub mode: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
