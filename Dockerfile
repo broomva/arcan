@@ -12,7 +12,7 @@ WORKDIR /arcan
 # Bust Docker layer cache for sibling repo clones.
 # Railway passes a unique value per build; locally use:
 #   docker build --build-arg CACHE_BUST=$(date +%s) .
-ARG CACHE_BUST=0
+ARG CACHE_BUST=20260327c
 
 # Clone sibling dependencies (matches CI checkout pattern)
 RUN echo "cache-bust: ${CACHE_BUST}" && \
