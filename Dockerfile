@@ -1,6 +1,6 @@
 # Multi-stage build for arcan agent runtime daemon
 # Clones all sibling workspace dependencies and builds the binary
-# Build bust: 2026-03-25f
+# Build bust: 2026-03-27a
 # NOTE: WORKDIR must be /arcan — nous-middleware has a hardcoded path dep on /arcan/crates/arcan-core
 # NOTE: rust:latest required — workspace deps require rustc >= 1.88.0
 
@@ -9,8 +9,14 @@ FROM rust:latest AS builder
 # Use /arcan so nous-middleware path dep (/arcan/crates/arcan-core) resolves correctly
 WORKDIR /arcan
 
+# Bust Docker layer cache for sibling repo clones.
+# Railway passes a unique value per build; locally use:
+#   docker build --build-arg CACHE_BUST=$(date +%s) .
+ARG CACHE_BUST=0
+
 # Clone sibling dependencies (matches CI checkout pattern)
-RUN git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS && \
+RUN echo "cache-bust: ${CACHE_BUST}" && \
+    git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS && \
     git clone --depth 1 https://github.com/broomva/lago.git ../lago && \
     git clone --depth 1 https://github.com/broomva/praxis.git ../praxis && \
     git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic && \
