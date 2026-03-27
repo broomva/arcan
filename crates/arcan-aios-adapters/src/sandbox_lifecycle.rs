@@ -68,9 +68,8 @@ impl ToolHarnessObserver for SandboxLifecycleObserver {
         _final_answer: Option<String>,
         _assistant_messages: Option<String>,
     ) {
-        let sandbox_id = match self.store.lookup(&session_id) {
-            Some(id) => id,
-            None => return, // no sandbox registered for this session
+        let Some(sandbox_id) = self.store.lookup(&session_id) else {
+            return; // no sandbox registered for this session
         };
 
         match self.tier {
