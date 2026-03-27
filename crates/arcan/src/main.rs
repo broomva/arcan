@@ -17,7 +17,7 @@ use arcan_aios_adapters::{
 };
 use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
-use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
+use arcan_harness::{FsPolicy, FsPort, LocalFs, SandboxPolicy};
 use arcan_lago::{
     FreeTierJournal, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool, MemoryProjection,
     MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal, SessionJournalSelector,
@@ -427,6 +427,9 @@ fn run_serve(
         max_stderr_bytes: 1024 * 1024,
     };
 
+    // --- Sandbox provider (tiered: Vercel → bwrap → subprocess) ---
+    let sandbox_provider = crate::sandbox_router::build_sandbox_provider_with_fallback();
+
     // --- Tools (Praxis canonical implementations, bridged into Arcan) ---
     let mut registry = ToolRegistry::default();
     registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
@@ -438,7 +441,9 @@ fn run_serve(
     registry.register(PraxisToolBridge::new(GlobTool::new(tracked_fs.clone())));
     registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs)));
 
-    let runner = Box::new(LocalCommandRunner);
+    let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
+        arcan_praxis::SandboxCommandRunner::new(sandbox_provider.clone()),
+    );
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
     let memory_dir = data_dir.join("memory");
@@ -643,9 +648,6 @@ fn run_serve(
         ));
 
         // --- HTTP Server ---
-        // BRO-250: Build sandbox provider from ARCAN_SANDBOX_BACKEND env var.
-        // Full per-session RemoteCommandRunner routing is deferred to BRO-253.
-        let sandbox_provider = crate::sandbox_router::build_sandbox_provider();
         let sandbox_store = Arc::new(arcan_sandbox::InMemorySessionStore::new());
 
         // Build run observers for canonical router (async judge on run completion).
@@ -656,14 +658,14 @@ fn run_serve(
             run_observers.push(obs);
         }
 
-        if let Some(ref provider) = sandbox_provider {
+        {
             // Register lifecycle observer for session cleanup.
             // Tier defaults to Anonymous (conservative: destroys on run end).
             // BRO-253 will add per-session tier extraction.
             use aios_protocol::SubscriptionTier;
             use arcan_aios_adapters::SandboxLifecycleObserver;
             run_observers.push(Arc::new(SandboxLifecycleObserver::new(
-                Arc::clone(provider),
+                sandbox_provider.clone(),
                 Arc::clone(&sandbox_store),
                 SubscriptionTier::Anonymous,
             )));
