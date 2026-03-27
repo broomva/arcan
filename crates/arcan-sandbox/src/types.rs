@@ -63,17 +63,23 @@ pub struct SandboxResources {
 
 impl Default for SandboxResources {
     fn default() -> Self {
-        Self { vcpus: 1, memory_mb: 512, disk_mb: 2048, timeout_secs: 60 }
+        Self {
+            vcpus: 1,
+            memory_mb: 512,
+            disk_mb: 2048,
+            timeout_secs: 60,
+        }
     }
 }
 
 // ── Persistence policy ────────────────────────────────────────────────────────
 
 /// Controls how a sandbox's filesystem is retained across sessions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PersistencePolicy {
     /// Sandbox is destroyed when the session ends; no filesystem retention.
+    #[default]
     Ephemeral,
     /// Filesystem is automatically snapshotted after `idle_timeout_secs` of
     /// inactivity and restored on next `resume()`.
@@ -85,12 +91,6 @@ pub enum PersistencePolicy {
     },
     /// Snapshot only when the caller explicitly invokes `snapshot()`.
     ManualSnapshot,
-}
-
-impl Default for PersistencePolicy {
-    fn default() -> Self {
-        Self::Ephemeral
-    }
 }
 
 // ── Specification ─────────────────────────────────────────────────────────────
@@ -288,7 +288,9 @@ mod tests {
     fn persistence_policy_serde_roundtrip() {
         for policy in [
             PersistencePolicy::Ephemeral,
-            PersistencePolicy::Persistent { idle_timeout_secs: 120 },
+            PersistencePolicy::Persistent {
+                idle_timeout_secs: 120,
+            },
             PersistencePolicy::ManualSnapshot,
         ] {
             let json = serde_json::to_string(&policy).unwrap();
@@ -305,7 +307,9 @@ mod tests {
             SandboxStatus::Snapshotted,
             SandboxStatus::Stopping,
             SandboxStatus::Stopped,
-            SandboxStatus::Failed { reason: "oom".into() },
+            SandboxStatus::Failed {
+                reason: "oom".into(),
+            },
         ] {
             let json = serde_json::to_string(&status).unwrap();
             let back: SandboxStatus = serde_json::from_str(&json).unwrap();
@@ -333,8 +337,12 @@ mod tests {
         assert!(result.success());
         assert_eq!(result.stdout_str(), "hello\n");
 
-        let failure =
-            ExecResult { stdout: vec![], stderr: b"oops".to_vec(), exit_code: 1, duration_ms: 1 };
+        let failure = ExecResult {
+            stdout: vec![],
+            stderr: b"oops".to_vec(),
+            exit_code: 1,
+            duration_ms: 1,
+        };
         assert!(!failure.success());
         assert_eq!(failure.stderr_str(), "oops");
     }

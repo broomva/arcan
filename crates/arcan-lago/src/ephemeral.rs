@@ -624,6 +624,10 @@ mod tests {
             .append(make_envelope(&session, memory_proposed_event()))
             .await
             .unwrap();
-        assert_eq!(inner.count(), 1, "memory event must persist after full unmark");
+        assert_eq!(
+            inner.count(),
+            1,
+            "memory event must persist after full unmark"
+        );
     }
 }

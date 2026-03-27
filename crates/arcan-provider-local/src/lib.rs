@@ -93,7 +93,10 @@ impl LocalSandboxProvider {
     ) -> Result<Self, anyhow::Error> {
         if let Some(socket) = docker_socket {
             info!(socket = %socket.display(), "Docker socket found — using Docker backend");
-            return Ok(Self { backend: LocalBackend::Docker { socket }, workspace_root });
+            return Ok(Self {
+                backend: LocalBackend::Docker { socket },
+                workspace_root,
+            });
         }
 
         if let Some(bin) = nsjail_bin {
@@ -111,12 +114,18 @@ impl LocalSandboxProvider {
 
     /// Construct with a specific Docker socket path.
     pub fn with_docker(socket: PathBuf, workspace_root: PathBuf) -> Self {
-        Self { backend: LocalBackend::Docker { socket }, workspace_root }
+        Self {
+            backend: LocalBackend::Docker { socket },
+            workspace_root,
+        }
     }
 
     /// Construct with a specific nsjail binary path.
     pub fn with_nsjail(nsjail_bin: PathBuf, workspace_root: PathBuf) -> Self {
-        Self { backend: LocalBackend::Nsjail { nsjail_bin }, workspace_root }
+        Self {
+            backend: LocalBackend::Nsjail { nsjail_bin },
+            workspace_root,
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -138,7 +147,10 @@ impl LocalSandboxProvider {
 
     /// Map a general error message to [`SandboxError::ProviderError`].
     fn err(msg: impl Into<String>) -> SandboxError {
-        SandboxError::ProviderError { provider: "local", message: msg.into() }
+        SandboxError::ProviderError {
+            provider: "local",
+            message: msg.into(),
+        }
     }
 
     // ── Docker impl ──────────────────────────────────────────────────────────
@@ -147,9 +159,9 @@ impl LocalSandboxProvider {
         let container = Self::container_name(id);
         let workspace = self.workspace_dir(id);
 
-        fs::create_dir_all(&workspace).await.map_err(|e| {
-            Self::err(format!("create workspace dir: {e}"))
-        })?;
+        fs::create_dir_all(&workspace)
+            .await
+            .map_err(|e| Self::err(format!("create workspace dir: {e}")))?;
 
         let image = spec.image.as_deref().unwrap_or("ubuntu:22.04");
         let mem_limit = format!("{}m", spec.resources.memory_mb);
@@ -159,14 +171,21 @@ impl LocalSandboxProvider {
 
         // Build argv explicitly — no shell interpolation.
         let args: &[&str] = &[
-            "run", "-d",
-            "--name", &container,
-            "--label", &session_label,
-            "--memory", &mem_limit,
-            "--cpus", &cpus,
-            "-v", &volume,
+            "run",
+            "-d",
+            "--name",
+            &container,
+            "--label",
+            &session_label,
+            "--memory",
+            &mem_limit,
+            "--cpus",
+            &cpus,
+            "-v",
+            &volume,
             image,
-            "sleep", "infinity",
+            "sleep",
+            "infinity",
         ];
 
         let out = Command::new("docker")
@@ -221,7 +240,10 @@ impl LocalSandboxProvider {
                 duration_ms: elapsed_ms,
             }),
             Ok(Err(e)) => Err(Self::err(format!("docker exec spawn: {e}"))),
-            Err(_) => Err(SandboxError::ExecTimeout { sandbox_id: id.clone(), timeout_secs }),
+            Err(_) => Err(SandboxError::ExecTimeout {
+                sandbox_id: id.clone(),
+                timeout_secs,
+            }),
         }
     }
 
@@ -262,12 +284,17 @@ impl LocalSandboxProvider {
             let volume = format!("{}:/workspace", workspace.display());
             let session_label = format!("arcan.session={}", id.0);
             let run_args: &[&str] = &[
-                "run", "-d",
-                "--name", &container,
-                "--label", &session_label,
-                "-v", &volume,
+                "run",
+                "-d",
+                "--name",
+                &container,
+                "--label",
+                &session_label,
+                "-v",
+                &volume,
                 &snapshot_image,
-                "sleep", "infinity",
+                "sleep",
+                "infinity",
             ];
             let run_out = Command::new("docker")
                 .args(run_args)
@@ -295,7 +322,10 @@ impl LocalSandboxProvider {
         let workspace = self.workspace_dir(id);
 
         // Ignore errors — container may already be gone.
-        let _ = Command::new("docker").args(["rm", "-f", &container]).output().await;
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &container])
+            .output()
+            .await;
 
         if workspace.exists() {
             fs::remove_dir_all(&workspace)
@@ -309,9 +339,12 @@ impl LocalSandboxProvider {
     async fn docker_list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
         let out = Command::new("docker")
             .args([
-                "ps", "-a",
-                "--filter", "label=arcan.session",
-                "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.CreatedAt}}",
+                "ps",
+                "-a",
+                "--filter",
+                "label=arcan.session",
+                "--format",
+                "{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.CreatedAt}}",
             ])
             .output()
             .await
@@ -405,7 +438,10 @@ impl LocalSandboxProvider {
                 duration_ms: elapsed_ms,
             }),
             Ok(Err(e)) => Err(Self::err(format!("nsjail spawn: {e}"))),
-            Err(_) => Err(SandboxError::ExecTimeout { sandbox_id: id.clone(), timeout_secs }),
+            Err(_) => Err(SandboxError::ExecTimeout {
+                sandbox_id: id.clone(),
+                timeout_secs,
+            }),
         }
     }
 
@@ -504,11 +540,15 @@ impl LocalSandboxProvider {
             .map_err(|e| Self::err(format!("read workspace_root: {e}")))?;
 
         let mut infos = Vec::new();
-        while let Some(entry) =
-            entries.next_entry().await.map_err(|e| Self::err(format!("dir entry: {e}")))?
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| Self::err(format!("dir entry: {e}")))?
         {
-            let ft =
-                entry.file_type().await.map_err(|e| Self::err(format!("file type: {e}")))?;
+            let ft = entry
+                .file_type()
+                .await
+                .map_err(|e| Self::err(format!("file type: {e}")))?;
             if !ft.is_dir() {
                 continue;
             }
@@ -520,7 +560,7 @@ impl LocalSandboxProvider {
                 .map(|st| {
                     let dur = st.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                     let secs = dur.as_secs() as i64;
-                    chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(|| Utc::now())
+                    chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
                 })
                 .unwrap_or_else(|_| Utc::now());
 
@@ -603,9 +643,7 @@ impl SandboxProvider for LocalSandboxProvider {
     async fn run(&self, id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
         match &self.backend {
             LocalBackend::Docker { .. } => self.docker_exec(id, &req).await,
-            LocalBackend::Nsjail { nsjail_bin } => {
-                self.nsjail_exec(id, &req, nsjail_bin).await
-            }
+            LocalBackend::Nsjail { nsjail_bin } => self.nsjail_exec(id, &req, nsjail_bin).await,
         }
     }
 
@@ -644,7 +682,11 @@ fn find_docker_socket() -> Option<PathBuf> {
         if p.exists() { Some(p) } else { None }
     } else {
         let default = PathBuf::from("/var/run/docker.sock");
-        if default.exists() { Some(default) } else { None }
+        if default.exists() {
+            Some(default)
+        } else {
+            None
+        }
     }
 }
 
@@ -653,7 +695,11 @@ fn which_binary(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path_var| {
         std::env::split_paths(&path_var).find_map(|dir| {
             let candidate = dir.join(name);
-            if candidate.is_file() { Some(candidate) } else { None }
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     })
 }
@@ -666,18 +712,12 @@ mod tests {
 
     /// Build a nsjail-backed provider at a temp directory.
     fn nsjail_provider(root: &Path) -> LocalSandboxProvider {
-        LocalSandboxProvider::with_nsjail(
-            PathBuf::from("/usr/sbin/nsjail"),
-            root.to_path_buf(),
-        )
+        LocalSandboxProvider::with_nsjail(PathBuf::from("/usr/sbin/nsjail"), root.to_path_buf())
     }
 
     /// Build a Docker-backed provider at a temp directory.
     fn docker_provider(root: &Path) -> LocalSandboxProvider {
-        LocalSandboxProvider::with_docker(
-            PathBuf::from("/var/run/docker.sock"),
-            root.to_path_buf(),
-        )
+        LocalSandboxProvider::with_docker(PathBuf::from("/var/run/docker.sock"), root.to_path_buf())
     }
 
     #[test]
@@ -689,7 +729,10 @@ mod tests {
             None, // no docker socket
             None, // no nsjail binary
         );
-        assert!(result.is_err(), "should fail when neither Docker nor nsjail is available");
+        assert!(
+            result.is_err(),
+            "should fail when neither Docker nor nsjail is available"
+        );
     }
 
     #[test]

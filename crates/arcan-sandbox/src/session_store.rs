@@ -95,7 +95,9 @@ pub struct InMemorySessionStore {
 impl InMemorySessionStore {
     /// Create a new, empty session store.
     pub fn new() -> Self {
-        Self { entries: Mutex::new(HashMap::new()) }
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -108,31 +110,56 @@ impl Default for InMemorySessionStore {
 impl SandboxSessionStore for InMemorySessionStore {
     fn register(&self, session_id: &str, sandbox_id: SandboxId, tier: SubscriptionTier) {
         let expires_at = tier_ttl(tier).map(|ttl| Instant::now() + ttl);
-        let entry = SessionEntry { sandbox_id, expires_at };
+        let entry = SessionEntry {
+            sandbox_id,
+            expires_at,
+        };
         // Intentional: if the lock is poisoned the process is in an
         // unrecoverable state; propagating the panic is correct here.
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(session_id.to_owned(), entry);
     }
 
     fn lookup(&self, session_id: &str) -> Option<SandboxId> {
-        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.get(session_id).and_then(|entry| {
-            let expired = entry.expires_at.map(|deadline| Instant::now() > deadline).unwrap_or(false);
-            if expired { None } else { Some(entry.sandbox_id.clone()) }
+            let expired = entry
+                .expires_at
+                .map(|deadline| Instant::now() > deadline)
+                .unwrap_or(false);
+            if expired {
+                None
+            } else {
+                Some(entry.sandbox_id.clone())
+            }
         })
     }
 
     fn remove(&self, session_id: &str) {
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.remove(session_id);
     }
 
     fn expire(&self) {
         let now = Instant::now();
-        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.retain(|_key, entry| {
-            entry.expires_at.map(|deadline| now <= deadline).unwrap_or(true)
+            entry
+                .expires_at
+                .map(|deadline| now <= deadline)
+                .unwrap_or(true)
         });
     }
 }
@@ -199,19 +226,28 @@ mod tests {
     // 4. Anonymous TTL is zero-duration
     #[test]
     fn anonymous_tier_ttl_is_zero() {
-        assert_eq!(tier_ttl(SubscriptionTier::Anonymous), Some(Duration::from_secs(0)));
+        assert_eq!(
+            tier_ttl(SubscriptionTier::Anonymous),
+            Some(Duration::from_secs(0))
+        );
     }
 
     // 5. Free TTL is 7 days
     #[test]
     fn free_tier_ttl_is_7_days() {
-        assert_eq!(tier_ttl(SubscriptionTier::Free), Some(Duration::from_secs(7 * 24 * 3600)));
+        assert_eq!(
+            tier_ttl(SubscriptionTier::Free),
+            Some(Duration::from_secs(7 * 24 * 3600))
+        );
     }
 
     // 6. Pro TTL is 90 days
     #[test]
     fn pro_tier_ttl_is_90_days() {
-        assert_eq!(tier_ttl(SubscriptionTier::Pro), Some(Duration::from_secs(90 * 24 * 3600)));
+        assert_eq!(
+            tier_ttl(SubscriptionTier::Pro),
+            Some(Duration::from_secs(90 * 24 * 3600))
+        );
     }
 
     // 7. Enterprise TTL is None
@@ -227,7 +263,11 @@ mod tests {
         // Anonymous TTL = Duration::ZERO → expires_at = Instant::now() + 0 = now.
         // By the time expire() runs, Instant::now() > that deadline (or == it).
         // We give it a tiny sleep to be deterministic across fast machines.
-        store.register("anon-session", sandbox_id("anon-box"), SubscriptionTier::Anonymous);
+        store.register(
+            "anon-session",
+            sandbox_id("anon-box"),
+            SubscriptionTier::Anonymous,
+        );
 
         // Sleep 1 ms to ensure the anonymous deadline has passed.
         std::thread::sleep(Duration::from_millis(1));
@@ -240,7 +280,11 @@ mod tests {
     #[test]
     fn expire_keeps_non_expired_entries() {
         let store = make_store();
-        store.register("free-session", sandbox_id("free-box"), SubscriptionTier::Free);
+        store.register(
+            "free-session",
+            sandbox_id("free-box"),
+            SubscriptionTier::Free,
+        );
         store.expire(); // 7-day TTL — should not be removed immediately
         assert_eq!(store.lookup("free-session"), Some(sandbox_id("free-box")));
     }
@@ -251,6 +295,9 @@ mod tests {
         let store = make_store();
         let handle = make_handle("handle-box");
         store.register_handle("session-handle", &handle, SubscriptionTier::Pro);
-        assert_eq!(store.lookup("session-handle"), Some(sandbox_id("handle-box")));
+        assert_eq!(
+            store.lookup("session-handle"),
+            Some(sandbox_id("handle-box"))
+        );
     }
 }
