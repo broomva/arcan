@@ -1,0 +1,30 @@
+[package]
+name = "arcan-provider-bubblewrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "SandboxProvider implementation using bubblewrap (bwrap) with LocalCommandRunner fallback"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-sandbox.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["process", "fs", "rt", "macros", "rt-multi-thread", "time"] }
+uuid.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

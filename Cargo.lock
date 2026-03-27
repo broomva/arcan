@@ -432,6 +432,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcan-provider-bubblewrap"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arcan-sandbox",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "arcan-provider-local"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "arcan-sandbox",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "arcan-sandbox"
 version = "0.2.1"
 dependencies = [
