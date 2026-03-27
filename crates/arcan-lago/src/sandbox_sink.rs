@@ -146,21 +146,17 @@ async fn write_event(pool: &PgPool, event: &SandboxEvent) -> Result<(), sqlx::Er
             .await?;
         }
         SandboxEventKind::Started => {
-            sqlx::query(
-                "UPDATE sandbox_instances SET status = 'running' WHERE sandbox_id = $1",
-            )
-            .bind(&event.sandbox_id.0)
-            .execute(pool)
-            .await?;
+            sqlx::query("UPDATE sandbox_instances SET status = 'running' WHERE sandbox_id = $1")
+                .bind(&event.sandbox_id.0)
+                .execute(pool)
+                .await?;
         }
         SandboxEventKind::ExecCompleted { .. } => {
-            sqlx::query(
-                "UPDATE sandbox_instances SET last_exec_at = $2 WHERE sandbox_id = $1",
-            )
-            .bind(&event.sandbox_id.0)
-            .bind(event.timestamp)
-            .execute(pool)
-            .await?;
+            sqlx::query("UPDATE sandbox_instances SET last_exec_at = $2 WHERE sandbox_id = $1")
+                .bind(&event.sandbox_id.0)
+                .bind(event.timestamp)
+                .execute(pool)
+                .await?;
         }
         SandboxEventKind::Snapshotted { snapshot_id } => {
             sqlx::query(
@@ -184,12 +180,10 @@ async fn write_event(pool: &PgPool, event: &SandboxEvent) -> Result<(), sqlx::Er
             .await?;
         }
         SandboxEventKind::Resumed { from_snapshot } => {
-            sqlx::query(
-                "UPDATE sandbox_instances SET status = 'running' WHERE sandbox_id = $1",
-            )
-            .bind(&event.sandbox_id.0)
-            .execute(pool)
-            .await?;
+            sqlx::query("UPDATE sandbox_instances SET status = 'running' WHERE sandbox_id = $1")
+                .bind(&event.sandbox_id.0)
+                .execute(pool)
+                .await?;
 
             sqlx::query(
                 r#"
@@ -286,7 +280,9 @@ mod tests {
         );
         assert_eq!(event_kind_str(&SandboxEventKind::Destroyed), "destroyed");
         assert_eq!(
-            event_kind_str(&SandboxEventKind::Failed { reason: "oom".into() }),
+            event_kind_str(&SandboxEventKind::Failed {
+                reason: "oom".into()
+            }),
             "failed"
         );
     }

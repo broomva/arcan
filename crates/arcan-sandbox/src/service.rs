@@ -563,8 +563,8 @@ mod tests {
     use crate::sink::NoopSink;
     use crate::types::{SandboxInfo, SnapshotId};
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Stub provider ─────────────────────────────────────────────────────────
 
@@ -626,11 +626,7 @@ mod tests {
             })
         }
 
-        async fn run(
-            &self,
-            _id: &SandboxId,
-            req: ExecRequest,
-        ) -> Result<ExecResult, SandboxError> {
+        async fn run(&self, _id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
             self.run_count.fetch_add(1, Ordering::SeqCst);
             if let Some(msg) = self.run_error.lock().unwrap().as_deref() {
                 return Err(SandboxError::ProviderError {
@@ -714,8 +710,12 @@ mod tests {
         let p = StubProvider::new("stub");
         let svc = make_service(Arc::clone(&p));
 
-        svc.run("a", "s", ExecRequest::shell("echo 1")).await.unwrap();
-        svc.run("a", "s", ExecRequest::shell("echo 2")).await.unwrap();
+        svc.run("a", "s", ExecRequest::shell("echo 1"))
+            .await
+            .unwrap();
+        svc.run("a", "s", ExecRequest::shell("echo 2"))
+            .await
+            .unwrap();
 
         assert_eq!(p.create_count.load(Ordering::SeqCst), 1);
         assert_eq!(p.run_count.load(Ordering::SeqCst), 2);
