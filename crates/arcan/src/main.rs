@@ -354,12 +354,13 @@ fn run_serve(
     data_dir: &Path,
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
+    tokio_runtime: tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
-    // ── Phase 1 (sync, NO Tokio runtime) ────────────────────────────────
-    //
-    // Build provider stack and other components that use reqwest::blocking::Client.
-    // These panic if constructed INSIDE a Tokio runtime ("Cannot drop a runtime
-    // in a context where blocking is not allowed").
+    // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
+    // on yet.  This means:
+    //   - async reqwest Client + tonic Channel work (they find `Handle::current()`)
+    //   - reqwest::blocking::Client also works (no nested runtime panic)
+    //   - `tokio::spawn()` works (tasks are queued, run when block_on starts)
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
@@ -626,18 +627,10 @@ fn run_serve(
     let data_dir_owned = data_dir.to_path_buf();
     let port = resolved.port;
 
-    // ── Phase 2 (inside Tokio runtime) ──────────────────────────────────
+    // ── Async phase (inside Tokio block_on) ────────────────────────────
     //
-    // Build the Tokio runtime and block_on for async initialization.
-    // reqwest::Client::new() (v0.12+) requires the Tokio I/O driver to be
-    // running — hyper-util TokioIo panics without it.  Everything that
-    // creates an async reqwest Client (RemoteLagoJournal, Autonomic remote
-    // adapter, VercelSandboxProvider, etc.) MUST be constructed inside
-    // block_on() or a spawned task.
-    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
+    // The runtime was created in main() and entered via `_rt_guard`.
+    // Now we block_on to run the HTTP server and async initialization.
     tokio_runtime.block_on(async move {
         // --- Background FS event writer (persists tracked writes to Lago journal) ---
         let session_id = SessionId::from_string("default");
@@ -1109,6 +1102,19 @@ fn main() -> anyhow::Result<()> {
             max_iterations,
             approval_timeout,
         }) => {
+            // Build the Tokio runtime FIRST.  Vigil's OTLP exporter uses
+            // tonic which calls `Endpoint::connect_lazy()` → `TokioExecutor`
+            // → `tokio::spawn()`, which panics without an active runtime.
+            // The runtime is entered (not blocked on) so that:
+            //   - tonic/hyper-util can find the Handle via `Handle::current()`
+            //   - reqwest::blocking::Client (used by LLM providers) can still
+            //     construct its own internal runtime without "nested runtime" panics
+            let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            let _rt_guard = tokio_runtime.enter();
+
             // Structured logging + optional OTel export via Vigil
             let _vigil_guard =
                 life_vigil::init_telemetry(VigConfig::for_service("arcan").with_env_overrides())
@@ -1126,7 +1132,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
             );
 
-            run_serve(&data_dir, &resolved, cli.console_dir)
+            run_serve(&data_dir, &resolved, cli.console_dir, tokio_runtime)
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)
