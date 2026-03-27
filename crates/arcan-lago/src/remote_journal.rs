@@ -18,7 +18,6 @@
 //! | `GET`  | `/v1/sessions/{id}/events` | Tail SSE stream (format=lago) |
 
 use std::pin::Pin;
-use std::sync::Arc;
 
 use futures_util::StreamExt;
 use lago_core::error::{LagoError, LagoResult};
@@ -47,20 +46,56 @@ struct HeadSeqResponse {
 
 /// A `Journal` implementation that proxies all operations to a remote Lago
 /// daemon via its HTTP API.
-#[derive(Clone)]
+///
+/// The `reqwest::Client` is created **lazily** on the first async call because
+/// `reqwest` 0.12+ internally constructs a `hyper-util::TokioIo` connection
+/// pool that panics if no Tokio reactor is running.  `RemoteLagoJournal::new()`
+/// is called in sync context (before `tokio::runtime::Builder::block_on`), so
+/// eager construction causes a crash on Railway.
 pub struct RemoteLagoJournal {
-    client: Arc<Client>,
+    client: tokio::sync::OnceCell<Client>,
     base_url: String,
+}
+
+// Manual Clone: tokio::sync::OnceCell<T> is not Clone, so we propagate the
+// inner value if already initialised.
+impl Clone for RemoteLagoJournal {
+    fn clone(&self) -> Self {
+        Self {
+            client: match self.client.get() {
+                Some(c) => {
+                    let cell = tokio::sync::OnceCell::new();
+                    // Cell is guaranteed empty — ignore the error.
+                    let _ = cell.set(c.clone());
+                    cell
+                }
+                None => tokio::sync::OnceCell::new(),
+            },
+            base_url: self.base_url.clone(),
+        }
+    }
 }
 
 impl RemoteLagoJournal {
     /// Create a new remote journal pointing at `base_url`
     /// (e.g. `http://lagod.railway.internal:3001`).
+    ///
+    /// The `reqwest::Client` is **not** created here — it is deferred to the
+    /// first `.await` call via [`client()`] to guarantee a Tokio runtime exists.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            client: Arc::new(Client::new()),
+            client: tokio::sync::OnceCell::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
         }
+    }
+
+    /// Returns a shared `reqwest::Client`, creating it on first call.
+    ///
+    /// Created lazily because `reqwest::Client::new()` (v0.12+) requires an
+    /// active Tokio reactor (`hyper-util::TokioIo`).  By deferring creation
+    /// to the first `.await` we guarantee we are inside the runtime.
+    async fn client(&self) -> &Client {
+        self.client.get_or_init(|| async { Client::new() }).await
     }
 
     fn url(&self, path: &str) -> String {
@@ -87,7 +122,8 @@ impl Journal for RemoteLagoJournal {
             // Wrap in the shape the API expects: { "event": <envelope> }
             let body = serde_json::json!({ "event": event });
             let resp = self
-                .client
+                .client()
+                .await
                 .post(&url)
                 .json(&body)
                 .send()
@@ -139,7 +175,8 @@ impl Journal for RemoteLagoJournal {
             }
 
             let resp = self
-                .client
+                .client()
+                .await
                 .get(&url)
                 .send()
                 .await
@@ -175,7 +212,8 @@ impl Journal for RemoteLagoJournal {
         ));
         Box::pin(async move {
             let resp = self
-                .client
+                .client()
+                .await
                 .get(&url)
                 .send()
                 .await
@@ -210,9 +248,9 @@ impl Journal for RemoteLagoJournal {
         let url = self.url(&format!(
             "/sessions/{session_id}/events?format=lago&after_seq={after_seq}&branch={branch_id}"
         ));
-        let rb = self.client.get(&url);
 
         Box::pin(async move {
+            let rb = self.client().await.get(&url);
             let es = EventSource::new(rb).map_err(|e| LagoError::Journal(e.to_string()))?;
 
             let stream = es.filter_map(|item| async move {
@@ -239,7 +277,8 @@ impl Journal for RemoteLagoJournal {
         let url = self.url(&format!("/sessions/{}", session.session_id));
         Box::pin(async move {
             let resp = self
-                .client
+                .client()
+                .await
                 .put(&url)
                 .json(&session)
                 .send()
@@ -259,7 +298,8 @@ impl Journal for RemoteLagoJournal {
         let url = self.url(&format!("/sessions/{session_id}"));
         Box::pin(async move {
             let resp = self
-                .client
+                .client()
+                .await
                 .get(&url)
                 .send()
                 .await
@@ -288,7 +328,8 @@ impl Journal for RemoteLagoJournal {
         let url = self.url("/sessions");
         Box::pin(async move {
             let resp = self
-                .client
+                .client()
+                .await
                 .get(&url)
                 .send()
                 .await
@@ -304,5 +345,33 @@ impl Journal for RemoteLagoJournal {
             let sessions: Vec<Session> = serde_json::from_value(raw).map_err(LagoError::from)?;
             Ok(sessions)
         })
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Constructing in a plain sync context must not panic.
+    ///
+    /// Before the lazy-client fix, `Client::new()` was called eagerly in the
+    /// constructor, which panics outside a Tokio runtime because reqwest 0.12+
+    /// creates a `hyper-util::TokioIo` connection pool that requires a reactor.
+    #[test]
+    fn new_does_not_require_tokio_runtime() {
+        let journal = RemoteLagoJournal::new("http://localhost:9999");
+        assert_eq!(journal.base_url, "http://localhost:9999");
+        // Client cell is empty until first async use.
+        assert!(journal.client.get().is_none());
+    }
+
+    #[test]
+    fn clone_empty_journal_does_not_panic() {
+        let a = RemoteLagoJournal::new("http://localhost:9999");
+        let b = a.clone();
+        assert_eq!(b.base_url, "http://localhost:9999");
+        assert!(b.client.get().is_none());
     }
 }
