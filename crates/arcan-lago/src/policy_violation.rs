@@ -16,7 +16,7 @@
 
 use aios_protocol::EventKind;
 use lago_core::{BranchId, EventEnvelope, EventId, EventPayload, SessionId};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -72,6 +72,29 @@ impl ViolationType {
     }
 }
 
+// ─── Path redaction helper ────────────────────────────────────────────────────
+
+/// Serialise an `Option<String>` field, redacting absolute paths to their last
+/// component to avoid leaking the full filesystem layout in audit events.
+///
+/// - Absolute path (starts with `/`): serialised as the last path component
+///   only, e.g. `/home/user/.secret/key.pem` → `"key.pem"`.
+/// - Relative path or non-path string: serialised as-is.
+/// - `None`: skipped (the field must also carry `skip_serializing_if`).
+fn serialize_redacted_path<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        None => serializer.serialize_none(),
+        Some(s) if s.starts_with('/') => {
+            let last = s.rsplit('/').next().unwrap_or(s.as_str());
+            serializer.serialize_some(last)
+        }
+        Some(s) => serializer.serialize_some(s.as_str()),
+    }
+}
+
 // ─── PolicyViolationData ───────────────────────────────────────────────────
 
 /// Structured payload for a `policy.violation` Lago event.
@@ -86,8 +109,13 @@ pub struct PolicyViolationData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     /// The value that triggered the violation (command, path, skill name).
-    /// Sensitive absolute paths are redacted to their last component.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Absolute paths are redacted to their last component before serialisation
+    /// to avoid leaking the full filesystem layout in audit logs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_redacted_path"
+    )]
     pub attempted_value: Option<String>,
     /// The tier at the time of violation, e.g. `"anonymous"`, `"free"`.
     pub tier: String,
@@ -216,6 +244,67 @@ mod tests {
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["capability"], "exec:cmd:*");
         assert_eq!(json["attempted_value"], "deep-research");
+    }
+
+    // ── Path redaction tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn absolute_path_is_redacted_to_last_component() {
+        let data = PolicyViolationData {
+            violation_type: ViolationType::PathTraversal,
+            capability: None,
+            attempted_value: Some("/home/user/.secret/key.pem".to_string()),
+            tier: "free".to_string(),
+            subject: "user-xyz".to_string(),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(
+            json["attempted_value"], "key.pem",
+            "absolute path must be redacted to last component"
+        );
+    }
+
+    #[test]
+    fn relative_path_is_not_redacted() {
+        let data = PolicyViolationData {
+            violation_type: ViolationType::PathTraversal,
+            capability: None,
+            attempted_value: Some("relative/path/file.txt".to_string()),
+            tier: "free".to_string(),
+            subject: "user-xyz".to_string(),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(
+            json["attempted_value"], "relative/path/file.txt",
+            "relative paths must be preserved as-is"
+        );
+    }
+
+    #[test]
+    fn non_path_value_is_not_redacted() {
+        let data = PolicyViolationData {
+            violation_type: ViolationType::CommandNotAllowed,
+            capability: None,
+            attempted_value: Some("rm -rf /".to_string()),
+            tier: "anonymous".to_string(),
+            subject: "session-abc".to_string(),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        // The value starts with 'r', not '/', so no redaction.
+        assert_eq!(json["attempted_value"], "rm -rf /");
+    }
+
+    #[test]
+    fn deeply_nested_absolute_path_is_redacted_to_filename_only() {
+        let data = PolicyViolationData {
+            violation_type: ViolationType::PathTraversal,
+            capability: None,
+            attempted_value: Some("/var/run/arcan/sessions/s-abc/journal.redb".to_string()),
+            tier: "pro".to_string(),
+            subject: "user-def".to_string(),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["attempted_value"], "journal.redb");
     }
 
     #[test]
