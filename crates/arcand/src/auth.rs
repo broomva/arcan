@@ -691,6 +691,9 @@ mod tests {
         };
         let token = encode_identity(&claims);
         let result = validate_identity_token(&token, TEST_SECRET);
-        assert!(result.is_ok(), "valid enterprise token should be accepted: {result:?}");
+        assert!(
+            result.is_ok(),
+            "valid enterprise token should be accepted: {result:?}"
+        );
     }
 }

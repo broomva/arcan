@@ -63,7 +63,12 @@ pub struct SandboxResources {
 
 impl Default for SandboxResources {
     fn default() -> Self {
-        Self { vcpus: 1, memory_mb: 512, disk_mb: 2048, timeout_secs: 60 }
+        Self {
+            vcpus: 1,
+            memory_mb: 512,
+            disk_mb: 2048,
+            timeout_secs: 60,
+        }
     }
 }
 
@@ -288,7 +293,9 @@ mod tests {
     fn persistence_policy_serde_roundtrip() {
         for policy in [
             PersistencePolicy::Ephemeral,
-            PersistencePolicy::Persistent { idle_timeout_secs: 120 },
+            PersistencePolicy::Persistent {
+                idle_timeout_secs: 120,
+            },
             PersistencePolicy::ManualSnapshot,
         ] {
             let json = serde_json::to_string(&policy).unwrap();
@@ -305,7 +312,9 @@ mod tests {
             SandboxStatus::Snapshotted,
             SandboxStatus::Stopping,
             SandboxStatus::Stopped,
-            SandboxStatus::Failed { reason: "oom".into() },
+            SandboxStatus::Failed {
+                reason: "oom".into(),
+            },
         ] {
             let json = serde_json::to_string(&status).unwrap();
             let back: SandboxStatus = serde_json::from_str(&json).unwrap();
@@ -333,8 +342,12 @@ mod tests {
         assert!(result.success());
         assert_eq!(result.stdout_str(), "hello\n");
 
-        let failure =
-            ExecResult { stdout: vec![], stderr: b"oops".to_vec(), exit_code: 1, duration_ms: 1 };
+        let failure = ExecResult {
+            stdout: vec![],
+            stderr: b"oops".to_vec(),
+            exit_code: 1,
+            duration_ms: 1,
+        };
         assert!(!failure.success());
         assert_eq!(failure.stderr_str(), "oops");
     }

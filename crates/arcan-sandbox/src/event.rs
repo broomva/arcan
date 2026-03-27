@@ -89,11 +89,20 @@ mod tests {
         let kinds = [
             SandboxEventKind::Created,
             SandboxEventKind::Started,
-            SandboxEventKind::ExecCompleted { exit_code: 0, duration_ms: 100 },
-            SandboxEventKind::Snapshotted { snapshot_id: "snap-1".into() },
-            SandboxEventKind::Resumed { from_snapshot: "snap-1".into() },
+            SandboxEventKind::ExecCompleted {
+                exit_code: 0,
+                duration_ms: 100,
+            },
+            SandboxEventKind::Snapshotted {
+                snapshot_id: "snap-1".into(),
+            },
+            SandboxEventKind::Resumed {
+                from_snapshot: "snap-1".into(),
+            },
             SandboxEventKind::Destroyed,
-            SandboxEventKind::Failed { reason: "oom".into() },
+            SandboxEventKind::Failed {
+                reason: "oom".into(),
+            },
         ];
         for kind in kinds {
             let json = serde_json::to_string(&kind).unwrap();
@@ -130,7 +139,10 @@ mod tests {
             SandboxId("s2".into()),
             "agent-1",
             "sess-1",
-            SandboxEventKind::ExecCompleted { exit_code: 1, duration_ms: 250 },
+            SandboxEventKind::ExecCompleted {
+                exit_code: 1,
+                duration_ms: 250,
+            },
             "vercel",
         );
         let json = serde_json::to_string(&event).unwrap();
