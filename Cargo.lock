@@ -380,6 +380,7 @@ version = "0.2.1"
 dependencies = [
  "aios-protocol",
  "arcan-core",
+ "arcan-sandbox",
  "arcan-store",
  "chrono",
  "futures-util",

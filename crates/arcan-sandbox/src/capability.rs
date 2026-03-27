@@ -31,6 +31,8 @@ bitflags! {
         const CUSTOM_IMAGE       = 0b0010_0000;
         /// Sandbox may access GPU hardware.
         const GPU                = 0b0100_0000;
+        /// Sandbox supports arbitrary key-value tags for routing and billing.
+        const TAGS               = 0b1000_0000;
     }
 }
 
@@ -81,6 +83,9 @@ impl SandboxCapabilitySet {
             }
             if s.starts_with("sandbox:gpu") {
                 caps |= Self::GPU;
+            }
+            if s.starts_with("sandbox:tags") {
+                caps |= Self::TAGS;
             }
         }
         caps

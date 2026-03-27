@@ -6,8 +6,16 @@
 //! | Tier | Action on run end |
 //! |------|-------------------|
 //! | `Anonymous` | Destroy sandbox immediately + remove from store |
-//! | `Free` / `Pro` | Snapshot then leave in store (persistent across sessions) |
+//! | `Free` / `Pro` | `snapshot()` → stop current session (v2: auto-snapshot for persistent sandboxes) |
 //! | `Enterprise` | No-op — managed externally |
+//!
+//! ## Vercel v2 auto-persistence
+//!
+//! When using [`arcan_provider_vercel::VercelSandboxProvider`] with the v2 API,
+//! `snapshot()` calls `POST /v2/sandboxes/sessions/{id}/stop` which automatically
+//! saves the filesystem state for persistent sandboxes.  No separate snapshot
+//! management is required — the sandbox name (stored in the session store as
+//! [`arcan_sandbox::SandboxId`]) is the stable resume handle.
 
 use std::sync::Arc;
 

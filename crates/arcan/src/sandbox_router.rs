@@ -4,7 +4,7 @@
 //!
 //! | `ARCAN_SANDBOX_BACKEND` | Provider | Notes |
 //! |------------------------|----------|-------|
-//! | `"vercel"` | [`VercelSandboxProvider`] | Requires `VERCEL_TOKEN` (BRO-242) |
+//! | `"vercel"` | [`VercelSandboxProvider`] | Requires `VERCEL_TOKEN`, optional `VERCEL_TEAM_ID` / `VERCEL_PROJECT_ID` |
 //! | `"local"` | [`LocalSandboxProvider`] | Docker or nsjail (BRO-244) |
 //! | `"bwrap"` / `"bubblewrap"` | [`BubblewrapProvider`] | Linux namespaces, bwrap fallback (BRO-245) |
 //! | absent / `"none"` | — | Sandbox provider disabled |
@@ -12,6 +12,13 @@
 //! Returns `None` if the env var is unset, empty, or `"none"`.  A `None`
 //! return value is non-fatal — the agent runtime continues without sandbox
 //! provider support.
+//!
+//! ## Vercel v2 API (BRO-263)
+//!
+//! The Vercel provider uses the v2 named-sandbox API.  Set `VERCEL_PROJECT_ID`
+//! to enable project-scoped sandbox listing.  The sandbox name is derived
+//! deterministically as `arcan-{session_id}` via
+//! [`arcan_sandbox::sandbox_name_for_session`].
 
 use std::sync::Arc;
 

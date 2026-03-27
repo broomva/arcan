@@ -42,7 +42,7 @@ pub use event::{SandboxEvent, SandboxEventKind};
 pub use provider::SandboxProvider;
 pub use session_store::{
     InMemorySessionStore, SandboxSessionStore, SandboxSessionStoreExt, UpstashSessionStore,
-    tier_ttl,
+    sandbox_name_for_session, tier_ttl,
 };
 pub use sink::{FanoutSink, NoopSink, SandboxEventSink};
 pub use types::{
