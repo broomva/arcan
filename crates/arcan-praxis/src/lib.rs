@@ -28,9 +28,11 @@
 
 pub mod config;
 pub mod registry;
+pub mod sandbox_runner;
 
 pub use config::PraxisConfig;
 pub use registry::register_praxis_tools;
+pub use sandbox_runner::{SandboxCommandRunner, build_provider, derive_sandbox_spec};
 
 // Re-export key types for convenience.
 pub use arcan_harness::bridge::PraxisToolBridge;
