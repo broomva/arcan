@@ -26,7 +26,7 @@
 //! | Value | Provider |
 //! |-------|----------|
 //! | `"local"` | [`LocalSandboxProvider`] (Docker or nsjail — falls back to bwrap on error) |
-//! | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API — requires `VERCEL_TOKEN`) |
+//! | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API — requires `VERCEL_TOKEN` (preferred) or `VERCEL_SANDBOX_API_KEY`) |
 //! | `"bubblewrap"` / `"bwrap"` / *(unset)* | [`BubblewrapProvider`] (Linux namespaces, falls back to plain subprocess) |
 
 use std::sync::Arc;
@@ -47,7 +47,7 @@ use tracing::{debug, warn};
 /// | `ARCAN_SANDBOX_PROVIDER` | Provider |
 /// |--------------------------|----------|
 /// | `"local"` | [`LocalSandboxProvider`] (Docker/nsjail) — falls back to bwrap if unavailable |
-/// | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API) — falls back to bwrap if token missing |
+/// | `"vercel"` | [`VercelSandboxProvider`] (Vercel Sandbox HTTP API) — requires `VERCEL_TOKEN` (preferred) or `VERCEL_SANDBOX_API_KEY`; falls back to bwrap if neither is set |
 /// | `"bubblewrap"` / `"bwrap"` / *(anything else / unset)* | [`BubblewrapProvider`] |
 pub fn build_provider() -> Arc<dyn SandboxProvider> {
     let name = std::env::var("ARCAN_SANDBOX_PROVIDER").unwrap_or_default();
@@ -68,7 +68,7 @@ pub fn build_provider() -> Arc<dyn SandboxProvider> {
                 Arc::new(p)
             }
             Err(e) => {
-                warn!(error = %e, "vercel provider unavailable (missing VERCEL_TOKEN?), falling back to bubblewrap");
+                warn!(error = %e, "vercel provider unavailable (missing VERCEL_TOKEN / VERCEL_SANDBOX_API_KEY?), falling back to bubblewrap");
                 Arc::new(BubblewrapProvider::from_env())
             }
         },
@@ -330,5 +330,42 @@ mod tests {
         // BubblewrapProvider::from_env falls back to plain subprocess when bwrap is absent.
         let provider = BubblewrapProvider::from_env();
         assert_eq!(provider.name(), "bubblewrap");
+    }
+
+    #[test]
+    fn build_provider_vercel_from_env_returns_err_without_token() {
+        // When neither VERCEL_TOKEN nor VERCEL_SANDBOX_API_KEY is present, the
+        // Vercel provider construction must fail so build_provider falls back to
+        // bubblewrap.  This exercises the Err branch of VercelSandboxProvider::from_env.
+        // We rely on the token vars being absent in the test environment; if they happen
+        // to be set, skip rather than fail.
+        if std::env::var("VERCEL_TOKEN").is_ok() || std::env::var("VERCEL_SANDBOX_API_KEY").is_ok()
+        {
+            return; // token present — cannot test the fallback path in this environment
+        }
+        let result = VercelSandboxProvider::from_env();
+        assert!(
+            result.is_err(),
+            "expected Err when no Vercel token is configured"
+        );
+    }
+
+    #[test]
+    fn build_provider_default_is_bubblewrap() {
+        // When ARCAN_SANDBOX_PROVIDER is unset, build_provider must return the bubblewrap
+        // provider.  We test the default arm by passing an empty/unknown value — calling
+        // build_provider() with no ARCAN_SANDBOX_PROVIDER set is safe because the workspace
+        // forbids unsafe env mutation, and the default arm is always reachable.
+        if std::env::var("ARCAN_SANDBOX_PROVIDER")
+            .map(|v| v.to_lowercase())
+            .as_deref()
+            .unwrap_or("bubblewrap")
+            == "bubblewrap"
+        {
+            let provider = build_provider();
+            assert_eq!(provider.name(), "bubblewrap");
+        }
+        // If ARCAN_SANDBOX_PROVIDER is set to something else, skip to avoid interfering
+        // with the test that already set it.
     }
 }
