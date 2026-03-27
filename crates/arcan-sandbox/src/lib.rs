@@ -31,6 +31,7 @@ pub mod capability;
 pub mod error;
 pub mod event;
 pub mod provider;
+pub mod service;
 pub mod session_store;
 pub mod sink;
 pub mod types;
@@ -40,6 +41,7 @@ pub use capability::SandboxCapabilitySet;
 pub use error::SandboxError;
 pub use event::{SandboxEvent, SandboxEventKind};
 pub use provider::SandboxProvider;
+pub use service::{SandboxRegistry, SandboxService, SandboxServicePolicy, SandboxSession};
 pub use session_store::{
     InMemorySessionStore, SandboxSessionStore, SandboxSessionStoreExt, UpstashSessionStore,
     sandbox_name_for_session, tier_ttl,
