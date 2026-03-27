@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use arcan_provider_bubblewrap::BubblewrapProvider;
 use arcan_provider_local::LocalSandboxProvider;
-use arcan_sandbox::{ExecRequest, SandboxProvider, SandboxSpec};
+use arcan_sandbox::{ExecRequest, SandboxProvider, SandboxService, SandboxSpec};
 use praxis_core::error::{PraxisError, PraxisResult};
 use praxis_core::sandbox::{CommandRequest, CommandResult, CommandRunner, SandboxPolicy};
 use tracing::{debug, warn};
@@ -223,6 +223,160 @@ fn truncate(bytes: &[u8], max_bytes: usize) -> String {
     }
 }
 
+// ── SandboxSessionLifecycle ───────────────────────────────────────────────────
+
+/// Session lifecycle hooks for a [`SandboxService`]-backed session.
+///
+/// Wire `on_pause` and `on_end` into your session's pause/end handlers so the
+/// provider-level sandbox is snapshotted or destroyed at the right time.
+///
+/// ```ignore
+/// let lifecycle = SandboxSessionLifecycle::new(service, agent_id, session_id);
+/// lifecycle.on_pause().await;  // e.g. human-in-the-loop wait
+/// lifecycle.on_end().await;    // session teardown
+/// ```
+pub struct SandboxSessionLifecycle {
+    service: Arc<SandboxService>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl SandboxSessionLifecycle {
+    pub fn new(
+        service: Arc<SandboxService>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            service,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+
+    /// Snapshot the session sandbox — call on session pause.
+    ///
+    /// Errors are logged and swallowed; callers must not fail on snapshot.
+    pub async fn on_pause(&self) {
+        if let Err(e) = self
+            .service
+            .snapshot_session(&self.agent_id, &self.session_id)
+            .await
+        {
+            warn!(
+                agent_id = %self.agent_id,
+                session_id = %self.session_id,
+                error = %e,
+                "snapshot on pause failed (non-fatal)"
+            );
+        }
+    }
+
+    /// Destroy the session sandbox — call on session end.
+    ///
+    /// Errors are logged and swallowed; callers must not fail on destroy.
+    pub async fn on_end(&self) {
+        if let Err(e) = self
+            .service
+            .destroy_session(&self.agent_id, &self.session_id)
+            .await
+        {
+            warn!(
+                agent_id = %self.agent_id,
+                session_id = %self.session_id,
+                error = %e,
+                "destroy on end failed (non-fatal)"
+            );
+        }
+    }
+}
+
+// ── SandboxServiceRunner ──────────────────────────────────────────────────────
+
+/// Session-scoped [`CommandRunner`] that routes through [`SandboxService`].
+///
+/// Unlike [`SandboxCommandRunner`] (ephemeral sandbox per call), this runner
+/// maintains a **persistent sandbox** for the agent session — files written in
+/// one call are visible in the next.  [`SandboxService`] handles
+/// create-or-resume transparently.
+///
+/// Construct one runner per session (not shared across sessions):
+///
+/// ```ignore
+/// let runner = SandboxServiceRunner::new(
+///     Arc::clone(&service),
+///     agent_id.clone(),
+///     session_id.clone(),
+/// );
+/// let bash_tool = BashTool::new(sandbox_policy, Box::new(runner));
+/// ```
+pub struct SandboxServiceRunner {
+    service: Arc<SandboxService>,
+    agent_id: String,
+    session_id: String,
+}
+
+impl SandboxServiceRunner {
+    pub fn new(
+        service: Arc<SandboxService>,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            service,
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+        }
+    }
+}
+
+impl CommandRunner for SandboxServiceRunner {
+    fn run(&self, policy: &SandboxPolicy, request: &CommandRequest) -> PraxisResult<CommandResult> {
+        if !policy.shell_enabled {
+            return Err(PraxisError::Sandbox(
+                "shell execution is disabled by policy".into(),
+            ));
+        }
+
+        let service = Arc::clone(&self.service);
+        let agent_id = self.agent_id.clone();
+        let session_id = self.session_id.clone();
+        let max_stdout = policy.max_stdout_bytes;
+        let max_stderr = policy.max_stderr_bytes;
+
+        let exec = ExecRequest {
+            command: std::iter::once(request.executable.clone())
+                .chain(request.args.iter().cloned())
+                .collect(),
+            working_dir: Some(request.cwd.display().to_string()),
+            env: request.env.iter().cloned().collect(),
+            timeout_secs: Some(policy.max_execution_ms.div_ceil(1000)),
+            stdin: None,
+        };
+
+        block_on_sandbox(async move {
+            let result = service
+                .run(&agent_id, &session_id, exec)
+                .await
+                .map_err(|e| PraxisError::CommandFailed(format!("sandbox service run: {e}")))?;
+
+            debug!(
+                agent_id = %agent_id,
+                session_id = %session_id,
+                exit_code = result.exit_code,
+                duration_ms = result.duration_ms,
+                "service-routed sandbox exec completed"
+            );
+
+            Ok(CommandResult {
+                exit_code: result.exit_code,
+                stdout: truncate(&result.stdout, max_stdout),
+                stderr: truncate(&result.stderr, max_stderr),
+            })
+        })
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -317,5 +471,120 @@ mod tests {
         // BubblewrapProvider::from_env falls back to plain subprocess when bwrap is absent.
         let provider = BubblewrapProvider::from_env();
         assert_eq!(provider.name(), "bubblewrap");
+    }
+
+    // ── SandboxServiceRunner tests ──────────────────────────────────────────
+
+    fn make_service() -> Arc<SandboxService> {
+        use arcan_sandbox::{
+            NoopSink, SandboxEventSink, SandboxProvider, SandboxRegistry, SandboxService,
+            SandboxServicePolicy,
+        };
+        let mut registry = SandboxRegistry::new("bubblewrap");
+        registry.register(Arc::new(BubblewrapProvider::from_env()) as Arc<dyn SandboxProvider>);
+        Arc::new(SandboxService::new(
+            registry,
+            Arc::new(NoopSink) as Arc<dyn SandboxEventSink>,
+            SandboxServicePolicy::free(),
+        ))
+    }
+
+    #[test]
+    fn service_runner_shell_disabled_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = test_policy(dir.path());
+        policy.shell_enabled = false;
+
+        let service = make_service();
+        let runner = SandboxServiceRunner::new(service, "agent-1", "session-A");
+        let req = CommandRequest {
+            executable: "echo".into(),
+            args: vec!["hello".into()],
+            cwd: dir.path().to_path_buf(),
+            env: vec![],
+        };
+
+        let err = runner.run(&policy, &req).unwrap_err();
+        assert!(err.to_string().contains("disabled by policy"));
+    }
+
+    #[test]
+    fn service_runner_echo_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+
+        let service = make_service();
+        let runner = SandboxServiceRunner::new(service, "agent-1", "session-B");
+        let req = CommandRequest {
+            executable: "sh".into(),
+            args: vec!["-c".into(), "echo service-routed".into()],
+            cwd: dir.path().to_path_buf(),
+            env: vec![],
+        };
+
+        let result = runner.run(&policy, &req).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("service-routed"));
+    }
+
+    #[test]
+    fn service_runner_session_reuse_preserves_files() {
+        // Write a file in the first call; read it in the second.
+        // With a persistent sandbox (vs ephemeral), the file persists.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+
+        let service = make_service();
+        let runner = SandboxServiceRunner::new(Arc::clone(&service), "agent-2", "session-C");
+
+        let write_req = CommandRequest {
+            executable: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("echo marker > {}/session-file.txt", dir.path().display()),
+            ],
+            cwd: dir.path().to_path_buf(),
+            env: vec![],
+        };
+        let r1 = runner.run(&policy, &write_req).unwrap();
+        assert_eq!(r1.exit_code, 0);
+
+        // Second call on the same runner (same session_id) reads the file.
+        let read_req = CommandRequest {
+            executable: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("cat {}/session-file.txt", dir.path().display()),
+            ],
+            cwd: dir.path().to_path_buf(),
+            env: vec![],
+        };
+        let r2 = runner.run(&policy, &read_req).unwrap();
+        assert_eq!(r2.exit_code, 0);
+        assert!(r2.stdout.contains("marker"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_lifecycle_on_end_destroys_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = test_policy(dir.path());
+
+        let service = make_service();
+        let runner = SandboxServiceRunner::new(Arc::clone(&service), "agent-3", "session-D");
+
+        // Prime the session with one exec.
+        let req = CommandRequest {
+            executable: "sh".into(),
+            args: vec!["-c".into(), "true".into()],
+            cwd: dir.path().to_path_buf(),
+            env: vec![],
+        };
+        runner.run(&policy, &req).unwrap();
+        assert_eq!(service.session_count(), 1);
+
+        // on_end should destroy it.
+        let lifecycle = SandboxSessionLifecycle::new(Arc::clone(&service), "agent-3", "session-D");
+        lifecycle.on_end().await;
+        assert_eq!(service.session_count(), 0);
     }
 }
