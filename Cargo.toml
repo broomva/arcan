@@ -2,6 +2,9 @@
 [workspace]
 members = [
   "crates/arcan-sandbox",
+  "crates/arcan-provider-vercel",
+  "crates/arcan-provider-bubblewrap",
+  "crates/arcan-provider-local",
   "crates/arcan-anima",
   "crates/arcan-console",
   "crates/arcan-core",
@@ -146,3 +149,6 @@ life-vigil = { version = "0.1.0", path = "../vigil" }
 
 # Arcan sandbox provider abstraction
 arcan-sandbox = { path = "crates/arcan-sandbox", version = "0.2.1" }
+arcan-provider-vercel = { path = "crates/arcan-provider-vercel", version = "0.2.1" }
+arcan-provider-bubblewrap = { path = "crates/arcan-provider-bubblewrap", version = "0.2.1" }
+arcan-provider-local = { path = "crates/arcan-provider-local", version = "0.2.1" }

@@ -1,0 +1,35 @@
+[package]
+name = "arcan-provider-vercel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Vercel Sandbox API provider implementation for Arcan (Firecracker microVM isolation)"
+
+[features]
+default = []
+sandbox-vercel = []
+
+[dependencies]
+arcan-sandbox.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+reqwest = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+mockito = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[lints]
+workspace = true

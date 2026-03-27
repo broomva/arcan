@@ -8,6 +8,7 @@ pub mod haima_middleware;
 pub mod policy;
 pub mod provider;
 pub mod sandbox;
+pub mod sandbox_lifecycle;
 pub mod shell_gate;
 pub mod tools;
 
@@ -21,6 +22,7 @@ pub use haima_middleware::HaimaPaymentMiddleware;
 pub use policy::ArcanPolicyAdapter;
 pub use provider::{ArcanProviderAdapter, StreamingSenderHandle};
 pub use sandbox::SandboxEnforcer;
+pub use sandbox_lifecycle::SandboxLifecycleObserver;
 pub use shell_gate::{
     FREE_TIER_ALLOWED_COMMANDS, ShellPolicy, shell_policy_for, validate_shell_command,
 };

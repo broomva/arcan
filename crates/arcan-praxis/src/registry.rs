@@ -6,6 +6,7 @@
 //! Arcan [`ToolRegistry`].
 
 use crate::config::PraxisConfig;
+use crate::sandbox_runner::SandboxCommandRunner;
 use arcan_core::runtime::ToolRegistry;
 use arcan_harness::bridge::PraxisToolBridge;
 use praxis_core::local_fs::LocalFs;
@@ -56,9 +57,17 @@ pub fn register_praxis_tools(config: &PraxisConfig, registry: &mut ToolRegistry)
     registry.register(PraxisToolBridge::new(EditFileTool::new(fs)));
     count += 1;
 
-    // Shell tool (sandbox-constrained)
+    // Shell tool (sandbox-constrained).
+    // When ARCAN_SANDBOX_PROVIDER is set, delegate to a SandboxProvider-backed
+    // runner (bubblewrap, local, vercel, …).  Otherwise fall back to the
+    // in-process LocalCommandRunner for zero-regression behaviour.
     let sandbox_policy = config.sandbox_policy();
-    let runner = Box::new(LocalCommandRunner::new());
+    let runner: Box<dyn praxis_core::sandbox::CommandRunner> =
+        if std::env::var("ARCAN_SANDBOX_PROVIDER").is_ok() {
+            Box::new(SandboxCommandRunner::from_env())
+        } else {
+            Box::new(LocalCommandRunner::new())
+        };
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
     count += 1;
 
