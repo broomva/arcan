@@ -413,6 +413,7 @@ dependencies = [
  "arcan-harness",
  "arcan-provider-bubblewrap",
  "arcan-provider-local",
+ "arcan-provider-vercel",
  "arcan-sandbox",
  "praxis-core",
  "praxis-tools",

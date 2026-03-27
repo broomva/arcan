@@ -50,8 +50,10 @@ split-debuginfo = "unpacked" # Faster linking on macOS
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = true
-panic = "abort"
+# NOTE: strip and panic=abort temporarily disabled to get full backtrace
+# for the hyper-util Tokio reactor panic (2026-03-27). Re-enable once fixed.
+strip = false
+panic = "unwind"
 
 [workspace.package]
 version = "0.2.1"
