@@ -85,3 +85,64 @@ pub fn build_sandbox_provider() -> Option<Arc<dyn SandboxProvider>> {
         }
     }
 }
+
+/// Auto-detect the best available sandbox provider, always returning one.
+///
+/// Implements a tiered detection chain:
+///
+/// 1. If `ARCAN_SANDBOX_BACKEND` is explicitly set (and not `"auto"`), delegate to
+///    [`build_sandbox_provider`].  If it returns `Some`, use it.  If it returns
+///    `None` (init failure), log a warning and fall through to auto-detection.
+/// 2. If `VERCEL_TOKEN` is present in the environment, attempt
+///    [`arcan_provider_vercel::VercelSandboxProvider::from_env`].  On success,
+///    return it.  On failure, log a warning and continue.
+/// 3. Create [`arcan_provider_bubblewrap::BubblewrapProvider::from_env`].  If the
+///    provider reports `use_bwrap = true`, log "Sandbox: Bubblewrap (Linux namespace
+///    isolation)"; otherwise log "Sandbox: subprocess fallback (workspace directory
+///    isolation)".
+///
+/// This function **never** returns `None` — the minimum guarantee is
+/// subprocess-level workspace isolation.
+pub fn build_sandbox_provider_with_fallback() -> Arc<dyn SandboxProvider> {
+    let explicit_backend = std::env::var("ARCAN_SANDBOX_BACKEND")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // Tier 1: honour an explicit (non-auto) backend setting.
+    if !explicit_backend.is_empty() && explicit_backend != "auto" {
+        match build_sandbox_provider() {
+            Some(provider) => return provider,
+            None => {
+                tracing::warn!(
+                    backend = %explicit_backend,
+                    "ARCAN_SANDBOX_BACKEND explicit value failed init; falling through to auto-detect"
+                );
+            }
+        }
+    }
+
+    // Tier 2: Vercel sandbox when VERCEL_TOKEN is available.
+    if std::env::var("VERCEL_TOKEN").is_ok() {
+        match arcan_provider_vercel::VercelSandboxProvider::from_env() {
+            Ok(p) => {
+                tracing::info!("Sandbox: Vercel (auto-detected via VERCEL_TOKEN)");
+                return Arc::new(p);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "VERCEL_TOKEN present but Vercel provider init failed; continuing auto-detect"
+                );
+            }
+        }
+    }
+
+    // Tier 3: Bubblewrap / subprocess fallback — always succeeds.
+    let p = arcan_provider_bubblewrap::BubblewrapProvider::from_env();
+    if p.use_bwrap {
+        tracing::info!("Sandbox: Bubblewrap (Linux namespace isolation)");
+    } else {
+        tracing::info!("Sandbox: subprocess fallback (workspace directory isolation)");
+    }
+    Arc::new(p)
+}
