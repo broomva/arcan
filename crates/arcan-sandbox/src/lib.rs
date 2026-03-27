@@ -31,6 +31,7 @@ pub mod capability;
 pub mod error;
 pub mod event;
 pub mod provider;
+pub mod session_store;
 pub mod types;
 
 // Flat re-exports for ergonomic use as `arcan_sandbox::SandboxProvider`, etc.
@@ -38,6 +39,10 @@ pub use capability::SandboxCapabilitySet;
 pub use error::SandboxError;
 pub use event::{SandboxEvent, SandboxEventKind};
 pub use provider::SandboxProvider;
+pub use session_store::{
+    InMemorySessionStore, SandboxSessionStore, SandboxSessionStoreExt, UpstashSessionStore,
+    tier_ttl,
+};
 pub use types::{
     ExecRequest, ExecResult, PersistencePolicy, SandboxHandle, SandboxId, SandboxInfo,
     SandboxResources, SandboxSpec, SandboxStatus, SnapshotId,
