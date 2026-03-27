@@ -60,7 +60,10 @@ impl BubblewrapProvider {
         } else {
             warn!("bwrap binary not found — falling back to plain subprocess");
         }
-        Self { workspace_root, use_bwrap }
+        Self {
+            workspace_root,
+            use_bwrap,
+        }
     }
 
     /// Create a provider reading `ARCAN_SANDBOX_ROOT` (default:
@@ -166,9 +169,7 @@ impl SandboxProvider for BubblewrapProvider {
                 if !status.success() {
                     return Err(SandboxError::ProviderError {
                         provider: "bubblewrap",
-                        message: format!(
-                            "tar exited with {status} while extracting {tarball:?}"
-                        ),
+                        message: format!("tar exited with {status} while extracting {tarball:?}"),
                     });
                 }
 
@@ -290,16 +291,20 @@ impl SandboxProvider for BubblewrapProvider {
         let tarball = self.snapshot_path(id);
 
         if workspace.exists() {
-            fs::remove_dir_all(&workspace).await.map_err(|e| SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("remove workspace: {e}"),
-            })?;
+            fs::remove_dir_all(&workspace)
+                .await
+                .map_err(|e| SandboxError::ProviderError {
+                    provider: "bubblewrap",
+                    message: format!("remove workspace: {e}"),
+                })?;
         }
         if tarball.exists() {
-            fs::remove_file(&tarball).await.map_err(|e| SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("remove tarball: {e}"),
-            })?;
+            fs::remove_file(&tarball)
+                .await
+                .map_err(|e| SandboxError::ProviderError {
+                    provider: "bubblewrap",
+                    message: format!("remove tarball: {e}"),
+                })?;
         }
 
         info!(sandbox_id = %id, "sandbox destroyed");
@@ -313,20 +318,24 @@ impl SandboxProvider for BubblewrapProvider {
             return Ok(vec![]);
         }
 
-        let mut entries = fs::read_dir(&self.workspace_root)
-            .await
-            .map_err(|e| SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("read workspace_root: {e}"),
-            })?;
+        let mut entries =
+            fs::read_dir(&self.workspace_root)
+                .await
+                .map_err(|e| SandboxError::ProviderError {
+                    provider: "bubblewrap",
+                    message: format!("read workspace_root: {e}"),
+                })?;
 
         let mut infos = Vec::new();
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("read dir entry: {e}"),
-            }
-        })? {
+        while let Some(entry) =
+            entries
+                .next_entry()
+                .await
+                .map_err(|e| SandboxError::ProviderError {
+                    provider: "bubblewrap",
+                    message: format!("read dir entry: {e}"),
+                })?
+        {
             let ft = entry
                 .file_type()
                 .await
@@ -343,9 +352,7 @@ impl SandboxProvider for BubblewrapProvider {
                 .await
                 .and_then(|m| m.created())
                 .map(|st| {
-                    let dur = st
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default();
+                    let dur = st.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                     let secs = dur.as_secs() as i64;
                     chrono::DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
                 })
@@ -370,7 +377,11 @@ fn which_bwrap() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path_var| {
         std::env::split_paths(&path_var).find_map(|dir| {
             let candidate = dir.join("bwrap");
-            if candidate.is_file() { Some(candidate) } else { None }
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     })
 }
@@ -441,7 +452,10 @@ mod tests {
     use super::*;
 
     fn provider_at(root: &Path) -> BubblewrapProvider {
-        BubblewrapProvider { workspace_root: root.to_path_buf(), use_bwrap: false }
+        BubblewrapProvider {
+            workspace_root: root.to_path_buf(),
+            use_bwrap: false,
+        }
     }
 
     #[tokio::test]
@@ -449,12 +463,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider.create(SandboxSpec::ephemeral("test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("test"))
+            .await
+            .unwrap();
         let workspace = provider.workspace_dir(&handle.id);
-        assert!(workspace.exists(), "workspace dir should exist after create");
+        assert!(
+            workspace.exists(),
+            "workspace dir should exist after create"
+        );
 
         provider.destroy(&handle.id).await.unwrap();
-        assert!(!workspace.exists(), "workspace dir should be removed after destroy");
+        assert!(
+            !workspace.exists(),
+            "workspace dir should be removed after destroy"
+        );
     }
 
     #[tokio::test]
@@ -462,7 +485,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider.create(SandboxSpec::ephemeral("echo-test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("echo-test"))
+            .await
+            .unwrap();
 
         let req = ExecRequest {
             command: vec!["echo".into(), "hello".into()],
@@ -474,7 +500,10 @@ mod tests {
 
         let result = provider.run(&handle.id, req).await.unwrap();
         assert_eq!(result.exit_code, 0, "echo should exit 0");
-        assert!(result.stdout_str().contains("hello"), "stdout should contain 'hello'");
+        assert!(
+            result.stdout_str().contains("hello"),
+            "stdout should contain 'hello'"
+        );
 
         provider.destroy(&handle.id).await.unwrap();
     }
@@ -484,12 +513,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider.create(SandboxSpec::ephemeral("snap-test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("snap-test"))
+            .await
+            .unwrap();
         let snapshot_id = provider.snapshot(&handle.id).await.unwrap();
 
         let tarball = provider.snapshot_path(&handle.id);
         assert!(tarball.exists(), "tarball should exist after snapshot");
-        assert!(snapshot_id.0.ends_with(".tar.gz"), "snapshot id should be a .tar.gz filename");
+        assert!(
+            snapshot_id.0.ends_with(".tar.gz"),
+            "snapshot id should be a .tar.gz filename"
+        );
 
         provider.destroy(&handle.id).await.unwrap();
     }
@@ -500,11 +535,16 @@ mod tests {
         let provider = provider_at(tmp.path());
 
         // Create, write a file, snapshot, destroy workspace dir, then resume.
-        let handle = provider.create(SandboxSpec::ephemeral("resume-test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("resume-test"))
+            .await
+            .unwrap();
         let workspace = provider.workspace_dir(&handle.id);
 
         // Write a marker file.
-        tokio::fs::write(workspace.join("marker.txt"), b"alive").await.unwrap();
+        tokio::fs::write(workspace.join("marker.txt"), b"alive")
+            .await
+            .unwrap();
 
         provider.snapshot(&handle.id).await.unwrap();
 
@@ -514,7 +554,10 @@ mod tests {
 
         let resumed = provider.resume(&handle.id).await.unwrap();
         assert_eq!(resumed.id, handle.id);
-        assert!(workspace.exists(), "workspace dir should exist after resume");
+        assert!(
+            workspace.exists(),
+            "workspace dir should exist after resume"
+        );
 
         provider.destroy(&handle.id).await.unwrap();
     }
@@ -532,7 +575,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider.create(SandboxSpec::ephemeral("exit-code-test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("exit-code-test"))
+            .await
+            .unwrap();
 
         let req = ExecRequest {
             command: vec!["/bin/sh".into(), "-c".into(), "exit 1".into()],
@@ -554,8 +600,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle =
-            provider.create(SandboxSpec::ephemeral("timeout-test")).await.unwrap();
+        let handle = provider
+            .create(SandboxSpec::ephemeral("timeout-test"))
+            .await
+            .unwrap();
 
         let req = ExecRequest {
             command: vec!["sleep".into(), "30".into()],
@@ -594,8 +642,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let h1 = provider.create(SandboxSpec::ephemeral("list-test-1")).await.unwrap();
-        let h2 = provider.create(SandboxSpec::ephemeral("list-test-2")).await.unwrap();
+        let h1 = provider
+            .create(SandboxSpec::ephemeral("list-test-1"))
+            .await
+            .unwrap();
+        let h2 = provider
+            .create(SandboxSpec::ephemeral("list-test-2"))
+            .await
+            .unwrap();
 
         let infos = provider.list().await.unwrap();
         let ids: Vec<_> = infos.iter().map(|i| &i.id).collect();

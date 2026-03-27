@@ -1,0 +1,18 @@
+[package]
+name = "arcan-fleet"
+description = "Vertical agent fleet — coding, data processing, and support agents for the Life marketplace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core" }
+haima-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
