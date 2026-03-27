@@ -8,8 +8,8 @@ pub mod haima_middleware;
 pub mod policy;
 pub mod provider;
 pub mod sandbox;
-pub mod shell_gate;
 pub mod sandbox_lifecycle;
+pub mod shell_gate;
 pub mod tools;
 
 pub use approval::ArcanApprovalAdapter;

@@ -27,37 +27,33 @@ pub fn build_sandbox_provider() -> Option<Arc<dyn SandboxProvider>> {
         .to_lowercase()
         .as_str()
     {
-        "vercel" => {
-            match arcan_provider_vercel::VercelSandboxProvider::from_env() {
-                Ok(p) => {
-                    tracing::info!("Sandbox backend: Vercel (BRO-242)");
-                    Some(Arc::new(p))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "ARCAN_SANDBOX_BACKEND=vercel but provider init failed; sandbox disabled"
-                    );
-                    None
-                }
+        "vercel" => match arcan_provider_vercel::VercelSandboxProvider::from_env() {
+            Ok(p) => {
+                tracing::info!("Sandbox backend: Vercel (BRO-242)");
+                Some(Arc::new(p))
             }
-        }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "ARCAN_SANDBOX_BACKEND=vercel but provider init failed; sandbox disabled"
+                );
+                None
+            }
+        },
 
-        "local" => {
-            match arcan_provider_local::LocalSandboxProvider::from_env() {
-                Ok(p) => {
-                    tracing::info!("Sandbox backend: Local (Docker/nsjail, BRO-244)");
-                    Some(Arc::new(p))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "ARCAN_SANDBOX_BACKEND=local but provider init failed; sandbox disabled"
-                    );
-                    None
-                }
+        "local" => match arcan_provider_local::LocalSandboxProvider::from_env() {
+            Ok(p) => {
+                tracing::info!("Sandbox backend: Local (Docker/nsjail, BRO-244)");
+                Some(Arc::new(p))
             }
-        }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "ARCAN_SANDBOX_BACKEND=local but provider init failed; sandbox disabled"
+                );
+                None
+            }
+        },
 
         "bwrap" | "bubblewrap" => {
             let p = arcan_provider_bubblewrap::BubblewrapProvider::from_env();

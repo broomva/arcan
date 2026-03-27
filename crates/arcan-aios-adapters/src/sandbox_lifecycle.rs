@@ -14,8 +14,8 @@ use std::sync::Arc;
 use aios_protocol::SubscriptionTier;
 use arcan_sandbox::{InMemorySessionStore, SandboxProvider, SandboxSessionStore};
 
-use async_trait::async_trait;
 use crate::tools::ToolHarnessObserver;
+use async_trait::async_trait;
 
 /// Tier-aware sandbox lifecycle observer.
 ///
@@ -47,7 +47,11 @@ impl SandboxLifecycleObserver {
         store: Arc<InMemorySessionStore>,
         tier: SubscriptionTier,
     ) -> Self {
-        Self { provider, store, tier }
+        Self {
+            provider,
+            store,
+            tier,
+        }
     }
 }
 
@@ -158,12 +162,24 @@ mod tests {
     impl MockProvider {
         fn new() -> (Self, Arc<Mutex<CallLog>>) {
             let log = Arc::new(Mutex::new(CallLog::default()));
-            (Self { log: Arc::clone(&log), snapshot_fails: false }, log)
+            (
+                Self {
+                    log: Arc::clone(&log),
+                    snapshot_fails: false,
+                },
+                log,
+            )
         }
 
         fn with_failing_snapshot() -> (Self, Arc<Mutex<CallLog>>) {
             let log = Arc::new(Mutex::new(CallLog::default()));
-            (Self { log: Arc::clone(&log), snapshot_fails: true }, log)
+            (
+                Self {
+                    log: Arc::clone(&log),
+                    snapshot_fails: true,
+                },
+                log,
+            )
         }
     }
 
@@ -216,20 +232,12 @@ mod tests {
                     message: "snapshot failure injected by test".into(),
                 });
             }
-            self.log
-                .lock()
-                .unwrap()
-                .snapshots
-                .push(id.0.clone());
+            self.log.lock().unwrap().snapshots.push(id.0.clone());
             Ok(SnapshotId(id.0.clone()))
         }
 
         async fn destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
-            self.log
-                .lock()
-                .unwrap()
-                .destroys
-                .push(id.0.clone());
+            self.log.lock().unwrap().destroys.push(id.0.clone());
             Ok(())
         }
 
@@ -255,7 +263,11 @@ mod tests {
         let store = Arc::new(InMemorySessionStore::new());
         // Always register with Free tier to avoid zero-TTL expiry in tests.
         // The observer tier controls cleanup behaviour, not the store TTL.
-        store.register(session_id, SandboxId(sandbox_id.to_owned()), SubscriptionTier::Free);
+        store.register(
+            session_id,
+            SandboxId(sandbox_id.to_owned()),
+            SubscriptionTier::Free,
+        );
         let obs = SandboxLifecycleObserver::new(provider, Arc::clone(&store), tier);
         (obs, store)
     }
@@ -267,17 +279,25 @@ mod tests {
         let (mock, log) = MockProvider::new();
         let provider: Arc<dyn SandboxProvider> = Arc::new(mock);
 
-        let (obs, _store) =
-            setup(Arc::clone(&provider), SubscriptionTier::Anonymous, "sess-anon", "sbx-1");
+        let (obs, _store) = setup(
+            Arc::clone(&provider),
+            SubscriptionTier::Anonymous,
+            "sess-anon",
+            "sbx-1",
+        );
 
-        obs.on_run_finished("sess-anon".into(), None, None, None).await;
+        obs.on_run_finished("sess-anon".into(), None, None, None)
+            .await;
 
         let log = log.lock().unwrap();
         assert!(
             log.destroys.contains(&"sbx-1".to_owned()),
             "destroy should have been called for sbx-1"
         );
-        assert!(log.snapshots.is_empty(), "snapshot should NOT be called for anonymous tier");
+        assert!(
+            log.snapshots.is_empty(),
+            "snapshot should NOT be called for anonymous tier"
+        );
     }
 
     // ── Test 2: session removed from store after destroy ─────────────────────
@@ -287,11 +307,19 @@ mod tests {
         let (mock, _log) = MockProvider::new();
         let provider: Arc<dyn SandboxProvider> = Arc::new(mock);
 
-        let (obs, store) =
-            setup(Arc::clone(&provider), SubscriptionTier::Anonymous, "sess-remove", "sbx-2");
+        let (obs, store) = setup(
+            Arc::clone(&provider),
+            SubscriptionTier::Anonymous,
+            "sess-remove",
+            "sbx-2",
+        );
 
-        assert!(store.lookup("sess-remove").is_some(), "entry should exist before run end");
-        obs.on_run_finished("sess-remove".into(), None, None, None).await;
+        assert!(
+            store.lookup("sess-remove").is_some(),
+            "entry should exist before run end"
+        );
+        obs.on_run_finished("sess-remove".into(), None, None, None)
+            .await;
         assert!(
             store.lookup("sess-remove").is_none(),
             "entry should be removed after anon cleanup"
@@ -308,10 +336,14 @@ mod tests {
         // Note: no sandbox registered in store.
         let obs = SandboxLifecycleObserver::new(provider, store, SubscriptionTier::Anonymous);
 
-        obs.on_run_finished("sess-missing".into(), None, None, None).await;
+        obs.on_run_finished("sess-missing".into(), None, None, None)
+            .await;
 
         let log = log.lock().unwrap();
-        assert!(log.destroys.is_empty(), "no destroy should be called if no sandbox in store");
+        assert!(
+            log.destroys.is_empty(),
+            "no destroy should be called if no sandbox in store"
+        );
         assert!(log.snapshots.is_empty());
     }
 
@@ -322,17 +354,25 @@ mod tests {
         let (mock, log) = MockProvider::new();
         let provider: Arc<dyn SandboxProvider> = Arc::new(mock);
 
-        let (obs, store) =
-            setup(Arc::clone(&provider), SubscriptionTier::Free, "sess-free", "sbx-3");
+        let (obs, store) = setup(
+            Arc::clone(&provider),
+            SubscriptionTier::Free,
+            "sess-free",
+            "sbx-3",
+        );
 
-        obs.on_run_finished("sess-free".into(), None, None, None).await;
+        obs.on_run_finished("sess-free".into(), None, None, None)
+            .await;
 
         let log = log.lock().unwrap();
         assert!(
             log.snapshots.contains(&"sbx-3".to_owned()),
             "snapshot should have been called for free tier"
         );
-        assert!(log.destroys.is_empty(), "destroy should NOT be called on successful snapshot");
+        assert!(
+            log.destroys.is_empty(),
+            "destroy should NOT be called on successful snapshot"
+        );
         // Entry should still be in store (sandbox persisted).
         drop(log);
         assert!(
@@ -348,10 +388,15 @@ mod tests {
         let (mock, log) = MockProvider::with_failing_snapshot();
         let provider: Arc<dyn SandboxProvider> = Arc::new(mock);
 
-        let (obs, store) =
-            setup(Arc::clone(&provider), SubscriptionTier::Pro, "sess-pro-fail", "sbx-4");
+        let (obs, store) = setup(
+            Arc::clone(&provider),
+            SubscriptionTier::Pro,
+            "sess-pro-fail",
+            "sbx-4",
+        );
 
-        obs.on_run_finished("sess-pro-fail".into(), None, None, None).await;
+        obs.on_run_finished("sess-pro-fail".into(), None, None, None)
+            .await;
 
         let log = log.lock().unwrap();
         assert!(
@@ -379,11 +424,15 @@ mod tests {
             "sbx-5",
         );
 
-        obs.on_run_finished("sess-enterprise".into(), None, None, None).await;
+        obs.on_run_finished("sess-enterprise".into(), None, None, None)
+            .await;
 
         let log = log.lock().unwrap();
         assert!(log.destroys.is_empty(), "enterprise tier must not destroy");
-        assert!(log.snapshots.is_empty(), "enterprise tier must not snapshot");
+        assert!(
+            log.snapshots.is_empty(),
+            "enterprise tier must not snapshot"
+        );
         drop(log);
         assert!(
             store.lookup("sess-enterprise").is_some(),

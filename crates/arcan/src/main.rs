@@ -654,8 +654,8 @@ fn run_serve(
             // Register lifecycle observer for session cleanup.
             // Tier defaults to Anonymous (conservative: destroys on run end).
             // BRO-253 will add per-session tier extraction.
-            use arcan_aios_adapters::SandboxLifecycleObserver;
             use aios_protocol::SubscriptionTier;
+            use arcan_aios_adapters::SandboxLifecycleObserver;
             run_observers.push(Arc::new(SandboxLifecycleObserver::new(
                 Arc::clone(provider),
                 Arc::clone(&sandbox_store),
