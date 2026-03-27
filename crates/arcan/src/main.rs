@@ -18,8 +18,9 @@ use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalCommandRunner, LocalFs, SandboxPolicy};
 use arcan_lago::{
-    LagoTrackedFs, MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool,
-    RemoteLagoJournal, run_event_writer,
+    FreeTierJournal, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool, MemoryProjection,
+    MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal, SessionJournalSelector,
+    run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -389,6 +390,19 @@ fn run_serve(
 
     let blob_store = Arc::new(lago_store::BlobStore::open(&blobs_path)?);
 
+    // BRO-217: Wrap in SessionJournalSelector — routes memory events for anonymous
+    // sessions to EphemeralJournal (discard). The raw journal is retained for
+    // LagoAiosEventStoreAdapter (audit events always persist regardless of tier).
+    let session_selector = Arc::new(SessionJournalSelector::new(journal.clone()));
+    // BRO-218/219: FreeTierJournal wraps session_selector so the write chain is:
+    //   memory_tools → free_tier_journal (TTL-tag if registered)
+    //               → session_selector (discard if anonymous) → raw journal.
+    let free_tier_journal = Arc::new(FreeTierJournal::new(
+        session_selector.clone() as Arc<dyn lago_core::Journal>,
+        LagoPolicyConfig::default(),
+    ));
+    let memory_journal: Arc<dyn lago_core::Journal> = free_tier_journal.clone();
+
     // --- Lago-tracked filesystem (O(1) write tracking via FsTracker) ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = LocalFs::new(fs_policy);
@@ -430,8 +444,8 @@ fn run_serve(
     // --- Governed memory tools (event-sourced via Lago) ---
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
     registry.register(MemoryQueryTool::new(memory_projection));
-    registry.register(MemoryProposeTool::new(journal.clone()));
-    registry.register(MemoryCommitTool::new(journal.clone()));
+    registry.register(MemoryProposeTool::new(memory_journal.clone()));
+    registry.register(MemoryCommitTool::new(memory_journal));
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
     let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
@@ -638,6 +652,8 @@ fn run_serve(
             run_observers,
             None, // identity — use BasicIdentity default; Anima can be wired later
             data_dir,
+            Some(session_selector), // BRO-217: ephemeral journal routing for anonymous tiers
+            Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
         );
 
         // --- Console UI ---

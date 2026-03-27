@@ -20,6 +20,87 @@ use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+// ─── Identity tier types ─────────────────────────────────────────────────────
+
+/// Subscription / capability tier for a session.
+///
+/// Determines the `PolicySet` that arcand enforces for this session
+/// (BRO-221). The tier is embedded in the Anima identity token and
+/// verified server-side — the client cannot forge a higher tier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    /// Unauthenticated / guest — no persistent memory, read-only shell.
+    Anonymous,
+    /// Authenticated free plan — sandboxed shell, 7-day Lago retention.
+    Free,
+    /// Paid pro plan — full wildcard capability grant, 90-day retention.
+    Pro,
+    /// Enterprise — dedicated Life instance, RBAC, custom skill registry.
+    Enterprise,
+}
+
+/// Role within an enterprise tenant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TenantRole {
+    Admin,
+    Member,
+    Viewer,
+    Agent,
+}
+
+/// Identity claims embedded in the Anima identity token (BRO-221).
+///
+/// These claims are issued by broomva.tech (Anima layer) and verified
+/// by arcand. The `PolicySet` for the session is derived entirely from
+/// these claims — the client-supplied policy in `CreateSessionRequest`
+/// is treated as a hint only when no identity token is present.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityClaims {
+    /// Subject (user ID or anonymous ID).
+    pub sub: String,
+    /// Capability tier for this session.
+    pub tier: Tier,
+    /// Enterprise organization ID (present for Enterprise tier only).
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Tenant RBAC roles within the organization.
+    #[serde(default)]
+    pub roles: Vec<TenantRole>,
+    /// Enterprise capability overrides — replaces the default wildcard
+    /// when non-empty, enabling restricted enterprise policies.
+    #[serde(default)]
+    pub custom_capabilities: Option<Vec<String>>,
+    /// Issued-at timestamp (unix seconds).
+    #[serde(default)]
+    pub iat: u64,
+    /// Expiry timestamp (unix seconds).
+    pub exp: u64,
+}
+
+/// Validate a short-lived Anima identity token.
+///
+/// Uses HS256 with `secret`. Returns `Err(JwtError::Expired)` if the token
+/// is expired, or `Err(JwtError::Invalid(...))` for any other validation
+/// failure.
+pub fn validate_identity_token(token: &str, secret: &str) -> Result<IdentityClaims, JwtError> {
+    let key = DecodingKey::from_secret(secret.as_bytes());
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.validate_exp = true;
+    validation.required_spec_claims.clear();
+    validation.required_spec_claims.insert("exp".to_string());
+    validation.required_spec_claims.insert("sub".to_string());
+
+    let token_data =
+        decode::<IdentityClaims>(token, &key, &validation).map_err(|e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => JwtError::Expired,
+            _ => JwtError::Invalid(e.to_string()),
+        })?;
+
+    Ok(token_data.claims)
+}
+
 // ─── JWT Claims ──────────────────────────────────────────────────────────────
 
 /// JWT claims signed by broomva.tech (Better Auth).
@@ -389,5 +470,107 @@ mod tests {
         let (status, body) = send_request(app, "/protected", Some("Basic abc123")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(body.contains("missing bearer token"));
+    }
+
+    // ─── Identity token tests ─────────────────────────────────────────────────
+
+    fn make_identity_token(sub: &str, tier: Tier, exp: u64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = IdentityClaims {
+            sub: sub.to_string(),
+            tier,
+            org_id: None,
+            roles: vec![],
+            custom_capabilities: None,
+            iat: now,
+            exp,
+        };
+        let key = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        encode(&Header::default(), &claims, &key).unwrap()
+    }
+
+    fn future_exp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600
+    }
+
+    #[test]
+    fn identity_token_valid_free_tier() {
+        let token = make_identity_token("user-abc", Tier::Free, future_exp());
+        let claims = validate_identity_token(&token, TEST_SECRET).unwrap();
+        assert_eq!(claims.sub, "user-abc");
+        assert_eq!(claims.tier, Tier::Free);
+    }
+
+    #[test]
+    fn identity_token_valid_enterprise_tier() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims_in = IdentityClaims {
+            sub: "org-user-1".to_string(),
+            tier: Tier::Enterprise,
+            org_id: Some("org-acme".to_string()),
+            roles: vec![TenantRole::Admin],
+            custom_capabilities: None,
+            iat: now,
+            exp: now + 3600,
+        };
+        let key = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let token = encode(&Header::default(), &claims_in, &key).unwrap();
+        let claims = validate_identity_token(&token, TEST_SECRET).unwrap();
+        assert_eq!(claims.tier, Tier::Enterprise);
+        assert_eq!(claims.org_id.as_deref(), Some("org-acme"));
+    }
+
+    #[test]
+    fn identity_token_expired_returns_error() {
+        let token = make_identity_token("user-abc", Tier::Pro, 1000); // long past
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(matches!(result, Err(JwtError::Expired)));
+    }
+
+    #[test]
+    fn identity_token_wrong_secret_returns_error() {
+        let token = make_identity_token("user-abc", Tier::Free, future_exp());
+        let result = validate_identity_token(&token, "wrong-secret");
+        assert!(matches!(result, Err(JwtError::Invalid(_))));
+    }
+
+    #[test]
+    fn identity_token_anonymous_tier() {
+        let token = make_identity_token("anon-xyz", Tier::Anonymous, future_exp());
+        let claims = validate_identity_token(&token, TEST_SECRET).unwrap();
+        assert_eq!(claims.tier, Tier::Anonymous);
+    }
+
+    #[test]
+    fn identity_token_with_custom_capabilities() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims_in = IdentityClaims {
+            sub: "ent-user".to_string(),
+            tier: Tier::Enterprise,
+            org_id: Some("org-corp".to_string()),
+            roles: vec![TenantRole::Member],
+            custom_capabilities: Some(vec!["fs:read:**".to_string(), "exec:cmd:ls".to_string()]),
+            iat: now,
+            exp: now + 3600,
+        };
+        let key = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let token = encode(&Header::default(), &claims_in, &key).unwrap();
+        let claims = validate_identity_token(&token, TEST_SECRET).unwrap();
+        let caps = claims.custom_capabilities.unwrap();
+        assert_eq!(caps.len(), 2);
+        assert!(caps.contains(&"fs:read:**".to_string()));
     }
 }

@@ -15,7 +15,7 @@ use axum::{
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -26,7 +26,9 @@ use utoipa::{IntoParams, OpenApi, PartialSchema, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
-use crate::auth::{AuthConfig, jwt_auth_middleware};
+use crate::auth::{
+    AuthConfig, IdentityClaims, JwtError, Tier, jwt_auth_middleware, validate_identity_token,
+};
 
 // ─── Mirror schemas for external aios-protocol types ─────────────────────────
 //
@@ -193,6 +195,19 @@ struct CanonicalState {
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     /// Agent identity provider — supplies persona, DID, capabilities, and policy.
     identity: Arc<dyn AgentIdentityProvider>,
+    /// Routes memory events for anonymous sessions to ephemeral discard (BRO-217).
+    session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
+    /// Retention journal — TTL-tags free-tier (7-day) and pro-tier (90-day) session events.
+    /// BRO-218: free sessions registered with default config.
+    /// BRO-219: pro sessions registered with LagoPolicyConfig::pro().
+    free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
+    /// Secret for verifying Anima identity tokens (BRO-221).
+    /// Resolves from `ANIMA_JWT_SECRET`, falling back to `AUTH_SECRET`.
+    /// When `None`, identity token verification is skipped (local dev).
+    anima_secret: Option<String>,
+    /// In-memory token-bucket rate limiter (BRO-223).
+    /// Shared across all request handlers via `Arc`.
+    rate_limiter: Arc<crate::rate_limit::RateLimiter>,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -215,12 +230,14 @@ struct RunRequest {
     branch: Option<String>,
     /// Optional pre-proposed tool call
     proposed_tool: Option<ProposedToolRequest>,
-    /// Per-run policy override — when provided, takes precedence over the
-    /// session's stored policy. Allows the caller to enforce the correct
-    /// tier policy even for sessions that were auto-created with the default
-    /// policy (e.g. sessions created via the run_session fallback path).
-    #[schema(schema_with = PolicySetSchema::schema)]
-    policy: Option<PolicySet>,
+    /// Short-lived Anima identity token (BRO-221).
+    ///
+    /// When provided, arcand verifies the JWT signature and derives the
+    /// session `PolicySet` from the embedded claims. This prevents clients
+    /// from forging a higher tier by supplying a crafted policy in
+    /// `CreateSessionRequest`. When absent, the session-stored policy is
+    /// used (backward-compatible with clients that do not yet send tokens).
+    identity_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -375,6 +392,7 @@ struct ErrorResponse {
         health,
         list_sessions,
         create_session,
+        upgrade_session_identity,
         run_session,
         get_state,
         list_events,
@@ -385,9 +403,14 @@ struct ErrorResponse {
         resolve_approval,
         get_provider,
         set_provider,
+        list_mcp_servers,
     ),
     components(schemas(
         // Request / response types
+        McpServerEntry,
+        McpServerListResponse,
+        UpgradeSessionIdentityRequest,
+        UpgradeSessionIdentityResponse,
         CreateSessionRequest,
         RunRequest,
         ProposedToolRequest,
@@ -423,9 +446,84 @@ struct ErrorResponse {
         (name = "branches", description = "Branch management"),
         (name = "approvals", description = "Approval workflow"),
         (name = "provider", description = "Live provider switching"),
+        (name = "mcp", description = "MCP server registry"),
     )
 )]
 struct ApiDoc;
+
+// ─── MCP server registry endpoint (BRO-226) ──────────────────────────────────
+
+/// A single entry in the MCP server registry response.
+#[derive(Debug, Serialize, ToSchema)]
+struct McpServerEntry {
+    /// Server name as declared in SKILL.md `mcp_servers[].name`.
+    name: &'static str,
+    /// Human-readable description of the server.
+    description: &'static str,
+    /// Minimum tier name required to use this server (e.g. `"free"`, `"pro"`).
+    min_tier: &'static str,
+}
+
+/// Response for `GET /mcp-servers`.
+#[derive(Debug, Serialize, ToSchema)]
+struct McpServerListResponse {
+    /// All servers in the registry with their minimum tier requirement.
+    servers: Vec<McpServerEntry>,
+    /// The subset of servers accessible at the requested tier.
+    allowed_for_tier: Vec<McpServerEntry>,
+    /// The tier used for filtering (from the `?tier=` query parameter).
+    tier: String,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+struct McpServerQuery {
+    /// Tier to filter the server list for (default: `"anonymous"`).
+    /// One of: `anonymous`, `free`, `pro`, `enterprise`.
+    tier: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/mcp-servers",
+    tag = "mcp",
+    params(McpServerQuery),
+    responses(
+        (status = 200, description = "MCP server registry", body = McpServerListResponse)
+    )
+)]
+async fn list_mcp_servers(Query(query): Query<McpServerQuery>) -> Json<McpServerListResponse> {
+    let tier = match query.tier.as_deref().unwrap_or("anonymous") {
+        "free" => crate::auth::Tier::Free,
+        "pro" => crate::auth::Tier::Pro,
+        "enterprise" => crate::auth::Tier::Enterprise,
+        _ => crate::auth::Tier::Anonymous,
+    };
+    let tier_name = format!("{tier:?}").to_lowercase();
+
+    let all: Vec<McpServerEntry> = crate::mcp_registry::APPROVED_MCP_SERVERS
+        .iter()
+        .map(|s| McpServerEntry {
+            name: s.name,
+            description: s.description,
+            min_tier: s.min_tier_name,
+        })
+        .collect();
+
+    let allowed: Vec<McpServerEntry> = crate::mcp_registry::allowed_servers_for_tier(&tier)
+        .into_iter()
+        .map(|s| McpServerEntry {
+            name: s.name,
+            description: s.description,
+            min_tier: s.min_tier_name,
+        })
+        .collect();
+
+    Json(McpServerListResponse {
+        servers: all,
+        allowed_for_tier: allowed,
+        tier: tier_name,
+    })
+}
 
 /// Return the OpenAPI specification.
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
@@ -452,6 +550,8 @@ pub fn create_canonical_router(
         Vec::new(),
         None,
         std::env::temp_dir(),
+        None, // session_selector (BRO-217)
+        None, // free_tier_journal (BRO-218)
     )
 }
 
@@ -463,6 +563,7 @@ pub fn create_canonical_router(
 /// All other endpoints are protected by JWT auth middleware when
 /// `ARCAN_JWT_SECRET` or `AUTH_SECRET` is configured. If neither env var
 /// is set, auth is disabled and all routes are open (local dev mode).
+#[allow(clippy::too_many_arguments)]
 pub fn create_canonical_router_with_skills(
     runtime: Arc<KernelRuntime>,
     provider_handle: SwappableProviderHandle,
@@ -472,6 +573,8 @@ pub fn create_canonical_router_with_skills(
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     identity: Option<Arc<dyn AgentIdentityProvider>>,
     data_dir: impl Into<std::path::PathBuf>,
+    session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
+    free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -480,6 +583,24 @@ pub fn create_canonical_router_with_skills(
         agent_name = %identity.soul_profile().name,
         "agent identity initialized"
     );
+
+    // BRO-221: Resolve the Anima identity-token secret.
+    // `ANIMA_JWT_SECRET` is preferred (dedicated key for identity tokens).
+    // Falls back to `AUTH_SECRET` (same shared secret used for bearer auth).
+    // When neither is set, identity token verification is skipped (local dev).
+    let anima_secret = std::env::var("ANIMA_JWT_SECRET")
+        .or_else(|_| std::env::var("AUTH_SECRET"))
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    if anima_secret.is_some() {
+        tracing::info!("Anima identity token verification enabled (BRO-221)");
+    } else {
+        tracing::warn!(
+            "No ANIMA_JWT_SECRET or AUTH_SECRET set — identity token verification DISABLED. \
+             Clients can supply any PolicySet without arcand verification."
+        );
+    }
 
     let state = CanonicalState {
         runtime,
@@ -490,21 +611,30 @@ pub fn create_canonical_router_with_skills(
         skill_registry,
         run_observers,
         identity,
+        session_selector,
+        free_tier_journal,
+        anima_secret,
+        rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
 
-    // Public routes — no auth required (health checks, API docs).
+    // Public routes — no auth required (health checks, API docs, MCP registry).
     let public = Router::new()
         .route("/health", get(health))
         .route("/healthz", get(health))
         .route("/openapi.json", get(openapi_json))
+        .route("/mcp-servers", get(list_mcp_servers))
         .merge(Scalar::with_url("/docs", ApiDoc::openapi()))
         .with_state(state.clone());
 
     // Protected routes — JWT auth middleware applied.
     let protected = Router::new()
         .route("/sessions", get(list_sessions).post(create_session))
+        .route(
+            "/sessions/{session_id}/identity",
+            patch(upgrade_session_identity),
+        )
         .route("/sessions/{session_id}/runs", post(run_session))
         .route("/sessions/{session_id}/state", get(get_state))
         .route("/sessions/{session_id}/events", get(list_events))
@@ -522,6 +652,9 @@ pub fn create_canonical_router_with_skills(
             post(resolve_approval),
         )
         .route("/provider", get(get_provider).put(set_provider))
+        // BRO-219: Memory export and migration endpoints.
+        .route("/user/memory/export", get(export_memory_jsonl))
+        .route("/user/memory/migrate-to-pro", post(migrate_memory_to_pro))
         .layer(axum::middleware::from_fn_with_state(
             auth_config,
             jwt_auth_middleware,
@@ -538,6 +671,143 @@ pub fn create_canonical_router_with_skills(
     }
 
     router
+}
+
+// ─── Identity → PolicySet mapping ────────────────────────────────────────────
+
+/// Capability strings for the free tier (sandboxed read-only shell).
+const FREE_TIER_CAPS: &[&str] = &[
+    "exec:cmd:cat",
+    "exec:cmd:ls",
+    "exec:cmd:grep",
+    "exec:cmd:find",
+    "exec:cmd:wc",
+    "exec:cmd:head",
+    "exec:cmd:tail",
+    "exec:cmd:echo",
+];
+
+/// Capability strings for enterprise `Member` role (BRO-222).
+///
+/// Sandboxed shell + project-workspace file writes; no admin APIs.
+const MEMBER_CAPS: &[&str] = &[
+    "exec:cmd:cat",
+    "exec:cmd:ls",
+    "exec:cmd:grep",
+    "exec:cmd:find",
+    "exec:cmd:wc",
+    "exec:cmd:head",
+    "exec:cmd:tail",
+    "exec:cmd:echo",
+    "exec:cmd:mkdir",
+    "exec:cmd:cp",
+    "exec:cmd:mv",
+    "fs:read:**",
+    "fs:write:project:**",
+];
+
+/// Capability strings for enterprise `Viewer` role (BRO-222).
+///
+/// Read-only: no shell mutations, no file writes.
+const VIEWER_CAPS: &[&str] = &["fs:read:**", "exec:cmd:cat", "exec:cmd:ls", "exec:cmd:grep"];
+
+/// Build a `PolicySet` from a slice of capability strings.
+fn caps(raw: &[&str]) -> PolicySet {
+    PolicySet {
+        allow_capabilities: raw
+            .iter()
+            .map(|s| aios_protocol::Capability::new(s.to_string()))
+            .collect(),
+        ..PolicySet::default()
+    }
+}
+
+/// Derive the `PolicySet` for an enterprise tenant role (BRO-222).
+///
+/// Role matrix:
+///
+/// | Role    | Shell           | File Write         | Admin APIs |
+/// |---------|-----------------|--------------------|------------|
+/// | Admin   | Full            | Full               | Full       |
+/// | Member  | Sandboxed       | Project workspace  | None       |
+/// | Viewer  | Read-only cmds  | None               | None       |
+/// | Agent   | Configurable    | Configurable       | None       |
+///
+/// For `Agent`, `custom_capabilities` in the claims is the configurable
+/// capability set (falls back to wildcard if absent).
+fn enterprise_policy_for_role(
+    role: &crate::auth::TenantRole,
+    custom: Option<&Vec<String>>,
+) -> PolicySet {
+    use crate::auth::TenantRole;
+    match role {
+        TenantRole::Admin => caps(&["*"]),
+        TenantRole::Member => caps(MEMBER_CAPS),
+        TenantRole::Viewer => caps(VIEWER_CAPS),
+        TenantRole::Agent => {
+            // Agent role is configurable via custom_capabilities.
+            if let Some(cc) = custom {
+                if !cc.is_empty() {
+                    return PolicySet {
+                        allow_capabilities: cc
+                            .iter()
+                            .map(|c| aios_protocol::Capability::new(c.clone()))
+                            .collect(),
+                        ..PolicySet::default()
+                    };
+                }
+            }
+            caps(&["*"])
+        }
+    }
+}
+
+/// Derive a `PolicySet` from verified Anima identity claims (BRO-221 / BRO-222).
+///
+/// Priority order:
+/// 1. `custom_capabilities` in claims — tenant admin override (always wins)
+/// 2. Role-based policy for Enterprise tier (BRO-222)
+/// 3. Tier default
+///
+/// | Tier        | Default allow_capabilities                                    |
+/// |-------------|---------------------------------------------------------------|
+/// | Anonymous   | `[]` — no shell, no file writes, no memory persist            |
+/// | Free        | Named read-only shell commands (sandboxed)                    |
+/// | Pro         | `["*"]` — full wildcard                                       |
+/// | Enterprise  | Role-based (Admin=`*`, Member=sandboxed+write, Viewer=read)   |
+fn policy_from_identity_claims(claims: &IdentityClaims) -> PolicySet {
+    // custom_capabilities always overrides role/tier defaults.
+    if let Some(custom) = &claims.custom_capabilities {
+        if !custom.is_empty() {
+            return PolicySet {
+                allow_capabilities: custom
+                    .iter()
+                    .map(|c| aios_protocol::Capability::new(c.clone()))
+                    .collect(),
+                ..PolicySet::default()
+            };
+        }
+    }
+
+    match claims.tier {
+        // Anonymous: no capability grant — all tool calls are blocked.
+        Tier::Anonymous => PolicySet {
+            allow_capabilities: vec![],
+            ..PolicySet::default()
+        },
+        Tier::Free => caps(FREE_TIER_CAPS),
+        Tier::Pro => caps(&["*"]),
+        Tier::Enterprise => {
+            // Use the first role when multiple are present (BRO-222: caller
+            // should supply the most-specific / least-privileged role).
+            if let Some(role) = claims.roles.first() {
+                enterprise_policy_for_role(role, claims.custom_capabilities.as_ref())
+            } else {
+                // No roles: full enterprise access (backward compat / service accounts).
+                caps(&["*"])
+            }
+        }
+    }
 }
 
 // ─── Stream format ───────────────────────────────────────────────────────────
@@ -643,6 +913,109 @@ async fn create_session(
     Ok(Json(manifest))
 }
 
+// ─── BRO-227: Anonymous identity upgrade ─────────────────────────────────────
+
+/// Request body for `PATCH /sessions/{session_id}/identity`.
+#[derive(Debug, Deserialize, ToSchema)]
+struct UpgradeSessionIdentityRequest {
+    /// New authenticated user ID to assign as session owner.
+    user_id: String,
+    /// Optional Anima identity token. When supplied and arcand has a secret
+    /// configured, the token is verified and the `PolicySet` is re-derived from
+    /// the embedded claims. When omitted (or when no secret is set), the policy
+    /// defaults to `free` tier.
+    identity_token: Option<String>,
+}
+
+/// Response from `PATCH /sessions/{session_id}/identity`.
+#[derive(Debug, Serialize, ToSchema)]
+struct UpgradeSessionIdentityResponse {
+    session_id: String,
+    new_owner: String,
+    /// Effective tier after upgrade (`"free"`, `"pro"`, `"enterprise"`).
+    tier: String,
+    /// Number of capabilities in the upgraded `PolicySet`.
+    capabilities_count: usize,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/sessions/{session_id}/identity",
+    tag = "sessions",
+    params(("session_id" = String, Path, description = "Session identifier")),
+    request_body = UpgradeSessionIdentityRequest,
+    responses(
+        (status = 200, description = "Identity upgraded", body = UpgradeSessionIdentityResponse),
+        (status = 404, description = "Session not found", body = ErrorResponse),
+        (status = 401, description = "Invalid identity token", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse),
+    )
+)]
+async fn upgrade_session_identity(
+    Path(session_id): Path<String>,
+    State(state): State<CanonicalState>,
+    Json(body): Json<UpgradeSessionIdentityRequest>,
+) -> Result<Json<UpgradeSessionIdentityResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let session_id = SessionId::from_string(session_id);
+
+    if !state.runtime.session_exists(&session_id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": format!("session not found: {}", session_id) })),
+        ));
+    }
+
+    // Resolve the new PolicySet from the identity token when one is supplied.
+    let (new_policy, tier_label) = match (&body.identity_token, &state.anima_secret) {
+        (Some(token), Some(secret)) => match validate_identity_token(token, secret) {
+            Ok(claims) => {
+                let tier = match &claims.tier {
+                    Tier::Enterprise => "enterprise",
+                    Tier::Pro => "pro",
+                    _ => "free",
+                };
+                (policy_from_identity_claims(&claims), tier.to_owned())
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": format!("invalid identity token: {}", e) })),
+                ));
+            }
+        },
+        // No token or no secret — upgrade to free-tier policy.
+        _ => (caps(FREE_TIER_CAPS), "free".to_owned()),
+    };
+
+    let capabilities_count = new_policy.allow_capabilities.len();
+
+    // BRO-227: Register the session with the tier journal under the new user_id
+    // so subsequent memory events are retained (TTL-tagged) rather than discarded
+    // as anonymous ephemeral events.
+    // NOTE: runtime.upgrade_session_owner() requires aiOS KernelRuntime changes
+    // (tracked separately); for now we register the journal tier and log the upgrade.
+    if let Some(ref ftj) = state.free_tier_journal {
+        ftj.register_session(session_id.as_str(), &body.user_id);
+    }
+    if let Some(ref selector) = state.session_selector {
+        selector.unmark_ephemeral(session_id.as_str());
+    }
+
+    tracing::info!(
+        session_id = %session_id,
+        new_owner = %body.user_id,
+        tier = %tier_label,
+        "session identity upgraded (BRO-227)"
+    );
+
+    Ok(Json(UpgradeSessionIdentityResponse {
+        session_id: session_id.as_str().to_owned(),
+        new_owner: body.user_id,
+        tier: tier_label,
+        capabilities_count,
+    }))
+}
+
 #[utoipa::path(
     post,
     path = "/sessions/{session_id}/runs",
@@ -693,32 +1066,194 @@ async fn run_session(
         .proposed_tool
         .map(|tool| ToolCall::new(tool.tool_name, tool.input, capabilities.clone()));
 
-    // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215) ---
-    // Resolve the effective policy: per-run override takes precedence over the
-    // session's stored policy. This allows the TypeScript client to pass the
-    // caller's tier policy on every run, fixing sessions that were auto-created
-    // with PolicySet::default() (owner: "arcan") before proper session
-    // management was deployed.
-    let session_policy: aios_protocol::PolicySet = request
-        .policy
-        .clone()
-        .unwrap_or_else(|| {
-            state
+    // --- Tier-aware tool catalog filtering + sandbox (BRO-214 / BRO-215 / BRO-218) ---
+    // Fetch the session manifest once: used for policy, owner (user_id), and tier detection.
+    let session_manifest = state
+        .runtime
+        .list_sessions()
+        .into_iter()
+        .find(|m| m.session_id == session_id);
+
+    // BRO-221: If the caller supplies an identity_token, verify it and derive
+    // PolicySet from the claims. This prevents clients from forging a higher
+    // tier by supplying a crafted policy in CreateSessionRequest.
+    // When no token is supplied (or no secret is configured), fall back to
+    // the session-stored policy (backward-compatible).
+    let verified_identity_claims: Option<IdentityClaims> =
+        match (&request.identity_token, &state.anima_secret) {
+            (Some(token), Some(secret)) => {
+                match validate_identity_token(token, secret) {
+                    Ok(claims) => {
+                        tracing::info!(
+                            session = %session_id,
+                            sub = %claims.sub,
+                            tier = ?claims.tier,
+                            "identity token verified; PolicySet derived from claims"
+                        );
+                        Some(claims)
+                    }
+                    Err(err) => {
+                        // BRO-224: Emit audit event before returning the error.
+                        let violation_type = match err {
+                            JwtError::Expired => {
+                                arcan_lago::policy_violation::ViolationType::TokenExpired
+                            }
+                            _ => arcan_lago::policy_violation::ViolationType::AuthenticationError,
+                        };
+                        let _ = state
+                            .runtime
+                            .record_external_event(
+                                &session_id,
+                                arcan_lago::policy_violation::event_kind(
+                                    &arcan_lago::policy_violation::PolicyViolationData {
+                                        violation_type,
+                                        capability: None,
+                                        attempted_value: None,
+                                        tier: "unknown".to_string(),
+                                        subject: session_id.as_str().to_string(),
+                                    },
+                                ),
+                            )
+                            .await;
+                        tracing::warn!(
+                            session = %session_id,
+                            error = %err,
+                            "identity token verification failed"
+                        );
+                        return Err((
+                            StatusCode::UNAUTHORIZED,
+                            Json(json!({
+                                "error": "authentication_error",
+                                "message": err.to_string()
+                            })),
+                        ));
+                    }
+                }
+            }
+            // No token provided, or no secret configured — skip verification.
+            _ => None,
+        };
+
+    let session_policy: aios_protocol::PolicySet = verified_identity_claims
+        .as_ref()
+        .map(policy_from_identity_claims)
+        .or_else(|| {
+            session_manifest.as_ref().and_then(|m| {
+                serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok()
+            })
+        })
+        .unwrap_or_default();
+
+    // Session owner: use verified sub claim when available; else session manifest owner.
+    // The sub is used as user_id for free-tier Lago namespace isolation (BRO-218).
+    let session_owner: String = verified_identity_claims
+        .as_ref()
+        .map(|c| c.sub.clone())
+        .or_else(|| session_manifest.as_ref().map(|m| m.owner.clone()))
+        .unwrap_or_else(|| "anonymous".to_owned());
+
+    // BRO-223: Enforce per-user rate limits in arcand (defense-in-depth).
+    // Key: "{tier_name}:{user_id}" — one bucket per user, scoped to their tier.
+    // Anonymous users are keyed by session_id to avoid shared exhaustion between
+    // unrelated guests (no persistent user_id available for anon requests).
+    {
+        let tier = verified_identity_claims
+            .as_ref()
+            .map(|c| &c.tier)
+            .map(|t| match t {
+                Tier::Anonymous => Tier::Anonymous,
+                Tier::Free => Tier::Free,
+                Tier::Pro => Tier::Pro,
+                Tier::Enterprise => Tier::Enterprise,
+            })
+            .unwrap_or_else(|| {
+                // Fall back to tier derived from session policy capability inspection.
+                if session_policy
+                    .allow_capabilities
+                    .iter()
+                    .any(|c| c.as_str() == "*")
+                {
+                    Tier::Pro
+                } else if session_policy
+                    .allow_capabilities
+                    .iter()
+                    .any(|c| c.as_str().starts_with("exec:cmd:"))
+                {
+                    Tier::Free
+                } else {
+                    Tier::Anonymous
+                }
+            });
+
+        let tier_name = format!("{tier:?}").to_lowercase();
+        let bucket_key = if matches!(tier, Tier::Anonymous) {
+            // Anonymous: key by session to avoid cross-session interference
+            format!("{tier_name}:{session_id}")
+        } else {
+            format!("{tier_name}:{session_owner}")
+        };
+
+        if let Err(rl_err) = state.rate_limiter.check(&bucket_key, &tier) {
+            // BRO-224: Emit audit event before returning the error.
+            let _ = state
                 .runtime
-                .list_sessions()
-                .into_iter()
-                .find(|m| m.session_id == session_id)
-                .and_then(|m| {
-                    serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok()
-                })
-                .unwrap_or_default()
-        });
+                .record_external_event(
+                    &session_id,
+                    arcan_lago::policy_violation::event_kind(
+                        &arcan_lago::policy_violation::PolicyViolationData {
+                            violation_type:
+                                arcan_lago::policy_violation::ViolationType::RateLimitExceeded,
+                            capability: None,
+                            attempted_value: None,
+                            tier: tier_name.clone(),
+                            subject: session_owner.clone(),
+                        },
+                    ),
+                )
+                .await;
+            tracing::warn!(
+                session = %session_id,
+                user = %session_owner,
+                tier = %tier_name,
+                retry_after = rl_err.retry_after,
+                "rate limit exceeded (BRO-223)"
+            );
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "error": "rate_limit_exceeded",
+                    "retry_after": rl_err.retry_after,
+                    "limit": rl_err.limit_per_minute,
+                    "tier": rl_err.tier,
+                })),
+            ));
+        }
+    }
 
     // BRO-214: Derive which tools are safe to expose for this tier.
     // The authoritative enforcement is still policy evaluation at execution time
     // (BRO-213); this layer only affects what the LLM sees.
     let tier_allowed_tools: Option<Vec<String>> =
         arcan_aios_adapters::tools_allowed_by_policy(&session_policy);
+
+    // BRO-217: Detect anonymous sessions (no exec:cmd:* in allow_capabilities, no wildcard).
+    // Anonymous sessions have memory events discarded (ephemeral Lago isolation).
+    // Free sessions have exec:cmd:cat/ls/etc and keep their memory (BRO-218 adds TTL).
+    // Pro/enterprise have allow_capabilities: ["*"] and are never marked ephemeral.
+    let is_anonymous_tier = !session_policy
+        .allow_capabilities
+        .iter()
+        .any(|c| c.as_str().starts_with("exec:cmd:") || c.as_str() == "*");
+
+    // BRO-218: Detect free-tier sessions (has exec:cmd:* capabilities but no wildcard).
+    // Free sessions get TTL-tagged memory events (7-day rolling retention).
+    let has_wildcard = session_policy
+        .allow_capabilities
+        .iter()
+        .any(|c| c.as_str() == "*");
+    let is_free_tier = !is_anonymous_tier && !has_wildcard;
+    // BRO-219: Pro/enterprise sessions have the wildcard capability grant.
+    let is_pro_tier = has_wildcard;
 
     // BRO-215: Prepare a per-session sandbox directory for restricted tiers.
     // Pro/enterprise sessions return None (full workspace root access).
@@ -744,6 +1279,20 @@ async fn run_session(
         if let Some(ref registry) = state.skill_registry {
             match praxis_skills::registry::try_activate_skill(registry, &request.objective) {
                 Ok(Some((skill_state, remaining))) => {
+                    // BRO-226: Derive the current tier for MCP server gating.
+                    let tier_for_mcp = verified_identity_claims
+                        .as_ref()
+                        .map(|c| c.tier.clone())
+                        .unwrap_or_else(|| {
+                            if is_anonymous_tier {
+                                Tier::Anonymous
+                            } else if is_free_tier {
+                                Tier::Free
+                            } else {
+                                Tier::Pro
+                            }
+                        });
+
                     // Tier gating: block if skill requires tools beyond this tier.
                     let tier_blocked = if let Some(ref safe_tools) = tier_allowed_tools {
                         let safe_set: std::collections::HashSet<&str> =
@@ -755,10 +1304,63 @@ async fn run_session(
                     } else {
                         false // pro/enterprise: no restriction
                     };
-                    if tier_blocked {
+
+                    // BRO-226: Also block if any declared MCP server is not allowed for the tier.
+                    // Anonymous sessions may not connect to any MCP server.
+                    // Free/Pro sessions may only use pre-approved servers.
+                    let mcp_blocked = skill_state.mcp_servers.as_ref().is_some_and(|servers| {
+                        servers.iter().any(|s| {
+                            !crate::mcp_registry::is_mcp_server_allowed(&s.name, &tier_for_mcp)
+                        })
+                    });
+
+                    if tier_blocked || mcp_blocked {
+                        // BRO-224: Emit audit event for skill-not-allowed violation.
+                        let tier_str = format!("{tier_for_mcp:?}").to_lowercase();
+                        let violation_type = if mcp_blocked && !tier_blocked {
+                            arcan_lago::policy_violation::ViolationType::CapabilityBlocked
+                        } else {
+                            arcan_lago::policy_violation::ViolationType::SkillNotAllowed
+                        };
+                        let attempted = Some(if mcp_blocked {
+                            let blocked_server = skill_state
+                                .mcp_servers
+                                .as_ref()
+                                .and_then(|s| {
+                                    s.iter().find(|srv| {
+                                        !crate::mcp_registry::is_mcp_server_allowed(
+                                            &srv.name,
+                                            &tier_for_mcp,
+                                        )
+                                    })
+                                })
+                                .map(|s| s.name.as_str())
+                                .unwrap_or("unknown");
+                            format!("{}:{}", skill_state.name, blocked_server)
+                        } else {
+                            skill_state.name.clone()
+                        });
+                        let _ = state
+                            .runtime
+                            .record_external_event(
+                                &session_id,
+                                arcan_lago::policy_violation::event_kind(
+                                    &arcan_lago::policy_violation::PolicyViolationData {
+                                        violation_type,
+                                        capability: Some("mcp:connect".to_string()),
+                                        attempted_value: attempted,
+                                        tier: tier_str,
+                                        subject: session_owner.clone(),
+                                    },
+                                ),
+                            )
+                            .await;
                         tracing::warn!(
                             skill = %skill_state.name,
-                            "skill activation blocked by tier policy"
+                            mcp_blocked,
+                            tier_blocked,
+                            tier = ?tier_for_mcp,
+                            "skill activation blocked by tier policy (BRO-226)"
                         );
                         (request.objective.clone(), None, None)
                     } else {
@@ -847,8 +1449,35 @@ async fn run_session(
         "running agent tick with identity"
     );
 
+    // BRO-217: For anonymous sessions, mark as ephemeral so that MemoryProposed /
+    // MemoryCommitted events are discarded instead of persisted to Lago.
+    // Free sessions retain memory with 7-day TTL (BRO-218).
+    // Pro/enterprise sessions are never marked ephemeral.
+    if is_anonymous_tier {
+        if let Some(ref selector) = state.session_selector {
+            selector.mark_ephemeral(session_id.as_str());
+        }
+    }
+
+    // BRO-218/219: Register with the retention journal before the tick so that
+    // all memory events appended during this tick are TTL-tagged with the
+    // appropriate tier policy.
+    if is_free_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.register_session(session_id.as_str(), &session_owner);
+        }
+    } else if is_pro_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.register_session_with_config(
+                session_id.as_str(),
+                &session_owner,
+                arcan_lago::LagoPolicyConfig::pro(),
+            );
+        }
+    }
+
     let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
-    let tick = state
+    let tick_result = state
         .runtime
         .tick_on_branch(
             &session_id,
@@ -861,8 +1490,25 @@ async fn run_session(
             },
         )
         .instrument(agent_span)
-        .await
-        .map_err(internal_error)?;
+        .await;
+
+    // Always unmark after tick completes (success or error) to avoid leaking the
+    // ephemeral registration across future requests on the same session.
+    if is_anonymous_tier {
+        if let Some(ref selector) = state.session_selector {
+            selector.unmark_ephemeral(session_id.as_str());
+        }
+    }
+
+    // BRO-218/219: Always unregister after tick completes (free or pro) so the
+    // retention journal does not accumulate stale session → user_id mappings.
+    if is_free_tier || is_pro_tier {
+        if let Some(ref ftj) = state.free_tier_journal {
+            ftj.unregister_session(session_id.as_str());
+        }
+    }
+
+    let tick = tick_result.map_err(internal_error)?;
 
     persist_last_session_hint(state.runtime.as_ref(), &tick.session_id).await;
 
@@ -1470,9 +2116,233 @@ fn build_tiered_skill_catalog(
     )
 }
 
+// ─── BRO-219: Memory export and migration handlers ────────────────────────────
+
+/// Query parameters for the memory export endpoint.
+#[derive(Debug, Deserialize)]
+struct ExportMemoryQuery {
+    user_id: String,
+}
+
+/// `GET /user/memory/export?user_id=<id>`
+///
+/// Returns all non-expired memory events for the given user as JSONL
+/// (newline-delimited JSON). Each line is a serialized `EventEnvelope`.
+async fn export_memory_jsonl(
+    State(state): State<CanonicalState>,
+    Query(params): Query<ExportMemoryQuery>,
+) -> impl IntoResponse {
+    let Some(ref ftj) = state.free_tier_journal else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::http::HeaderMap::new(),
+            "memory export not available".to_owned(),
+        )
+            .into_response();
+    };
+
+    match ftj.export_user_events(&params.user_id).await {
+        Ok(events) => {
+            let jsonl = events
+                .iter()
+                .filter_map(|e| serde_json::to_string(e).ok())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/x-ndjson"),
+            );
+            (StatusCode::OK, headers, jsonl).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::http::HeaderMap::new(),
+            e.to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for the migration endpoint.
+#[derive(Debug, Deserialize)]
+struct MigrateMemoryBody {
+    user_id: String,
+}
+
+/// `POST /user/memory/migrate-to-pro`
+///
+/// Re-tags free-tier (`lago:namespace=shared`) events for `user_id` with
+/// pro-tier metadata (`lago:namespace=pro`, 90-day TTL). The original
+/// free-tier events are left intact and expire naturally after 7 days.
+async fn migrate_memory_to_pro(
+    State(state): State<CanonicalState>,
+    Json(body): Json<MigrateMemoryBody>,
+) -> impl IntoResponse {
+    let Some(ref ftj) = state.free_tier_journal else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "memory migration not available" })),
+        )
+            .into_response();
+    };
+
+    match ftj.migrate_user_to_pro(&body.user_id).await {
+        Ok(migrated) => (StatusCode::OK, Json(json!({ "migrated": migrated }))).into_response(),
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::{IdentityClaims, TenantRole, Tier};
+
+    // ─── policy_from_identity_claims tests (BRO-221 / BRO-222) ───────────────
+
+    fn make_claims(
+        tier: Tier,
+        roles: Vec<TenantRole>,
+        custom: Option<Vec<String>>,
+    ) -> IdentityClaims {
+        IdentityClaims {
+            sub: "test-user".to_string(),
+            tier,
+            org_id: None,
+            roles,
+            custom_capabilities: custom,
+            iat: 0,
+            exp: u64::MAX,
+        }
+    }
+
+    fn allow_caps(policy: &PolicySet) -> Vec<String> {
+        policy
+            .allow_capabilities
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn anonymous_tier_yields_empty_capabilities() {
+        let claims = make_claims(Tier::Anonymous, vec![], None);
+        let policy = policy_from_identity_claims(&claims);
+        assert!(allow_caps(&policy).is_empty());
+    }
+
+    #[test]
+    fn free_tier_yields_sandboxed_commands() {
+        let claims = make_claims(Tier::Free, vec![], None);
+        let policy = policy_from_identity_claims(&claims);
+        let caps = allow_caps(&policy);
+        assert!(!caps.is_empty());
+        // Must have read-only commands
+        assert!(caps.contains(&"exec:cmd:cat".to_string()));
+        assert!(caps.contains(&"exec:cmd:ls".to_string()));
+        // Must NOT have wildcard
+        assert!(!caps.contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn pro_tier_yields_wildcard() {
+        let claims = make_claims(Tier::Pro, vec![], None);
+        let policy = policy_from_identity_claims(&claims);
+        let caps = allow_caps(&policy);
+        assert_eq!(caps, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn enterprise_admin_role_yields_wildcard() {
+        let claims = make_claims(Tier::Enterprise, vec![TenantRole::Admin], None);
+        let policy = policy_from_identity_claims(&claims);
+        assert!(allow_caps(&policy).contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn enterprise_member_role_yields_sandboxed_writes() {
+        let claims = make_claims(Tier::Enterprise, vec![TenantRole::Member], None);
+        let policy = policy_from_identity_claims(&claims);
+        let caps = allow_caps(&policy);
+        assert!(
+            !caps.contains(&"*".to_string()),
+            "member must not have wildcard"
+        );
+        assert!(
+            caps.contains(&"fs:read:**".to_string()),
+            "member needs fs:read"
+        );
+        assert!(
+            caps.contains(&"fs:write:project:**".to_string()),
+            "member needs project writes"
+        );
+        assert!(caps.contains(&"exec:cmd:ls".to_string()));
+    }
+
+    #[test]
+    fn enterprise_viewer_role_is_read_only() {
+        let claims = make_claims(Tier::Enterprise, vec![TenantRole::Viewer], None);
+        let policy = policy_from_identity_claims(&claims);
+        let caps = allow_caps(&policy);
+        assert!(
+            !caps.contains(&"*".to_string()),
+            "viewer must not have wildcard"
+        );
+        assert!(
+            caps.contains(&"fs:read:**".to_string()),
+            "viewer needs fs:read"
+        );
+        // No write capabilities
+        assert!(
+            !caps.iter().any(|c| c.contains("write")),
+            "viewer must have no write caps"
+        );
+    }
+
+    #[test]
+    fn enterprise_no_roles_yields_wildcard() {
+        let claims = make_claims(Tier::Enterprise, vec![], None);
+        let policy = policy_from_identity_claims(&claims);
+        assert!(allow_caps(&policy).contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn custom_capabilities_override_role() {
+        let custom = vec!["exec:cmd:git".to_string(), "fs:read:**".to_string()];
+        // Even an Admin role is overridden by custom_capabilities
+        let claims = make_claims(
+            Tier::Enterprise,
+            vec![TenantRole::Admin],
+            Some(custom.clone()),
+        );
+        let policy = policy_from_identity_claims(&claims);
+        let caps = allow_caps(&policy);
+        assert_eq!(
+            caps, custom,
+            "custom_capabilities must override role-based policy"
+        );
+        assert!(!caps.contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn enterprise_agent_role_uses_custom_capabilities() {
+        let custom = vec!["exec:cmd:python".to_string(), "fs:read:data/**".to_string()];
+        let claims = make_claims(
+            Tier::Enterprise,
+            vec![TenantRole::Agent],
+            Some(custom.clone()),
+        );
+        let policy = policy_from_identity_claims(&claims);
+        // custom_capabilities wins (checked first before role)
+        assert_eq!(allow_caps(&policy), custom);
+    }
+
+    #[test]
+    fn enterprise_agent_role_without_custom_gets_wildcard() {
+        let claims = make_claims(Tier::Enterprise, vec![TenantRole::Agent], None);
+        let policy = policy_from_identity_claims(&claims);
+        assert!(allow_caps(&policy).contains(&"*".to_string()));
+    }
 
     #[test]
     fn openapi_spec_is_valid() {

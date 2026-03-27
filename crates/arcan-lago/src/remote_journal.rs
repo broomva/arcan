@@ -128,7 +128,7 @@ impl Journal for RemoteLagoJournal {
             let branch = query
                 .branch_id
                 .as_ref()
-                .map(|b| b.to_string())
+                .map(std::string::ToString::to_string)
                 .unwrap_or_else(|| "main".to_string());
             let after_seq = query.after_seq.unwrap_or(0);
 
@@ -213,17 +213,13 @@ impl Journal for RemoteLagoJournal {
         let rb = self.client.get(&url);
 
         Box::pin(async move {
-            let es = EventSource::new(rb)
-                .map_err(|e| LagoError::Journal(e.to_string()))?;
+            let es = EventSource::new(rb).map_err(|e| LagoError::Journal(e.to_string()))?;
 
             let stream = es.filter_map(|item| async move {
                 match item {
-                    Ok(Event::Message(msg)) if msg.event == "event" => {
-                        Some(
-                            serde_json::from_str::<EventEnvelope>(&msg.data)
-                                .map_err(LagoError::from),
-                        )
-                    }
+                    Ok(Event::Message(msg)) if msg.event == "event" => Some(
+                        serde_json::from_str::<EventEnvelope>(&msg.data).map_err(LagoError::from),
+                    ),
                     Ok(Event::Message(msg)) if msg.event == "done" => None,
                     Ok(_) => None,
                     Err(e) => {
@@ -281,8 +277,7 @@ impl Journal for RemoteLagoJournal {
                 .json()
                 .await
                 .map_err(|e| LagoError::Journal(e.to_string()))?;
-            let session: Session =
-                serde_json::from_value(raw).map_err(LagoError::from)?;
+            let session: Session = serde_json::from_value(raw).map_err(LagoError::from)?;
             Ok(Some(session))
         })
     }
@@ -306,8 +301,7 @@ impl Journal for RemoteLagoJournal {
                 .json()
                 .await
                 .map_err(|e| LagoError::Journal(e.to_string()))?;
-            let sessions: Vec<Session> =
-                serde_json::from_value(raw).map_err(LagoError::from)?;
+            let sessions: Vec<Session> = serde_json::from_value(raw).map_err(LagoError::from)?;
             Ok(sessions)
         })
     }
