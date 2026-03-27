@@ -434,18 +434,16 @@ impl SandboxProvider for VercelSandboxProvider {
         let session_id = session.id;
 
         // 2. Execute the command against the active session.
-        let url = self.url(&format!(
-            "/v2/sandboxes/sessions/{}/cmd",
-            session_id
-        ));
+        let url = self.url(&format!("/v2/sandboxes/sessions/{}/cmd", session_id));
 
         // Split argv: command[0] is the executable, the rest are args.
-        let (command, args) = req.command.split_first().ok_or_else(|| {
-            SandboxError::ProviderError {
-                provider: "vercel",
-                message: "exec request must have at least one argument".into(),
-            }
-        })?;
+        let (command, args) =
+            req.command
+                .split_first()
+                .ok_or_else(|| SandboxError::ProviderError {
+                    provider: "vercel",
+                    message: "exec request must have at least one argument".into(),
+                })?;
 
         let body = ExecRequestV2 {
             command: command.clone(),
@@ -506,10 +504,7 @@ impl SandboxProvider for VercelSandboxProvider {
             }
         })?;
 
-        let url = self.url(&format!(
-            "/v2/sandboxes/sessions/{}/stop",
-            session.id
-        ));
+        let url = self.url(&format!("/v2/sandboxes/sessions/{}/stop", session.id));
         debug!(sandbox_name = %id, session_id = %session.id, "stopping Vercel session (v2 auto-snapshot)");
 
         let resp = self.send_with_retry(|| self.client.post(&url)).await?;
@@ -563,7 +558,10 @@ impl SandboxProvider for VercelSandboxProvider {
         } else {
             self.url_with_query(
                 "/v2/sandboxes",
-                &query.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>(),
+                &query
+                    .iter()
+                    .map(|(k, v)| (*k, v.as_str()))
+                    .collect::<Vec<_>>(),
             )
         };
 
@@ -613,7 +611,10 @@ impl VercelSandboxProvider {
 
         let url = self.url_with_query(
             "/v2/sandboxes",
-            &params.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>(),
+            &params
+                .iter()
+                .map(|(k, v)| (*k, v.as_str()))
+                .collect::<Vec<_>>(),
         );
 
         debug!(prefix = %prefix, "listing Vercel sandboxes by name prefix (v2)");
@@ -690,14 +691,14 @@ fn map_status_error(
 
 /// Build a [`SandboxHandle`] from a combined sandbox + session response.
 fn sandbox_and_session_to_handle(c: &SandboxAndSession) -> Result<SandboxHandle, SandboxError> {
-    let created_at: DateTime<Utc> = c
-        .sandbox
-        .created_at
-        .parse()
-        .map_err(|e| SandboxError::ProviderError {
-            provider: "vercel",
-            message: format!("invalid createdAt '{}': {e}", c.sandbox.created_at),
-        })?;
+    let created_at: DateTime<Utc> =
+        c.sandbox
+            .created_at
+            .parse()
+            .map_err(|e| SandboxError::ProviderError {
+                provider: "vercel",
+                message: format!("invalid createdAt '{}': {e}", c.sandbox.created_at),
+            })?;
 
     // Sandbox name is the stable [`SandboxId`] in v2.
     let name = c.sandbox.name.clone();
@@ -717,13 +718,13 @@ fn sandbox_and_session_to_handle(c: &SandboxAndSession) -> Result<SandboxHandle,
 
 /// Build a [`SandboxInfo`] from a v2 sandbox object.
 fn vercel_sandbox_to_info(s: VercelSandboxV2) -> Result<SandboxInfo, SandboxError> {
-    let created_at: DateTime<Utc> = s
-        .created_at
-        .parse()
-        .map_err(|e| SandboxError::ProviderError {
-            provider: "vercel",
-            message: format!("invalid createdAt '{}': {e}", s.created_at),
-        })?;
+    let created_at: DateTime<Utc> =
+        s.created_at
+            .parse()
+            .map_err(|e| SandboxError::ProviderError {
+                provider: "vercel",
+                message: format!("invalid createdAt '{}': {e}", s.created_at),
+            })?;
 
     Ok(SandboxInfo {
         id: SandboxId(s.name.clone()),
@@ -806,9 +807,10 @@ mod tests {
         let p = VercelSandboxProvider::new("tok", None, None);
         assert!(p.capabilities().contains(SandboxCapabilitySet::TAGS));
         assert!(p.capabilities().contains(SandboxCapabilitySet::PERSISTENCE));
-        assert!(p
-            .capabilities()
-            .contains(SandboxCapabilitySet::NETWORK_OUTBOUND));
+        assert!(
+            p.capabilities()
+                .contains(SandboxCapabilitySet::NETWORK_OUTBOUND)
+        );
     }
 
     #[test]
@@ -822,14 +824,15 @@ mod tests {
 
     #[test]
     fn from_env_reads_project_id() {
-        let result = VercelSandboxProvider::from_env_fn(|key: &str| -> Result<String, &'static str> {
-            match key {
-                "VERCEL_TOKEN" => Ok("tok".into()),
-                "VERCEL_TEAM_ID" => Err("not set"),
-                "VERCEL_PROJECT_ID" => Ok("proj-abc".into()),
-                _ => Err("not set"),
-            }
-        });
+        let result =
+            VercelSandboxProvider::from_env_fn(|key: &str| -> Result<String, &'static str> {
+                match key {
+                    "VERCEL_TOKEN" => Ok("tok".into()),
+                    "VERCEL_TEAM_ID" => Err("not set"),
+                    "VERCEL_PROJECT_ID" => Ok("proj-abc".into()),
+                    _ => Err("not set"),
+                }
+            });
         assert!(result.is_ok());
         assert_eq!(result.unwrap().project_id.as_deref(), Some("proj-abc"));
     }
@@ -858,10 +861,7 @@ mod tests {
         assert_eq!(handle.provider, "vercel");
 
         // Session ID stored in metadata
-        assert_eq!(
-            handle.metadata["session_id"].as_str().unwrap(),
-            "sess-001"
-        );
+        assert_eq!(handle.metadata["session_id"].as_str().unwrap(), "sess-001");
         mock.assert_async().await;
     }
 
@@ -882,7 +882,10 @@ mod tests {
         let provider = provider_for(&server);
         let mut spec = SandboxSpec::ephemeral("tagged-sbx");
         spec.labels.insert("env".into(), "prod".into());
-        provider.create(spec).await.expect("create with tags should succeed");
+        provider
+            .create(spec)
+            .await
+            .expect("create with tags should succeed");
         mock.assert_async().await;
     }
 
@@ -896,10 +899,7 @@ mod tests {
         let mock_get = server
             .mock(
                 "GET",
-                mockito::Matcher::Regex(format!(
-                    r#"^/v2/sandboxes/{}(\?.*)?$"#,
-                    sandbox_name
-                )),
+                mockito::Matcher::Regex(format!(r#"^/v2/sandboxes/{}(\?.*)?$"#, sandbox_name)),
             )
             .with_status(200)
             .with_header("content-type", "application/json")
