@@ -1,6 +1,7 @@
 # workspace — arcan agent runtime (cache-bust: 2026-03-25)
 [workspace]
 members = [
+  "crates/arcan-sandbox",
   "crates/arcan-anima",
   "crates/arcan-console",
   "crates/arcan-core",
@@ -63,6 +64,7 @@ categories = ["command-line-utilities", "web-programming"]
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+bitflags = { version = "2", features = ["serde"] }
 axum = { version = "0.8", features = ["macros"] }
 blake3 = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -141,3 +143,6 @@ anima-lago = { path = "../anima/crates/anima-lago", version = "0.1.0" }
 
 # Observability
 life-vigil = { version = "0.1.0", path = "../vigil" }
+
+# Arcan sandbox provider abstraction
+arcan-sandbox = { path = "crates/arcan-sandbox", version = "0.2.1" }
