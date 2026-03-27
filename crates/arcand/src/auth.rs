@@ -98,7 +98,41 @@ pub fn validate_identity_token(token: &str, secret: &str) -> Result<IdentityClai
             _ => JwtError::Invalid(e.to_string()),
         })?;
 
-    Ok(token_data.claims)
+    let claims = token_data.claims;
+
+    // Cross-field invariants that the JWT library cannot enforce:
+    //   • Enterprise tier requires `org_id` (tenant is mandatory for RBAC routing).
+    //   • Non-enterprise tiers must not carry enterprise-only claims — a forged
+    //     token that embeds org/role/capability fields while claiming a lower tier
+    //     would otherwise smuggle escalation data past the policy gate.
+    match &claims.tier {
+        Tier::Enterprise => {
+            if claims.org_id.is_none() {
+                return Err(JwtError::Invalid(
+                    "enterprise tier requires org_id".to_string(),
+                ));
+            }
+        }
+        _ => {
+            if claims.org_id.is_some() {
+                return Err(JwtError::Invalid(
+                    "org_id is only valid for enterprise tier".to_string(),
+                ));
+            }
+            if !claims.roles.is_empty() {
+                return Err(JwtError::Invalid(
+                    "roles are only valid for enterprise tier".to_string(),
+                ));
+            }
+            if claims.custom_capabilities.is_some() {
+                return Err(JwtError::Invalid(
+                    "custom_capabilities are only valid for enterprise tier".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(claims)
 }
 
 // ─── JWT Claims ──────────────────────────────────────────────────────────────
@@ -572,5 +606,91 @@ mod tests {
         let caps = claims.custom_capabilities.unwrap();
         assert_eq!(caps.len(), 2);
         assert!(caps.contains(&"fs:read:**".to_string()));
+    }
+
+    // ── Cross-field invariant tests ───────────────────────────────────────────
+
+    fn encode_identity(claims: &IdentityClaims) -> String {
+        let key = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        encode(&Header::default(), claims, &key).unwrap()
+    }
+
+    fn base_claims(tier: Tier) -> IdentityClaims {
+        IdentityClaims {
+            sub: "user-x".to_string(),
+            tier,
+            org_id: None,
+            roles: vec![],
+            custom_capabilities: None,
+            iat: 0,
+            exp: future_exp(),
+        }
+    }
+
+    #[test]
+    fn enterprise_without_org_id_is_rejected() {
+        let claims = base_claims(Tier::Enterprise); // org_id is None
+        let token = encode_identity(&claims);
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(
+            matches!(result, Err(JwtError::Invalid(ref msg)) if msg.contains("org_id")),
+            "expected Invalid error mentioning org_id, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn non_enterprise_with_org_id_is_rejected() {
+        let mut claims = base_claims(Tier::Pro);
+        claims.org_id = Some("org-sneaky".to_string());
+        let token = encode_identity(&claims);
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(
+            matches!(result, Err(JwtError::Invalid(ref msg)) if msg.contains("org_id")),
+            "expected Invalid error mentioning org_id, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn non_enterprise_with_roles_is_rejected() {
+        let mut claims = base_claims(Tier::Free);
+        claims.roles = vec![TenantRole::Admin];
+        let token = encode_identity(&claims);
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(
+            matches!(result, Err(JwtError::Invalid(ref msg)) if msg.contains("roles")),
+            "expected Invalid error mentioning roles, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn non_enterprise_with_custom_capabilities_is_rejected() {
+        let mut claims = base_claims(Tier::Anonymous);
+        claims.custom_capabilities = Some(vec!["fs:read:**".to_string()]);
+        let token = encode_identity(&claims);
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(
+            matches!(result, Err(JwtError::Invalid(ref msg)) if msg.contains("custom_capabilities")),
+            "expected Invalid error mentioning custom_capabilities, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn enterprise_with_org_id_and_roles_is_accepted() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = IdentityClaims {
+            sub: "ent-admin".to_string(),
+            tier: Tier::Enterprise,
+            org_id: Some("org-valid".to_string()),
+            roles: vec![TenantRole::Admin],
+            custom_capabilities: None,
+            iat: now,
+            exp: now + 3600,
+        };
+        let token = encode_identity(&claims);
+        let result = validate_identity_token(&token, TEST_SECRET);
+        assert!(result.is_ok(), "valid enterprise token should be accepted: {result:?}");
     }
 }

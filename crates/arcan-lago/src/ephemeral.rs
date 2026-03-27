@@ -49,7 +49,7 @@ use lago_core::{
     session::Session,
 };
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     pin::Pin,
     sync::{Arc, Mutex},
 };
@@ -158,8 +158,13 @@ impl Journal for EphemeralJournal {
 /// [`unmark_ephemeral`]: SessionJournalSelector::unmark_ephemeral
 pub struct SessionJournalSelector {
     inner: Arc<dyn Journal>,
-    /// Sessions whose memory events should be discarded.
-    ephemeral: Mutex<HashSet<String>>,
+    /// Ref-counted set of sessions whose memory events should be discarded.
+    ///
+    /// The `usize` value is the number of outstanding `mark_ephemeral` calls
+    /// for that session ID. An entry is removed when the counter reaches zero,
+    /// which prevents a race where two concurrent callers mark the same session
+    /// and the first `unmark_ephemeral` incorrectly re-enables persistence.
+    ephemeral: Mutex<HashMap<String, usize>>,
 }
 
 impl SessionJournalSelector {
@@ -167,7 +172,7 @@ impl SessionJournalSelector {
     pub fn new(journal: Arc<dyn Journal>) -> Self {
         Self {
             inner: journal,
-            ephemeral: Mutex::new(HashSet::new()),
+            ephemeral: Mutex::new(HashMap::new()),
         }
     }
 
@@ -178,10 +183,12 @@ impl SessionJournalSelector {
     ///
     /// [`unmark_ephemeral`]: Self::unmark_ephemeral
     pub fn mark_ephemeral(&self, session_id: impl AsRef<str>) {
-        self.ephemeral
+        *self
+            .ephemeral
             .lock()
             .unwrap()
-            .insert(session_id.as_ref().to_owned());
+            .entry(session_id.as_ref().to_owned())
+            .or_insert(0) += 1;
     }
 
     /// Deregister `session_id` from the ephemeral set.
@@ -189,12 +196,24 @@ impl SessionJournalSelector {
     /// Typically called after the agent tick completes. Idempotent — does
     /// nothing if the session was not registered.
     pub fn unmark_ephemeral(&self, session_id: impl AsRef<str>) {
-        self.ephemeral.lock().unwrap().remove(session_id.as_ref());
+        let mut map = self.ephemeral.lock().unwrap();
+        if let Some(count) = map.get_mut(session_id.as_ref()) {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(session_id.as_ref());
+            }
+        }
     }
 
     /// Returns `true` if `session_id` is currently registered as ephemeral.
     pub fn is_ephemeral(&self, session_id: &SessionId) -> bool {
-        self.ephemeral.lock().unwrap().contains(session_id.as_str())
+        self.ephemeral
+            .lock()
+            .unwrap()
+            .get(session_id.as_str())
+            .copied()
+            .unwrap_or(0)
+            > 0
     }
 
     /// Returns `true` if the event payload is a memory event that should be
@@ -569,5 +588,42 @@ mod tests {
         selector.append_batch(events).await.unwrap();
         // Only the ToolCallRequested must reach the inner journal.
         assert_eq!(inner.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn selector_ref_counts_concurrent_marks() {
+        // Two concurrent callers both mark the same session as ephemeral.
+        // The session must remain ephemeral until *both* have called unmark.
+        let inner = Arc::new(RecordingJournal::default());
+        let selector = Arc::new(SessionJournalSelector::new(inner.clone()));
+        let session = SessionId::from_string("shared-session");
+
+        // Simulate two concurrent "mark" holders (e.g. two overlapping ticks).
+        selector.mark_ephemeral(session.clone()); // ref-count = 1
+        selector.mark_ephemeral(session.clone()); // ref-count = 2
+
+        // First unmark: ref-count drops to 1 — session is still ephemeral.
+        selector.unmark_ephemeral(&session);
+        assert!(
+            selector.is_ephemeral(&session),
+            "session must still be ephemeral after first unmark (ref-count = 1)"
+        );
+        selector
+            .append(make_envelope(&session, memory_proposed_event()))
+            .await
+            .unwrap();
+        assert_eq!(inner.count(), 0, "memory event must still be discarded");
+
+        // Second unmark: ref-count reaches 0 — session is no longer ephemeral.
+        selector.unmark_ephemeral(&session);
+        assert!(
+            !selector.is_ephemeral(&session),
+            "session must no longer be ephemeral after second unmark (ref-count = 0)"
+        );
+        selector
+            .append(make_envelope(&session, memory_proposed_event()))
+            .await
+            .unwrap();
+        assert_eq!(inner.count(), 1, "memory event must persist after full unmark");
     }
 }

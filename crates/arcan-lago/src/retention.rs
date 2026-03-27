@@ -553,20 +553,19 @@ impl Journal for FreeTierJournal {
     ) -> Pin<Box<dyn std::future::Future<Output = LagoResult<EventStream>> + Send + '_>> {
         Box::pin(async move {
             use tokio_stream::StreamExt as _;
-            let mut raw = self.inner.stream(session_id, branch_id, after_seq).await?;
-            let mut filtered: Vec<LagoResult<EventEnvelope>> = Vec::new();
-            while let Some(item) = raw.next().await {
-                match &item {
-                    Ok(e) if Self::is_expired(e) => {
-                        tracing::trace!(
-                            event_id = %e.event_id,
-                            "retention: filtering expired event from stream"
-                        );
-                    }
-                    _ => filtered.push(item),
+            let raw = self.inner.stream(session_id, branch_id, after_seq).await?;
+            // Lazily filter expired events without buffering the full stream.
+            let filtered = raw.filter(|item| match item {
+                Ok(e) if Self::is_expired(e) => {
+                    tracing::trace!(
+                        event_id = %e.event_id,
+                        "retention: filtering expired event from stream"
+                    );
+                    false
                 }
-            }
-            Ok(Box::pin(tokio_stream::iter(filtered)) as EventStream)
+                _ => true,
+            });
+            Ok(Box::pin(filtered) as EventStream)
         })
     }
 
