@@ -75,10 +75,11 @@ impl Default for SandboxResources {
 // ── Persistence policy ────────────────────────────────────────────────────────
 
 /// Controls how a sandbox's filesystem is retained across sessions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PersistencePolicy {
     /// Sandbox is destroyed when the session ends; no filesystem retention.
+    #[default]
     Ephemeral,
     /// Filesystem is automatically snapshotted after `idle_timeout_secs` of
     /// inactivity and restored on next `resume()`.
@@ -90,12 +91,6 @@ pub enum PersistencePolicy {
     },
     /// Snapshot only when the caller explicitly invokes `snapshot()`.
     ManualSnapshot,
-}
-
-impl Default for PersistencePolicy {
-    fn default() -> Self {
-        Self::Ephemeral
-    }
 }
 
 // ── Specification ─────────────────────────────────────────────────────────────
