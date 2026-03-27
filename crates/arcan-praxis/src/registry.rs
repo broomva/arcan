@@ -6,9 +6,10 @@
 //! Arcan [`ToolRegistry`].
 
 use crate::config::PraxisConfig;
-use crate::sandbox_runner::SandboxCommandRunner;
+use crate::sandbox_runner::{SandboxCommandRunner, SandboxServiceRunner, SandboxSessionLifecycle};
 use arcan_core::runtime::ToolRegistry;
 use arcan_harness::bridge::PraxisToolBridge;
+use arcan_sandbox::SandboxService;
 use praxis_core::local_fs::LocalFs;
 use praxis_core::sandbox::LocalCommandRunner;
 use praxis_tools::edit::EditFileTool;
@@ -93,6 +94,75 @@ pub fn register_praxis_tools(config: &PraxisConfig, registry: &mut ToolRegistry)
     );
 
     count
+}
+
+/// Register all Praxis tools using a **session-scoped** [`SandboxService`].
+///
+/// Unlike [`register_praxis_tools`] (ephemeral sandbox per bash call), the
+/// `bash` tool registered here routes through [`SandboxServiceRunner`], which
+/// maintains a **persistent sandbox** for the agent session so files written in
+/// one call are visible in the next.
+///
+/// Returns `(count, lifecycle)` — wire `lifecycle.on_pause()` and
+/// `lifecycle.on_end()` into your session's pause/end handlers.
+pub fn register_praxis_tools_for_session(
+    config: &PraxisConfig,
+    service: Arc<SandboxService>,
+    agent_id: impl Into<String>,
+    session_id: impl Into<String>,
+    registry: &mut ToolRegistry,
+) -> (usize, SandboxSessionLifecycle) {
+    let agent_id = agent_id.into();
+    let session_id = session_id.into();
+
+    let fs_policy = config.fs_policy();
+    let fs: Arc<dyn praxis_core::FsPort> = Arc::new(LocalFs::new(fs_policy));
+
+    let mut count = 0;
+
+    registry.register(PraxisToolBridge::new(ReadFileTool::new(fs.clone())));
+    count += 1;
+    registry.register(PraxisToolBridge::new(WriteFileTool::new(fs.clone())));
+    count += 1;
+    registry.register(PraxisToolBridge::new(ListDirTool::new(fs.clone())));
+    count += 1;
+    registry.register(PraxisToolBridge::new(GlobTool::new(fs.clone())));
+    count += 1;
+    registry.register(PraxisToolBridge::new(GrepTool::new(fs.clone())));
+    count += 1;
+    registry.register(PraxisToolBridge::new(EditFileTool::new(fs)));
+    count += 1;
+
+    // Shell tool — session-scoped sandbox via SandboxService.
+    let sandbox_policy = config.sandbox_policy();
+    let runner =
+        SandboxServiceRunner::new(Arc::clone(&service), agent_id.clone(), session_id.clone());
+    registry.register(PraxisToolBridge::new(BashTool::new(
+        sandbox_policy,
+        Box::new(runner),
+    )));
+    count += 1;
+
+    if let Some(ref memory_dir) = config.memory_dir {
+        registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
+            memory_dir.clone(),
+        )));
+        count += 1;
+        registry.register(PraxisToolBridge::new(WriteMemoryTool::new(
+            memory_dir.clone(),
+        )));
+        count += 1;
+    }
+
+    let lifecycle = SandboxSessionLifecycle::new(service, agent_id, session_id);
+
+    info!(
+        tools_registered = count,
+        workspace = %config.workspace_root.display(),
+        "praxis tools registered (SandboxService-backed session)"
+    );
+
+    (count, lifecycle)
 }
 
 /// Return the list of tool names that [`register_praxis_tools`] will register.
