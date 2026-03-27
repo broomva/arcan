@@ -109,8 +109,12 @@ enum AutonomicMode {
     /// In-process controller: fold events locally, evaluate with microsecond latency.
     Embedded(Arc<EmbeddedAutonomicController>),
     /// Remote HTTP daemon: consult via `GET /gating/{session_id}`.
+    ///
+    /// The `reqwest::Client` is created lazily on first use because
+    /// `reqwest` 0.12+ panics if `Client::new()` is called outside a Tokio
+    /// runtime (hyper-util TokioIo requires a reactor).
     Remote {
-        client: reqwest::Client,
+        client: tokio::sync::OnceCell<reqwest::Client>,
         base_url: String,
     },
 }
@@ -157,14 +161,12 @@ impl AutonomicPolicyAdapter {
     ///
     /// Consults the standalone Autonomic daemon at `base_url` for gating decisions.
     pub fn new_remote(inner: Arc<dyn PolicyGatePort>, base_url: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .expect("failed to build reqwest client");
-
         Self {
             inner,
-            mode: AutonomicMode::Remote { client, base_url },
+            mode: AutonomicMode::Remote {
+                client: tokio::sync::OnceCell::new(),
+                base_url,
+            },
             economic_handle: Arc::new(tokio::sync::RwLock::new(None)),
             profile_handle: Arc::new(tokio::sync::RwLock::new(None)),
         }
@@ -299,7 +301,16 @@ impl AutonomicPolicyAdapter {
         };
         let url = format!("{base_url}/gating/{session_id}");
 
-        let resp = match client.get(&url).send().await {
+        let http = client
+            .get_or_init(|| async {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(2))
+                    .build()
+                    .expect("failed to build reqwest client")
+            })
+            .await;
+
+        let resp = match http.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, %url, "Autonomic unreachable, falling through");
