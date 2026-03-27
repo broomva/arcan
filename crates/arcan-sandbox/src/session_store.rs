@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use aios_protocol::policy::SubscriptionTier;
+use aios_protocol::SubscriptionTier;
 
 use crate::types::{SandboxHandle, SandboxId};
 
