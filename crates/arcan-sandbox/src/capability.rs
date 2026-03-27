@@ -117,8 +117,7 @@ mod tests {
 
     #[test]
     fn net_egress_maps_to_outbound() {
-        let caps =
-            SandboxCapabilitySet::from_policy(&make_policy(&["net:egress:api.openai.com"]));
+        let caps = SandboxCapabilitySet::from_policy(&make_policy(&["net:egress:api.openai.com"]));
         assert!(caps.contains(SandboxCapabilitySet::NETWORK_OUTBOUND));
         assert!(!caps.contains(SandboxCapabilitySet::NETWORK_INBOUND));
     }
@@ -150,6 +149,9 @@ mod tests {
 
     #[test]
     fn default_is_filesystem_read() {
-        assert_eq!(SandboxCapabilitySet::default(), SandboxCapabilitySet::FILESYSTEM_READ);
+        assert_eq!(
+            SandboxCapabilitySet::default(),
+            SandboxCapabilitySet::FILESYSTEM_READ
+        );
     }
 }

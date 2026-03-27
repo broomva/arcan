@@ -65,7 +65,10 @@ mod tests {
 
     #[test]
     fn not_supported_display() {
-        let err = SandboxError::NotSupported { provider: "local", reason: "persistence" };
+        let err = SandboxError::NotSupported {
+            provider: "local",
+            reason: "persistence",
+        };
         assert!(err.to_string().contains("persistence"));
         assert!(err.to_string().contains("local"));
     }
