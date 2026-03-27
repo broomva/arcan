@@ -12,7 +12,7 @@ WORKDIR /arcan
 # Bust Docker layer cache for sibling repo clones.
 # Railway passes a unique value per build; locally use:
 #   docker build --build-arg CACHE_BUST=$(date +%s) .
-ARG CACHE_BUST=20260327c
+ARG CACHE_BUST=20260327d
 
 # Clone sibling dependencies (matches CI checkout pattern)
 RUN echo "cache-bust: ${CACHE_BUST}" && \
@@ -36,7 +36,7 @@ RUN cargo build --release -p arcan
 FROM debian:trixie-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl bubblewrap && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash arcan
