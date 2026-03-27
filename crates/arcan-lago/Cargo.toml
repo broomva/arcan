@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
+arcan-sandbox = { path = "../arcan-sandbox", version = "0.2.1" }
 arcan-store = { path = "../arcan-store", version = "0.2.1" }
 aios-protocol.workspace = true
 lago-core.workspace = true
