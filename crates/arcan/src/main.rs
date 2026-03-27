@@ -355,6 +355,17 @@ fn run_serve(
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    // Build the Tokio runtime first so that reqwest::Client::new() (v0.12+)
+    // does not panic — hyper-util TokioIo requires an active reactor even
+    // for constructing connection pools.  We enter the runtime context
+    // immediately but DON'T block_on yet, so that reqwest::blocking::Client
+    // (used by AnthropicProvider / OpenAiProvider / AnthropicJudgeProvider)
+    // can also be constructed without "Cannot drop a runtime" panics.
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let _rt_guard = tokio_runtime.enter();
+
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
@@ -618,13 +629,11 @@ fn run_serve(
     // Wire the broadcast sender now that the runtime exists.
     *streaming_sender.lock().unwrap() = Some(runtime.event_sender());
 
-    // Build provider stack and blocking HTTP clients before entering Tokio runtime.
     let data_dir_owned = data_dir.to_path_buf();
     let port = resolved.port;
-    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
 
+    // Now block on the async server setup and execution.
+    // The runtime was already created and entered at the top of run_serve().
     tokio_runtime.block_on(async move {
         // --- Background FS event writer (persists tracked writes to Lago journal) ---
         let session_id = SessionId::from_string("default");
