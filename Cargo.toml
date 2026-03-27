@@ -71,6 +71,7 @@ bitflags = { version = "2", features = ["serde"] }
 axum = { version = "0.8", features = ["macros"] }
 blake3 = "1"
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
 json-patch = "4"
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }

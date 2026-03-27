@@ -16,9 +16,12 @@ anyhow.workspace = true
 async-trait.workspace = true
 bitflags.workspace = true
 chrono.workspace = true
+dashmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 uuid.workspace = true
 
 [lints]
