@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod factory;
 mod nous_observer;
+mod sandbox_router;
 mod skills;
 
 use aios_protocol::sandbox::NetworkPolicy;
@@ -636,12 +637,31 @@ fn run_serve(
         ));
 
         // --- HTTP Server ---
+        // BRO-250: Build sandbox provider from ARCAN_SANDBOX_BACKEND env var.
+        // Full per-session RemoteCommandRunner routing is deferred to BRO-253.
+        let sandbox_provider = crate::sandbox_router::build_sandbox_provider();
+        let sandbox_store = Arc::new(arcan_sandbox::InMemorySessionStore::new());
+
         // Build run observers for canonical router (async judge on run completion).
-        let run_observers: Vec<Arc<dyn arcan_aios_adapters::tools::ToolHarnessObserver>> =
-            match nous_observer {
-                Some(obs) => vec![obs],
-                None => Vec::new(),
-            };
+        let mut run_observers: Vec<Arc<dyn arcan_aios_adapters::tools::ToolHarnessObserver>> =
+            Vec::new();
+
+        if let Some(obs) = nous_observer {
+            run_observers.push(obs);
+        }
+
+        if let Some(ref provider) = sandbox_provider {
+            // Register lifecycle observer for session cleanup.
+            // Tier defaults to Anonymous (conservative: destroys on run end).
+            // BRO-253 will add per-session tier extraction.
+            use arcan_aios_adapters::SandboxLifecycleObserver;
+            use aios_protocol::SubscriptionTier;
+            run_observers.push(Arc::new(SandboxLifecycleObserver::new(
+                Arc::clone(provider),
+                Arc::clone(&sandbox_store),
+                SubscriptionTier::Anonymous,
+            )));
+        }
 
         let mut router = arcand::canonical::create_canonical_router_with_skills(
             runtime,
