@@ -355,17 +355,11 @@ fn run_serve(
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    // Build the Tokio runtime first so that reqwest::Client::new() (v0.12+)
-    // does not panic — hyper-util TokioIo requires an active reactor even
-    // for constructing connection pools.  We enter the runtime context
-    // immediately but DON'T block_on yet, so that reqwest::blocking::Client
-    // (used by AnthropicProvider / OpenAiProvider / AnthropicJudgeProvider)
-    // can also be constructed without "Cannot drop a runtime" panics.
-    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let _rt_guard = tokio_runtime.enter();
-
+    // ── Phase 1 (sync, NO Tokio runtime) ────────────────────────────────
+    //
+    // Build provider stack and other components that use reqwest::blocking::Client.
+    // These panic if constructed INSIDE a Tokio runtime ("Cannot drop a runtime
+    // in a context where blocking is not allowed").
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago persistence ---
@@ -632,8 +626,18 @@ fn run_serve(
     let data_dir_owned = data_dir.to_path_buf();
     let port = resolved.port;
 
-    // Now block on the async server setup and execution.
-    // The runtime was already created and entered at the top of run_serve().
+    // ── Phase 2 (inside Tokio runtime) ──────────────────────────────────
+    //
+    // Build the Tokio runtime and block_on for async initialization.
+    // reqwest::Client::new() (v0.12+) requires the Tokio I/O driver to be
+    // running — hyper-util TokioIo panics without it.  Everything that
+    // creates an async reqwest Client (RemoteLagoJournal, Autonomic remote
+    // adapter, VercelSandboxProvider, etc.) MUST be constructed inside
+    // block_on() or a spawned task.
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     tokio_runtime.block_on(async move {
         // --- Background FS event writer (persists tracked writes to Lago journal) ---
         let session_id = SessionId::from_string("default");
