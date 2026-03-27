@@ -36,6 +36,10 @@ praxis-tools.workspace = true
 praxis-skills.workspace = true
 praxis-mcp-bridge.workspace = true
 arcan-provider = { path = "../arcan-provider", version = "0.2.1" }
+arcan-sandbox.workspace = true
+arcan-provider-vercel.workspace = true
+arcan-provider-local.workspace = true
+arcan-provider-bubblewrap.workspace = true
 arcand = { path = "../arcand", version = "0.2.1" }
 arcan-lago = { path = "../arcan-lago", version = "0.2.1" }
 arcan-tui = { path = "../arcan-tui", version = "0.2.1" }
