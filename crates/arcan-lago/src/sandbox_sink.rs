@@ -23,7 +23,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::sandbox_manifest::{sync_file_written, FileWrittenParams, SandboxManifest};
+use crate::sandbox_manifest::{FileWrittenParams, SandboxManifest, sync_file_written};
 
 // ── LagoSandboxEventSink ──────────────────────────────────────────────────────
 
