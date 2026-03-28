@@ -260,7 +260,7 @@ mod tests {
     async fn sync_file_written_records_without_blob_when_read_file_unsupported() {
         use arcan_sandbox::{
             ExecRequest, ExecResult, SandboxCapabilitySet, SandboxHandle, SandboxId, SandboxInfo,
-            SandboxSpec, SandboxStatus, SnapshotId,
+            SandboxSpec, SnapshotId,
         };
         use async_trait::async_trait;
 
@@ -278,26 +278,26 @@ mod tests {
                 &self,
                 _: SandboxSpec,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn resume(
                 &self,
                 _: &SandboxId,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn run(
                 &self,
                 _: &SandboxId,
                 _: ExecRequest,
             ) -> Result<ExecResult, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn snapshot(
                 &self,
                 _: &SandboxId,
             ) -> Result<SnapshotId, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn destroy(&self, _: &SandboxId) -> Result<(), arcan_sandbox::SandboxError> {
                 Ok(())
@@ -335,7 +335,7 @@ mod tests {
     async fn sync_file_written_stores_blob_when_read_file_succeeds() {
         use arcan_sandbox::{
             ExecRequest, ExecResult, SandboxCapabilitySet, SandboxHandle, SandboxId, SandboxInfo,
-            SandboxSpec, SandboxStatus, SnapshotId,
+            SandboxSpec, SnapshotId,
         };
         use async_trait::async_trait;
 
@@ -353,26 +353,26 @@ mod tests {
                 &self,
                 _: SandboxSpec,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn resume(
                 &self,
                 _: &SandboxId,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn run(
                 &self,
                 _: &SandboxId,
                 _: ExecRequest,
             ) -> Result<ExecResult, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn snapshot(
                 &self,
                 _: &SandboxId,
             ) -> Result<SnapshotId, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn destroy(&self, _: &SandboxId) -> Result<(), arcan_sandbox::SandboxError> {
                 Ok(())

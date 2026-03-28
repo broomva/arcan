@@ -23,7 +23,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::sandbox_manifest::{FileWrittenParams, SandboxManifest, sync_file_written};
+use crate::sandbox_manifest::{sync_file_written, FileWrittenParams, SandboxManifest};
 
 // ── LagoSandboxEventSink ──────────────────────────────────────────────────────
 
@@ -386,7 +386,7 @@ mod tests {
     async fn file_written_event_updates_manifest() {
         use arcan_sandbox::{
             ExecRequest, ExecResult, SandboxCapabilitySet, SandboxHandle, SandboxInfo, SandboxSpec,
-            SandboxStatus, SnapshotId,
+            SnapshotId,
         };
         use async_trait::async_trait;
 
@@ -404,26 +404,26 @@ mod tests {
                 &self,
                 _: SandboxSpec,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn resume(
                 &self,
                 _: &SandboxId,
             ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn run(
                 &self,
                 _: &SandboxId,
                 _: ExecRequest,
             ) -> Result<ExecResult, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn snapshot(
                 &self,
                 _: &SandboxId,
             ) -> Result<SnapshotId, arcan_sandbox::SandboxError> {
-                unimplemented!()
+                unreachable!("not called in test")
             }
             async fn destroy(&self, _: &SandboxId) -> Result<(), arcan_sandbox::SandboxError> {
                 Ok(())
