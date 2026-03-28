@@ -365,9 +365,7 @@ impl PromotionGate {
                 self.config.cooldown_after_revert,
                 now_micros,
             ) {
-                return Err(PromotionError::CooldownActive(
-                    proposal.proposal_id.clone(),
-                ));
+                return Err(PromotionError::CooldownActive(proposal.proposal_id.clone()));
             }
 
             // Check active rule limit
@@ -449,11 +447,7 @@ impl PromotionGate {
     }
 
     /// Reject a rule proposal with a reason.
-    pub async fn reject(
-        &self,
-        proposal_id: &str,
-        reason: &str,
-    ) -> Result<(), PromotionError> {
+    pub async fn reject(&self, proposal_id: &str, reason: &str) -> Result<(), PromotionError> {
         let now_micros = EventEnvelope::now_micros();
 
         let event = build_learning_event(
@@ -486,11 +480,7 @@ impl PromotionGate {
     }
 
     /// Revert a previously promoted rule.
-    pub async fn revert(
-        &self,
-        rule_id: &str,
-        reason: &str,
-    ) -> Result<(), PromotionError> {
+    pub async fn revert(&self, rule_id: &str, reason: &str) -> Result<(), PromotionError> {
         let now_micros = EventEnvelope::now_micros();
 
         // Find the rule and get its proposal_id
@@ -557,11 +547,7 @@ impl PromotionGate {
             .lock()
             .map_err(|e| LagoError::Internal(format!("lock poisoned: {e}")))?;
 
-        Ok(rule_set
-            .active_rules()
-            .into_iter()
-            .cloned()
-            .collect())
+        Ok(rule_set.active_rules().into_iter().cloned().collect())
     }
 
     /// Get the full promotion history (audit trail).
@@ -603,7 +589,7 @@ impl PromotionGate {
             other => {
                 return Err(PromotionError::PolicyConflict(format!(
                     "unknown decision kind: {other}"
-                )))
+                )));
             }
         };
 
@@ -928,12 +914,9 @@ mod tests {
 
     async fn setup_gate(config: PromotionConfig) -> PromotionGate {
         let dir = tempfile::tempdir().unwrap();
-        let journal = Arc::new(
-            lago_journal::RedbJournal::open(dir.path().join("test.redb")).unwrap(),
-        );
-        let blob_store = Arc::new(
-            BlobStore::from_path(dir.path().join("blobs")).unwrap(),
-        );
+        let journal =
+            Arc::new(lago_journal::RedbJournal::open(dir.path().join("test.redb")).unwrap());
+        let blob_store = Arc::new(BlobStore::from_path(dir.path().join("blobs")).unwrap());
         let policy = Arc::new(Mutex::new(PolicyEngine::new()));
 
         // Create session
