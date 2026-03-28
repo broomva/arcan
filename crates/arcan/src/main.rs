@@ -354,7 +354,7 @@ fn run_serve(
     data_dir: &Path,
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
-    tokio_runtime: tokio::runtime::Runtime,
+    tokio_runtime: &tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
     // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
     // on yet.  This means:
@@ -1134,7 +1134,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
             );
 
-            run_serve(&data_dir, &resolved, cli.console_dir, tokio_runtime)
+            run_serve(&data_dir, &resolved, cli.console_dir, &tokio_runtime)
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)
