@@ -7,30 +7,37 @@
 //!   created by migration `0001_sandbox_metadata.sql`).  Events are sent to a
 //!   background tokio task via an unbounded channel so `emit()` is always
 //!   synchronous and cheap.
+//! - [`LagoSandboxEventSink::spawn_with_manifest`] — full sink with blob store
+//!   and manifest sync for `FileWritten` events.
 //!
 //! # Schema
 //!
 //! Migration:
 //! `apps/chatOS/packages/db/drizzle/0001_sandbox_metadata.sql`
 
-use arcan_sandbox::{SandboxEvent, SandboxEventKind, SandboxEventSink};
+use std::sync::{Arc, Mutex};
+
+use arcan_sandbox::{SandboxEvent, SandboxEventKind, SandboxEventSink, SandboxProvider};
+use lago_store::BlobStore;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::sandbox_manifest::{FileWrittenParams, SandboxManifest, sync_file_written};
+
 // ── LagoSandboxEventSink ──────────────────────────────────────────────────────
 
-/// An [`arcan_sandbox::SandboxEventSink`] that persists events to Postgres.
+/// An [`arcan_sandbox::SandboxEventSink`] that persists events to Postgres
+/// and optionally syncs file content to the Lago blob store.
 ///
 /// Uses an unbounded `mpsc` channel so `emit()` never blocks.  The background
 /// task runs sqlx queries against the three sandbox metadata tables.
 ///
 /// # Construction
 ///
-/// ```rust,ignore
-/// let pool = PgPool::connect(&database_url).await?;
-/// let sink = LagoSandboxEventSink::spawn(pool);
-/// ```
+/// - [`LagoSandboxEventSink::spawn`] — Postgres persistence only.
+/// - [`LagoSandboxEventSink::spawn_with_manifest`] — Postgres + blob store
+///   + in-memory file manifest sync for `FileWritten` events.
 pub struct LagoSandboxEventSink {
     tx: mpsc::UnboundedSender<SandboxEvent>,
 }
@@ -60,6 +67,70 @@ impl LagoSandboxEventSink {
         });
 
         Self { tx }
+    }
+
+    /// Spawn a full sink with Postgres persistence + Lago blob store +
+    /// in-memory file manifest.
+    ///
+    /// On `FileWritten` events the background task calls
+    /// `provider.read_file()` and stores the content in `blob_store`
+    /// (content-addressed, deduplicated). If `read_file` is not supported by
+    /// the provider, the manifest entry is still recorded using the SHA-256
+    /// hash pre-computed by [`JournaledSandboxProvider`].
+    ///
+    /// Returns both the sink and a shared handle to the manifest so callers
+    /// can query it.
+    pub fn spawn_with_manifest(
+        pool: PgPool,
+        blob_store: Arc<BlobStore>,
+        provider: Arc<dyn SandboxProvider>,
+    ) -> (Self, Arc<Mutex<SandboxManifest>>) {
+        let manifest = Arc::new(Mutex::new(SandboxManifest::new()));
+        let manifest_bg = Arc::clone(&manifest);
+        let (tx, mut rx) = mpsc::unbounded_channel::<SandboxEvent>();
+
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                // Always persist to Postgres.
+                if let Err(e) = write_event(&pool, &event).await {
+                    warn!(
+                        sandbox_id = %event.sandbox_id,
+                        kind = ?event.kind,
+                        error = %e,
+                        "sandbox event write failed"
+                    );
+                }
+
+                // For FileWritten, also sync to blob store + manifest.
+                if let SandboxEventKind::FileWritten {
+                    ref path,
+                    size_bytes,
+                    ref sha256,
+                    mode,
+                } = event.kind
+                {
+                    let entry = sync_file_written(FileWrittenParams {
+                        sandbox_id: &event.sandbox_id,
+                        session_id: &event.session_id,
+                        path,
+                        size_bytes,
+                        sha256,
+                        mode,
+                        provider: &provider,
+                        blob_store: &blob_store,
+                        provider_name: &event.provider,
+                    })
+                    .await;
+
+                    manifest_bg
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .upsert(entry);
+                }
+            }
+        });
+
+        (Self { tx }, manifest)
     }
 }
 
@@ -221,6 +292,10 @@ async fn write_event(pool: &PgPool, event: &SandboxEvent) -> Result<(), sqlx::Er
             .execute(pool)
             .await?;
         }
+        SandboxEventKind::FileWritten { .. } => {
+            // File manifest tracking is handled by the manifest sync path;
+            // no sandbox_instances status change needed.
+        }
     }
 
     Ok(())
@@ -235,6 +310,7 @@ fn event_kind_str(kind: &SandboxEventKind) -> &'static str {
         SandboxEventKind::Resumed { .. } => "resumed",
         SandboxEventKind::Destroyed => "destroyed",
         SandboxEventKind::Failed { .. } => "failed",
+        SandboxEventKind::FileWritten { .. } => "file_written",
     }
 }
 
@@ -285,6 +361,15 @@ mod tests {
             }),
             "failed"
         );
+        assert_eq!(
+            event_kind_str(&SandboxEventKind::FileWritten {
+                path: "/f".into(),
+                size_bytes: 0,
+                sha256: "abc".into(),
+                mode: 0o644,
+            }),
+            "file_written"
+        );
     }
 
     #[tokio::test]
@@ -295,5 +380,129 @@ mod tests {
         let sink = NoopSink;
         sink.emit(make_event(SandboxEventKind::Created));
         sink.emit(make_event(SandboxEventKind::Destroyed));
+    }
+
+    #[tokio::test]
+    async fn file_written_event_updates_manifest() {
+        use arcan_sandbox::{
+            ExecRequest, ExecResult, SandboxCapabilitySet, SandboxHandle, SandboxInfo, SandboxSpec,
+            SnapshotId,
+        };
+        use async_trait::async_trait;
+
+        struct StubReadProvider;
+
+        #[async_trait]
+        impl SandboxProvider for StubReadProvider {
+            fn name(&self) -> &'static str {
+                "stub"
+            }
+            fn capabilities(&self) -> SandboxCapabilitySet {
+                SandboxCapabilitySet::FILESYSTEM_READ | SandboxCapabilitySet::FILESYSTEM_WRITE
+            }
+            async fn create(
+                &self,
+                _: SandboxSpec,
+            ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
+                unreachable!("not called in test")
+            }
+            async fn resume(
+                &self,
+                _: &SandboxId,
+            ) -> Result<SandboxHandle, arcan_sandbox::SandboxError> {
+                unreachable!("not called in test")
+            }
+            async fn run(
+                &self,
+                _: &SandboxId,
+                _: ExecRequest,
+            ) -> Result<ExecResult, arcan_sandbox::SandboxError> {
+                unreachable!("not called in test")
+            }
+            async fn snapshot(
+                &self,
+                _: &SandboxId,
+            ) -> Result<SnapshotId, arcan_sandbox::SandboxError> {
+                unreachable!("not called in test")
+            }
+            async fn destroy(&self, _: &SandboxId) -> Result<(), arcan_sandbox::SandboxError> {
+                Ok(())
+            }
+            async fn list(&self) -> Result<Vec<SandboxInfo>, arcan_sandbox::SandboxError> {
+                Ok(vec![])
+            }
+            async fn read_file(
+                &self,
+                _: &SandboxId,
+                _: &str,
+            ) -> Result<Vec<u8>, arcan_sandbox::SandboxError> {
+                Ok(b"content".to_vec())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = Arc::new(BlobStore::open(dir.path().join("blobs")).unwrap());
+        let provider: Arc<dyn SandboxProvider> = Arc::new(StubReadProvider);
+        // Use a pool-less path: test only the manifest sync by creating
+        // a logging-only background task that doesn't need Postgres.
+        let manifest = Arc::new(Mutex::new(SandboxManifest::new()));
+        let manifest_bg = Arc::clone(&manifest);
+        let blob_store_bg = Arc::clone(&blob_store);
+        let (tx, mut rx) = mpsc::unbounded_channel::<SandboxEvent>();
+
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let SandboxEventKind::FileWritten {
+                    ref path,
+                    size_bytes,
+                    ref sha256,
+                    mode,
+                } = event.kind
+                {
+                    let entry = sync_file_written(FileWrittenParams {
+                        sandbox_id: &event.sandbox_id,
+                        session_id: &event.session_id,
+                        path,
+                        size_bytes,
+                        sha256,
+                        mode,
+                        provider: &provider,
+                        blob_store: &blob_store_bg,
+                        provider_name: &event.provider,
+                    })
+                    .await;
+
+                    manifest_bg
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .upsert(entry);
+                }
+            }
+        });
+
+        tx.send(SandboxEvent::now(
+            SandboxId("box-1".into()),
+            "agent-1",
+            "sess-1",
+            SandboxEventKind::FileWritten {
+                path: "/workspace/hello.py".into(),
+                size_bytes: 7,
+                sha256: "some-hash".into(),
+                mode: 0o644,
+            },
+            "stub",
+        ))
+        .unwrap();
+
+        // Allow the background task to process.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let m = manifest.lock().unwrap();
+        let entry = m.get(&SandboxId("box-1".into()), "/workspace/hello.py");
+        assert!(entry.is_some());
+        let entry = entry.unwrap();
+        assert_eq!(entry.path, "/workspace/hello.py");
+        assert_eq!(entry.session_id, "sess-1");
+        assert!(entry.blob_hash.is_some());
     }
 }

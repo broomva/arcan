@@ -14,15 +14,20 @@ description = "Provider-agnostic SandboxProvider trait and core protocol types f
 aios-protocol.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+hex.workspace = true
 bitflags.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

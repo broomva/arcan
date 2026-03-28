@@ -40,4 +40,5 @@ futures-util.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile = "3"

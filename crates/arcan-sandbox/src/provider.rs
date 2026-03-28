@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use crate::capability::SandboxCapabilitySet;
 use crate::error::SandboxError;
 use crate::types::{
-    ExecRequest, ExecResult, SandboxHandle, SandboxId, SandboxInfo, SandboxSpec, SnapshotId,
+    ExecRequest, ExecResult, FileWrite, SandboxHandle, SandboxId, SandboxInfo, SandboxSpec,
+    SnapshotId,
 };
 
 /// Provider-agnostic interface for sandbox lifecycle management.
@@ -75,4 +76,30 @@ pub trait SandboxProvider: Send + Sync + 'static {
     ///
     /// Used by `SandboxService` for periodic reconciliation (BRO-253).
     async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError>;
+
+    /// Write one or more files into the sandbox filesystem.
+    ///
+    /// Providers that do not support this operation return
+    /// [`SandboxError::NotSupported`] via this default implementation.
+    async fn write_files(
+        &self,
+        _id: &SandboxId,
+        _files: Vec<FileWrite>,
+    ) -> Result<(), SandboxError> {
+        Err(SandboxError::NotSupported {
+            provider: self.name(),
+            reason: "write_files",
+        })
+    }
+
+    /// Read the raw bytes of a file from the sandbox filesystem.
+    ///
+    /// Providers that do not support this operation return
+    /// [`SandboxError::NotSupported`] via this default implementation.
+    async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, SandboxError> {
+        Err(SandboxError::NotSupported {
+            provider: self.name(),
+            reason: "read_file",
+        })
+    }
 }

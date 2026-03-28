@@ -30,6 +30,7 @@
 pub mod capability;
 pub mod error;
 pub mod event;
+pub mod journaled;
 pub mod provider;
 pub mod service;
 pub mod session_store;
@@ -40,6 +41,7 @@ pub mod types;
 pub use capability::SandboxCapabilitySet;
 pub use error::SandboxError;
 pub use event::{SandboxEvent, SandboxEventKind};
+pub use journaled::JournaledSandboxProvider;
 pub use provider::SandboxProvider;
 pub use service::{SandboxRegistry, SandboxService, SandboxServicePolicy, SandboxSession};
 pub use session_store::{
@@ -48,6 +50,6 @@ pub use session_store::{
 };
 pub use sink::{FanoutSink, NoopSink, SandboxEventSink};
 pub use types::{
-    ExecRequest, ExecResult, PersistencePolicy, SandboxHandle, SandboxId, SandboxInfo,
+    ExecRequest, ExecResult, FileWrite, PersistencePolicy, SandboxHandle, SandboxId, SandboxInfo,
     SandboxResources, SandboxSpec, SandboxStatus, SnapshotId,
 };

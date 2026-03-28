@@ -41,6 +41,17 @@ pub enum SandboxEventKind {
         /// Human-readable description of the failure.
         reason: String,
     },
+    /// One or more files were written into the sandbox filesystem.
+    FileWritten {
+        /// Absolute path written inside the sandbox.
+        path: String,
+        /// Content size in bytes.
+        size_bytes: u64,
+        /// Hex-encoded SHA-256 of the file content at write time.
+        sha256: String,
+        /// Unix permission bits.
+        mode: u32,
+    },
 }
 
 /// A single lifecycle event for a sandbox, ready to be persisted.
