@@ -209,20 +209,26 @@ fn run_agent_loop(
                 (usage.input_tokens as f64 * 3.0 + usage.output_tokens as f64 * 15.0) / 1_000_000.0;
         }
 
-        // Process directives
+        // Process directives — accumulate text and collect tool calls.
+        // Text is already printed by the streaming callback if the provider
+        // supports streaming; only print here for non-streaming providers.
+        let is_streaming = provider.supports_streaming();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         for directive in &turn.directives {
             match directive {
                 ModelDirective::Text { delta } => {
                     accumulated_text.push_str(delta);
-                    // Print text as it arrives (non-streaming providers)
-                    print!("{delta}");
-                    let _ = std::io::stdout().flush();
+                    if !is_streaming {
+                        print!("{delta}");
+                        let _ = std::io::stdout().flush();
+                    }
                 }
                 ModelDirective::FinalAnswer { text } => {
                     accumulated_text.push_str(text);
-                    print!("{text}");
-                    let _ = std::io::stdout().flush();
+                    if !is_streaming {
+                        print!("{text}");
+                        let _ = std::io::stdout().flush();
+                    }
                 }
                 ModelDirective::ToolCall { call } => {
                     tool_calls.push(call.clone());

@@ -235,6 +235,177 @@ impl Provider for AnthropicProvider {
         &self.config.model
     }
 
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+
+    fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        on_text: &dyn Fn(&str),
+    ) -> Result<ModelTurn, CoreError> {
+        let (system_prompt, api_messages) = self.build_messages(&request.messages);
+        let api_tools = self.convert_tools(&request.tools);
+
+        let mut body = json!({
+            "model": self.config.model,
+            "max_tokens": self.config.max_tokens,
+            "messages": api_messages,
+            "stream": true,
+        });
+
+        if let Some(system) = system_prompt {
+            body["system"] = json!(system);
+        }
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&api_tools)
+                .map_err(|e| CoreError::Provider(format!("failed to serialize tools: {e}")))?;
+        }
+
+        let url = format!("{}/v1/messages", self.config.base_url);
+        let api_key = self
+            .config
+            .credential
+            .auth_header()
+            .map_err(|e| CoreError::Provider(format!("credential error: {e}")))?;
+
+        let response = self
+            .client
+            .post(&url)
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| CoreError::Provider(format!("streaming request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(CoreError::Provider(format!(
+                "Anthropic streaming API returned {status}: {body_text}"
+            )));
+        }
+
+        // Parse SSE stream line by line
+        use std::io::BufRead;
+        let reader = std::io::BufReader::new(response);
+
+        let mut directives = Vec::new();
+        let mut tool_inputs: std::collections::BTreeMap<u32, (String, String, String)> =
+            std::collections::BTreeMap::new(); // index → (id, name, json_accum)
+        let mut stop_reason = ModelStopReason::Unknown;
+        let mut usage: Option<TokenUsage> = None;
+        let mut current_event_type = String::new();
+
+        for line in reader.lines() {
+            let line =
+                line.map_err(|e| CoreError::Provider(format!("streaming read error: {e}")))?;
+
+            // SSE format: "event: <type>" then "data: <json>"
+            if let Some(event_type) = line.strip_prefix("event: ") {
+                current_event_type = event_type.to_string();
+                continue;
+            }
+
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+
+            let v: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            match current_event_type.as_str() {
+                "message_start" => {
+                    if let Some(u) = v.get("message").and_then(|m| m.get("usage")) {
+                        let input_tokens = u["input_tokens"].as_u64().unwrap_or(0);
+                        usage = Some(TokenUsage {
+                            input_tokens,
+                            output_tokens: 0,
+                            cache_read_tokens: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                            cache_creation_tokens: u["cache_creation_input_tokens"]
+                                .as_u64()
+                                .unwrap_or(0),
+                        });
+                    }
+                }
+                "content_block_start" => {
+                    let index = v["index"].as_u64().unwrap_or(0) as u32;
+                    if let Some(cb) = v.get("content_block") {
+                        if cb["type"].as_str() == Some("tool_use") {
+                            let id = cb["id"].as_str().unwrap_or_default().to_string();
+                            let name = cb["name"].as_str().unwrap_or_default().to_string();
+                            tool_inputs.insert(index, (id, name, String::new()));
+                        }
+                    }
+                }
+                "content_block_delta" => {
+                    let index = v["index"].as_u64().unwrap_or(0) as u32;
+                    if let Some(delta) = v.get("delta") {
+                        match delta["type"].as_str() {
+                            Some("text_delta") => {
+                                if let Some(text) = delta["text"].as_str() {
+                                    on_text(text);
+                                    directives.push(ModelDirective::Text {
+                                        delta: text.to_string(),
+                                    });
+                                }
+                            }
+                            Some("input_json_delta") => {
+                                if let Some(json_chunk) = delta["partial_json"].as_str() {
+                                    if let Some(entry) = tool_inputs.get_mut(&index) {
+                                        entry.2.push_str(json_chunk);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                "content_block_stop" => {
+                    let index = v["index"].as_u64().unwrap_or(0) as u32;
+                    if let Some((id, name, json_str)) = tool_inputs.remove(&index) {
+                        let input: Value = serde_json::from_str(&json_str)
+                            .unwrap_or(Value::Object(Default::default()));
+                        directives.push(ModelDirective::ToolCall {
+                            call: ToolCall {
+                                call_id: id,
+                                tool_name: name,
+                                input,
+                            },
+                        });
+                    }
+                }
+                "message_delta" => {
+                    if let Some(delta) = v.get("delta") {
+                        stop_reason = match delta["stop_reason"].as_str() {
+                            Some("end_turn") => ModelStopReason::EndTurn,
+                            Some("tool_use") => ModelStopReason::ToolUse,
+                            Some("max_tokens") => ModelStopReason::MaxTokens,
+                            _ => ModelStopReason::Unknown,
+                        };
+                    }
+                    if let Some(u) = v.get("usage") {
+                        if let Some(ref mut existing) = usage {
+                            existing.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ModelTurn {
+            directives,
+            stop_reason,
+            usage,
+        })
+    }
+
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
         let (system_prompt, api_messages) = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
