@@ -4,6 +4,7 @@
 //! built-in commands (`/help`, `/clear`, `/cost`, `/quit`, `/diff`).
 
 mod clear;
+mod compact;
 mod cost;
 mod diff;
 mod help;
@@ -19,6 +20,8 @@ pub enum CommandResult {
     Output(String),
     /// Clear the conversation history and start a new session.
     ClearSession,
+    /// Compact conversation history to reduce token usage.
+    CompactRequested,
     /// Exit the REPL.
     Quit,
     /// An error occurred during command execution.
@@ -161,6 +164,7 @@ impl CommandRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(help::HelpCommand));
         registry.register(Box::new(clear::ClearCommand));
+        registry.register(Box::new(compact::CompactCommand));
         registry.register(Box::new(cost::CostCommand));
         registry.register(Box::new(quit::QuitCommand));
         registry.register(Box::new(diff::DiffCommand));
@@ -268,6 +272,7 @@ mod tests {
         let text = registry.help_text();
         assert!(text.contains("/help"));
         assert!(text.contains("/clear"));
+        assert!(text.contains("/compact"));
         assert!(text.contains("/cost"));
         assert!(text.contains("/quit"));
         assert!(text.contains("/diff"));
