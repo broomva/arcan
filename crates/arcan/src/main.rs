@@ -178,6 +178,10 @@ enum Command {
         /// Resume the most recent session (or the one specified by --session)
         #[arg(short, long)]
         resume: bool,
+
+        /// Session budget in USD. Warns at 80%, stops new LLM calls at 100%.
+        #[arg(short, long)]
+        budget: Option<f64>,
     },
 }
 
@@ -1253,6 +1257,7 @@ fn main() -> anyhow::Result<()> {
             session,
             yes,
             resume,
+            budget,
         }) => {
             let resolved = config::resolve(
                 &file_config,
@@ -1275,7 +1280,14 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
-            shell::run_shell(&data_dir, &resolved, session.as_deref(), yes, resume)
+            shell::run_shell(
+                &data_dir,
+                &resolved,
+                session.as_deref(),
+                yes,
+                resume,
+                budget,
+            )
         }
         Some(Command::Status) => {
             let resolved = config::resolve(

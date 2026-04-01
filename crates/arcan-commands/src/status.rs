@@ -19,6 +19,44 @@ impl Command for StatusCommand {
 
     fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let total_tokens = ctx.session_input_tokens + ctx.session_output_tokens;
+
+        // Nous safety scores line
+        let safety_line = if ctx.nous_scores.is_empty() {
+            "  Safety:   (no evaluations yet)".to_string()
+        } else {
+            let scores_str: Vec<String> = ctx
+                .nous_scores
+                .iter()
+                .map(|(name, val)| format!("{name}: {val:.2}"))
+                .collect();
+            format!("  Safety:   {}", scores_str.join(", "))
+        };
+
+        // Economic / budget line
+        let economic_line = match (&ctx.economic_mode, ctx.budget_usd) {
+            (Some(mode), Some(budget)) => {
+                format!(
+                    "  Economic: {mode} (${:.4} / ${:.2} budget)",
+                    ctx.session_cost_usd, budget
+                )
+            }
+            (Some(mode), None) => {
+                format!("  Economic: {mode} (${:.4} spent)", ctx.session_cost_usd)
+            }
+            (None, Some(budget)) => {
+                format!(
+                    "  Economic: ${:.4} / ${:.2} budget",
+                    ctx.session_cost_usd, budget
+                )
+            }
+            (None, None) => {
+                format!(
+                    "  Economic: ${:.4} spent (no budget set)",
+                    ctx.session_cost_usd
+                )
+            }
+        };
+
         let output = format!(
             "Session status:\n\
              \n  Provider: {}\
@@ -28,7 +66,9 @@ impl Command for StatusCommand {
              \n  Skills:   {}\
              \n  Turns:    {}\
              \n  Tokens:   {} (in: {}, out: {})\
-             \n  Cost:     ${:.4}",
+             \n  Cost:     ${:.4}\
+             \n{safety_line}\
+             \n{economic_line}",
             ctx.provider_name,
             ctx.model_name,
             ctx.tools_count,
@@ -72,6 +112,64 @@ mod tests {
                 assert!(text.contains("Skills:   2"));
                 assert!(text.contains("Turns:    5"));
                 assert!(text.contains("1500"));
+                assert!(text.contains("Safety:"));
+                assert!(text.contains("Economic:"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_shows_nous_scores() {
+        let cmd = StatusCommand;
+        let mut ctx = CommandContext {
+            nous_scores: vec![
+                ("safety_compliance".to_string(), 0.95),
+                ("tool_correctness".to_string(), 1.0),
+            ],
+            ..Default::default()
+        };
+        match cmd.execute("", &mut ctx) {
+            CommandResult::Output(text) => {
+                assert!(text.contains("safety_compliance: 0.95"));
+                assert!(text.contains("tool_correctness: 1.00"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_shows_economic_mode_with_budget() {
+        let cmd = StatusCommand;
+        let mut ctx = CommandContext {
+            session_cost_usd: 0.0741,
+            budget_usd: Some(5.0),
+            economic_mode: Some("Sovereign".to_string()),
+            ..Default::default()
+        };
+        match cmd.execute("", &mut ctx) {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Sovereign"));
+                assert!(text.contains("$0.0741"));
+                assert!(text.contains("$5.00 budget"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_shows_budget_without_autonomic() {
+        let cmd = StatusCommand;
+        let mut ctx = CommandContext {
+            session_cost_usd: 1.25,
+            budget_usd: Some(10.0),
+            ..Default::default()
+        };
+        match cmd.execute("", &mut ctx) {
+            CommandResult::Output(text) => {
+                assert!(text.contains("$1.25"));
+                assert!(text.contains("$10.00 budget"));
+                assert!(!text.contains("Sovereign"));
             }
             other => panic!("expected Output, got {other:?}"),
         }

@@ -32,6 +32,7 @@ use lago_core::event::{EventEnvelope, EventPayload};
 use lago_core::id::{BranchId, EventId, SessionId as LagoSessionId};
 use lago_core::session::{Session as LagoSession, SessionConfig};
 use lago_journal::RedbJournal;
+use nous_core::{EvalContext, EvalHook, EvaluatorRegistry};
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
@@ -51,6 +52,51 @@ const COMPACT_THRESHOLD: usize = 100_000;
 
 /// Target token count after compaction.
 const COMPACT_TARGET: usize = 50_000;
+
+/// Estimate cost in USD for a model call based on token usage and model name.
+///
+/// Uses published Claude pricing (per million tokens):
+/// - Opus: $15 input, $75 output
+/// - Sonnet: $3 input, $15 output
+/// - Haiku: $0.25 input, $1.25 output
+fn estimate_cost(input_tokens: u64, output_tokens: u64, model: &str) -> f64 {
+    let (input_rate, output_rate) = match model {
+        m if m.contains("opus") => (15.0, 75.0),
+        m if m.contains("sonnet") => (3.0, 15.0),
+        m if m.contains("haiku") => (0.25, 1.25),
+        _ => (3.0, 15.0), // default to sonnet pricing
+    };
+    (input_tokens as f64 * input_rate + output_tokens as f64 * output_rate) / 1_000_000.0
+}
+
+/// Query the Autonomic daemon for the current economic mode.
+///
+/// Best-effort: returns `None` on any failure (timeout, unreachable, etc.).
+fn query_autonomic_mode(autonomic_url: &str) -> Option<String> {
+    // Use a short timeout — this is advisory and must not block the REPL.
+    let url = format!("{}/gating/shell", autonomic_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp = client.get(&url).send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().ok()?;
+    // The gating response contains economic_mode or economic.mode depending on version.
+    body.get("economic_mode")
+        .or_else(|| body.pointer("/economic/mode"))
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            // Capitalize first letter for display
+            let mut c = s.chars();
+            match c.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                None => s.to_string(),
+            }
+        })
+}
 
 /// Estimate total token count for a message list using a character-based heuristic.
 ///
@@ -417,6 +463,7 @@ pub fn run_shell(
     session: Option<&str>,
     yes: bool,
     resume: bool,
+    budget: Option<f64>,
 ) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
@@ -543,6 +590,18 @@ pub fn run_shell(
     let commands = CommandRegistry::with_builtins();
     let tool_defs = registry.definitions();
 
+    // --- Nous eval registry (BRO-362) ---
+    let nous_registry: Option<EvaluatorRegistry> = match nous_heuristics::default_registry() {
+        Ok(reg) => {
+            eprintln!("[nous] {} evaluators active", reg.len());
+            Some(reg)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Nous eval init failed (non-fatal)");
+            None
+        }
+    };
+
     // --- Hook registry ---
     let hook_registry = &resolved.hook_registry;
     let session_id_str = lago_session_id.to_string();
@@ -569,6 +628,12 @@ pub fn run_shell(
         .model
         .clone()
         .unwrap_or_else(|| "default".to_string());
+    // --- Autonomic economic mode (BRO-365) ---
+    let economic_mode = resolved
+        .autonomic_url
+        .as_deref()
+        .and_then(query_autonomic_mode);
+
     let mut cmd_ctx = CommandContext {
         workspace: workspace_root,
         permission_mode,
@@ -579,6 +644,8 @@ pub fn run_shell(
         tools_count: tool_defs.len(),
         hooks_count: hook_registry.len(),
         skill_names: skill_names.clone(),
+        budget_usd: budget,
+        economic_mode,
         ..Default::default()
     };
 
@@ -638,6 +705,9 @@ pub fn run_shell(
         hook_registry.len(),
         skill_names.len(),
     );
+    if let Some(b) = budget {
+        eprintln!("Budget: ${b:.2}");
+    }
     eprintln!(
         "Session: {} | Journal: {} | Type /help for commands",
         lago_session_id,
@@ -806,6 +876,7 @@ pub fn run_shell(
             &mut cmd_ctx,
             hook_registry,
             &hook_ctx,
+            nous_registry.as_ref(),
         );
 
         match response_text {
@@ -829,6 +900,14 @@ pub fn run_shell(
                 cmd_ctx.message_count = messages.len();
                 // Extract and save key facts from this turn to persistent memory.
                 extract_and_save_memories(&messages, &memory_dir);
+
+                // --- Refresh Autonomic economic mode (BRO-365) ---
+                if resolved.autonomic_url.is_some() {
+                    cmd_ctx.economic_mode = resolved
+                        .autonomic_url
+                        .as_deref()
+                        .and_then(query_autonomic_mode);
+                }
             }
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -863,6 +942,7 @@ fn run_agent_loop(
     cmd_ctx: &mut CommandContext,
     hook_registry: &HookRegistry,
     base_hook_ctx: &HookContext,
+    nous_registry: Option<&EvaluatorRegistry>,
 ) -> anyhow::Result<String> {
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
@@ -874,6 +954,26 @@ fn run_agent_loop(
     hook_registry.fire(&HookEvent::RunStart, base_hook_ctx);
 
     for iteration in 1..=max_iterations {
+        // --- Budget enforcement (BRO-364) ---
+        if let Some(budget) = cmd_ctx.budget_usd {
+            if cmd_ctx.session_cost_usd >= budget {
+                eprintln!(
+                    "\n[budget] Session cost ${:.4} has reached the ${:.2} budget limit. Stopping.",
+                    cmd_ctx.session_cost_usd, budget
+                );
+                break;
+            }
+            let pct = cmd_ctx.session_cost_usd / budget;
+            if pct >= 0.8 {
+                eprintln!(
+                    "\n[budget] Warning: {:.0}% of ${:.2} budget consumed (${:.4} spent)",
+                    pct * 100.0,
+                    budget,
+                    cmd_ctx.session_cost_usd,
+                );
+            }
+        }
+
         let request = ProviderRequest {
             run_id: run_id.clone(),
             session_id: session_id.to_string(),
@@ -889,13 +989,12 @@ fn run_agent_loop(
             let _ = out.flush();
         })?;
 
-        // Track token usage
+        // Track token usage with per-model cost estimation (BRO-364)
         if let Some(usage) = &turn.usage {
             cmd_ctx.session_input_tokens += usage.input_tokens;
             cmd_ctx.session_output_tokens += usage.output_tokens;
-            // Rough cost estimate (Claude pricing: $3/MTok input, $15/MTok output)
             cmd_ctx.session_cost_usd +=
-                (usage.input_tokens as f64 * 3.0 + usage.output_tokens as f64 * 15.0) / 1_000_000.0;
+                estimate_cost(usage.input_tokens, usage.output_tokens, &cmd_ctx.model_name);
         }
 
         // Process directives — accumulate text and collect tool calls.
@@ -1092,7 +1191,7 @@ fn run_agent_loop(
             })
         };
 
-        // --- Phase 3: sequential post-tool hooks + assemble result blocks ---
+        // --- Phase 3: sequential post-tool hooks + Nous eval + assemble result blocks ---
         for (i, content, is_error) in parallel_results {
             let call = &tool_calls[i];
             let display = if content.len() > 200 {
@@ -1112,6 +1211,57 @@ fn run_agent_loop(
                     hook_registry.fire(&HookEvent::PostToolUseFailure, tool_hook_ctx);
                 } else {
                     hook_registry.fire(&HookEvent::PostToolUse, tool_hook_ctx);
+                }
+            }
+
+            // --- Nous post-tool evaluation (BRO-362) ---
+            if let Some(registry) = nous_registry {
+                let mut eval_ctx = EvalContext::new(session_id);
+                eval_ctx.run_id = Some(run_id.clone());
+                eval_ctx.iteration = Some(iteration);
+                eval_ctx.tool_name = Some(call.tool_name.clone());
+                eval_ctx.tool_errored = Some(is_error);
+                eval_ctx.tool_call_count = Some(cmd_ctx.tool_call_count as u32);
+
+                for evaluator in registry.evaluators_for(EvalHook::PostToolCall) {
+                    match evaluator.evaluate(&eval_ctx) {
+                        Ok(scores) => {
+                            for score in &scores {
+                                // Update running scores in cmd_ctx (BRO-363)
+                                // Replace existing score for this evaluator or add new.
+                                if let Some(existing) = cmd_ctx
+                                    .nous_scores
+                                    .iter_mut()
+                                    .find(|(name, _)| name == &score.evaluator)
+                                {
+                                    existing.1 = score.value;
+                                } else {
+                                    cmd_ctx
+                                        .nous_scores
+                                        .push((score.evaluator.clone(), score.value));
+                                }
+
+                                if score.value < 0.5 {
+                                    eprintln!(
+                                        "[nous] Warning: {}: {:.2} — {}",
+                                        score.evaluator,
+                                        score.value,
+                                        score
+                                            .explanation
+                                            .as_deref()
+                                            .unwrap_or("score below threshold"),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                evaluator = evaluator.name(),
+                                error = %e,
+                                "nous eval error (non-fatal)"
+                            );
+                        }
+                    }
                 }
             }
 
@@ -1446,5 +1596,49 @@ mod tests {
         extract_and_save_memories(&[], &dir);
         // No file should be created for empty messages
         assert!(!dir.join("session_summary.md").exists());
+    }
+
+    // --- BRO-364: estimate_cost tests ---
+
+    #[test]
+    fn test_estimate_cost_opus() {
+        let cost = estimate_cost(1_000_000, 1_000_000, "claude-opus-4-20250514");
+        // $15 input + $75 output = $90
+        assert!((cost - 90.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_estimate_cost_sonnet() {
+        let cost = estimate_cost(1_000_000, 1_000_000, "claude-sonnet-4-20250514");
+        // $3 input + $15 output = $18
+        assert!((cost - 18.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_estimate_cost_haiku() {
+        let cost = estimate_cost(1_000_000, 1_000_000, "claude-haiku-4-20250514");
+        // $0.25 input + $1.25 output = $1.50
+        assert!((cost - 1.50).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_estimate_cost_unknown_defaults_to_sonnet() {
+        let cost = estimate_cost(1_000_000, 1_000_000, "some-unknown-model");
+        // Should use sonnet pricing: $3 + $15 = $18
+        assert!((cost - 18.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_estimate_cost_zero_tokens() {
+        let cost = estimate_cost(0, 0, "claude-sonnet-4-20250514");
+        assert!((cost).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_cost_typical_turn() {
+        // A typical turn: 5000 input, 1000 output, sonnet
+        let cost = estimate_cost(5000, 1000, "claude-sonnet-4-20250514");
+        // (5000 * 3 + 1000 * 15) / 1_000_000 = (15000 + 15000) / 1_000_000 = 0.03
+        assert!((cost - 0.03).abs() < 0.001);
     }
 }

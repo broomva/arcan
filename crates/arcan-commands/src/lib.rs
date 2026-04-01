@@ -75,6 +75,13 @@ pub struct CommandContext {
     pub hooks_count: usize,
     /// Names of discovered skills.
     pub skill_names: Vec<String>,
+    /// Latest Nous evaluation scores: `(evaluator_name, score_value)`.
+    pub nous_scores: Vec<(String, f64)>,
+    /// Session budget in USD (set via `--budget`). `None` means unlimited.
+    pub budget_usd: Option<f64>,
+    /// Autonomic economic mode label (e.g. "Sovereign", "Conserving").
+    /// Populated when `ARCAN_AUTONOMIC_URL` is configured.
+    pub economic_mode: Option<String>,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -377,6 +384,9 @@ mod tests {
         assert_eq!(ctx.tools_count, 0);
         assert_eq!(ctx.hooks_count, 0);
         assert!(ctx.skill_names.is_empty());
+        assert!(ctx.nous_scores.is_empty());
+        assert!(ctx.budget_usd.is_none());
+        assert!(ctx.economic_mode.is_none());
     }
 
     #[test]
