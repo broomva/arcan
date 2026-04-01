@@ -2,6 +2,7 @@
 //!
 //! Resolution order: hardcoded defaults → global config → project-local config → env vars → CLI flags.
 
+use arcan_core::hooks::{HookConfig, HookRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,9 @@ pub struct ArcanConfig {
     pub spaces: SpacesConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
+    /// User-configurable hooks that fire on agent lifecycle events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,6 +99,8 @@ pub struct ResolvedConfig {
     pub skills_enabled: bool,
     /// Whether to write the skill registry cache.
     pub skills_write_registry: bool,
+    /// Hook registry built from config.
+    pub hook_registry: HookRegistry,
 }
 
 impl ArcanConfig {
@@ -161,6 +167,11 @@ impl ArcanConfig {
         }
         if other.skills.write_registry.is_some() {
             self.skills.write_registry = other.skills.write_registry;
+        }
+
+        // Hooks: append (both global and local hooks fire)
+        if !other.hooks.is_empty() {
+            self.hooks.extend(other.hooks.iter().cloned());
         }
     }
 
@@ -426,6 +437,9 @@ pub fn resolve(
     let skills_enabled = config.skills.enabled.unwrap_or(true);
     let skills_write_registry = config.skills.write_registry.unwrap_or(true);
 
+    // Hooks: build registry from config
+    let hook_registry = HookRegistry::from_configs(config.hooks.clone());
+
     ResolvedConfig {
         provider,
         model,
@@ -441,6 +455,7 @@ pub fn resolve(
         skill_dirs,
         skills_enabled,
         skills_write_registry,
+        hook_registry,
     }
 }
 
@@ -508,6 +523,17 @@ pub fn default_config_content() -> String {
 # enabled = true
 # write_registry = true
 # dirs = [".arcan/skills", ".agents/skills", "~/.agents/skills"]
+
+# [[hooks]]
+# event = "pre_tool_use"
+# matcher = "bash"
+# command = "echo 'About to run bash: {tool_name}'"
+# timeout_secs = 5
+# blocking = true
+
+# [[hooks]]
+# event = "run_end"
+# command = "curl -s http://localhost:8080/webhook"
 "#
     .to_owned()
 }
