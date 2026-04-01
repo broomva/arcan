@@ -3,10 +3,16 @@
 //! `arcan shell` builds the provider, tool registry, and command registry
 //! in-process, then loops: read line, dispatch slash commands or send to the
 //! LLM provider, execute tools inline, print response.
+//!
+//! Since BRO-356, the shell also opens a Lago `RedbJournal` for persistent
+//! session history.  Events are appended best-effort (errors logged, never
+//! fatal) so an on-disk failure cannot break the interactive experience.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use aios_protocol::sandbox::NetworkPolicy;
 use arcan_commands::{
@@ -21,6 +27,11 @@ use arcan_core::runtime::{Provider, ProviderRequest, ToolContext, ToolRegistry};
 use arcan_core::state::AppState;
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, LocalFs, SandboxPolicy};
+use lago_core::Journal;
+use lago_core::event::{EventEnvelope, EventPayload};
+use lago_core::id::{BranchId, EventId, SessionId as LagoSessionId};
+use lago_core::session::{Session as LagoSession, SessionConfig};
+use lago_journal::RedbJournal;
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
@@ -97,6 +108,133 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
     kept.extend(tail);
 
     *messages = kept;
+}
+
+// ---------------------------------------------------------------------------
+// Lago journal helpers (BRO-356 / BRO-357)
+// ---------------------------------------------------------------------------
+
+/// Sequence counter shared across the shell session.
+struct SeqCounter(AtomicU64);
+
+impl SeqCounter {
+    fn new(start: u64) -> Self {
+        Self(AtomicU64::new(start))
+    }
+
+    fn next(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
+/// Append a single event to the journal, **best-effort**.
+fn append_event_sync(journal: &dyn Journal, event: EventEnvelope) {
+    let fut = journal.append(event);
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(fut),
+            Err(e) => {
+                tracing::warn!("lago: cannot create fallback runtime: {e}");
+                return;
+            }
+        },
+    };
+    if let Err(e) = result {
+        tracing::warn!("lago: failed to append event: {e}");
+    }
+}
+
+/// Build an `EventEnvelope` for a chat message.
+fn make_message_event(
+    session_id: &LagoSessionId,
+    branch_id: &BranchId,
+    seq: &SeqCounter,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+) -> EventEnvelope {
+    EventEnvelope {
+        event_id: EventId::new(),
+        session_id: session_id.clone(),
+        branch_id: branch_id.clone(),
+        run_id: None,
+        seq: seq.next(),
+        timestamp: EventEnvelope::now_micros(),
+        parent_id: None,
+        payload: EventPayload::Message {
+            role: role.to_string(),
+            content: content.to_string(),
+            model: model.map(str::to_string),
+            token_usage: None,
+        },
+        metadata: HashMap::new(),
+        schema_version: 1,
+    }
+}
+
+/// Register (or update) a Lago session record.
+fn put_session_sync(journal: &dyn Journal, session: LagoSession) {
+    let fut = journal.put_session(session);
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => return,
+    };
+    if let Err(e) = result {
+        tracing::warn!("lago: failed to put session: {e}");
+    }
+}
+
+/// List all sessions from the journal (sync wrapper).
+fn list_sessions_sync(journal: &dyn Journal) -> Vec<LagoSession> {
+    let fut = journal.list_sessions();
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => return Vec::new(),
+    };
+    result.unwrap_or_default()
+}
+
+/// Replay persisted messages from a Lago session into a `Vec<ChatMessage>`.
+///
+/// Returns the messages and the highest sequence number seen.
+fn replay_session_messages(
+    journal: &dyn Journal,
+    session_id: &LagoSessionId,
+    branch_id: &BranchId,
+) -> (Vec<ChatMessage>, u64) {
+    use lago_core::EventQuery;
+
+    let query = EventQuery::new()
+        .session(session_id.clone())
+        .branch(branch_id.clone());
+
+    let fut = journal.read(query);
+    let events = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let mut messages = Vec::new();
+    let mut max_seq: u64 = 0;
+
+    for env in &events {
+        if env.seq > max_seq {
+            max_seq = env.seq;
+        }
+        if let EventPayload::Message { role, content, .. } = &env.payload {
+            let msg = match role.as_str() {
+                "system" => ChatMessage::system(content),
+                "user" => ChatMessage::user(content),
+                "assistant" => ChatMessage::assistant(content),
+                "tool" => ChatMessage::tool(content),
+                _ => ChatMessage::user(content),
+            };
+            messages.push(msg);
+        }
+    }
+
+    (messages, max_seq)
 }
 
 /// Load memory context from `.arcan/memory/*.md` files.
@@ -276,10 +414,68 @@ fn is_memory_signal(line: &str) -> bool {
 pub fn run_shell(
     data_dir: &Path,
     resolved: &ResolvedConfig,
-    _session: Option<String>,
+    session: Option<&str>,
     yes: bool,
+    resume: bool,
 ) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
+
+    // --- Lago journal (BRO-356) ---
+    let journal_path = data_dir.join("journal.redb");
+    let journal: Arc<dyn Journal> = Arc::new(
+        RedbJournal::open(&journal_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open Lago journal: {e}"))?,
+    );
+    let branch_id = BranchId::from_string("main");
+
+    // Determine session ID: explicit > resume (most recent) > new
+    let (lago_session_id, resuming) = if let Some(sid) = session {
+        (LagoSessionId::from_string(sid), resume)
+    } else if resume {
+        let sessions = list_sessions_sync(journal.as_ref());
+        if let Some(latest) = sessions.iter().max_by_key(|s| s.created_at) {
+            eprintln!("[lago] Resuming session: {}", latest.session_id);
+            (latest.session_id.clone(), true)
+        } else {
+            eprintln!("[lago] No previous sessions found, starting new.");
+            (LagoSessionId::new(), false)
+        }
+    } else {
+        (LagoSessionId::new(), false)
+    };
+
+    // Seed sequence counter from journal head
+    let head_seq = {
+        let fut = journal.head_seq(&lago_session_id, &branch_id);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(fut).unwrap_or(0),
+            Err(_) => 0,
+        }
+    };
+    let seq_counter = SeqCounter::new(head_seq);
+
+    // Register (or update) the session record
+    put_session_sync(
+        journal.as_ref(),
+        LagoSession {
+            session_id: lago_session_id.clone(),
+            config: SessionConfig {
+                name: format!("shell-{}", lago_session_id),
+                model: resolved.model.clone().unwrap_or_default(),
+                params: HashMap::new(),
+            },
+            created_at: if resuming {
+                list_sessions_sync(journal.as_ref())
+                    .iter()
+                    .find(|s| s.session_id == lago_session_id)
+                    .map(|s| s.created_at)
+                    .unwrap_or_else(EventEnvelope::now_micros)
+            } else {
+                EventEnvelope::now_micros()
+            },
+            branches: vec![branch_id.clone()],
+        },
+    );
 
     // --- Provider ---
     let provider = crate::build_provider(resolved)?;
@@ -349,9 +545,9 @@ pub fn run_shell(
 
     // --- Hook registry ---
     let hook_registry = &resolved.hook_registry;
-    let session_id = format!("shell-{}", uuid::Uuid::new_v4());
+    let session_id_str = lago_session_id.to_string();
     let hook_ctx = HookContext {
-        session_id: session_id.clone(),
+        session_id: session_id_str.clone(),
         tool_name: None,
         tool_input: None,
         workspace: workspace_root.display().to_string(),
@@ -363,7 +559,6 @@ pub fn run_shell(
     }
 
     // --- Session state ---
-    let mut messages: Vec<ChatMessage> = Vec::new();
     let permission_mode = if yes {
         PermissionMode::Yes
     } else {
@@ -402,17 +597,51 @@ pub fn run_shell(
         claude_md.as_deref(),
     );
 
-    messages.push(ChatMessage::system(&system_prompt));
+    // --- Replay or initialize message history (BRO-358) ---
+    let mut messages: Vec<ChatMessage> = Vec::new();
+    if resuming {
+        let (replayed, _max_seq) =
+            replay_session_messages(journal.as_ref(), &lago_session_id, &branch_id);
+        if replayed.is_empty() {
+            messages.push(ChatMessage::system(&system_prompt));
+        } else {
+            messages = replayed;
+            eprintln!(
+                "[lago] Restored {} messages from session {}",
+                messages.len(),
+                lago_session_id
+            );
+        }
+    } else {
+        messages.push(ChatMessage::system(&system_prompt));
+        // Persist the system prompt as the first event
+        append_event_sync(
+            journal.as_ref(),
+            make_message_event(
+                &lago_session_id,
+                &branch_id,
+                &seq_counter,
+                "system",
+                &system_prompt,
+                None,
+            ),
+        );
+    }
 
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
     eprintln!(
-        "Provider: {} | Model: {} | Tools: {} | Hooks: {} | Skills: {} | Type /help for commands",
+        "Provider: {} | Model: {} | Tools: {} | Hooks: {} | Skills: {}",
         provider_name,
         model_name,
         tool_defs.len(),
         hook_registry.len(),
         skill_names.len(),
+    );
+    eprintln!(
+        "Session: {} | Journal: {} | Type /help for commands",
+        lago_session_id,
+        journal_path.display()
     );
     eprintln!();
 
@@ -441,6 +670,64 @@ pub fn run_shell(
         if input.starts_with('/') {
             // Update message_count before command dispatch
             cmd_ctx.message_count = messages.len();
+
+            // --- BRO-359: /sessions and /session commands (need journal access) ---
+            if input == "/sessions" || input == "/sess" {
+                let sessions = list_sessions_sync(journal.as_ref());
+                if sessions.is_empty() {
+                    println!("No sessions found.");
+                } else {
+                    println!(
+                        "{:<28} {:<20} {:>6}  NAME",
+                        "SESSION ID", "CREATED", "EVENTS"
+                    );
+                    println!("{}", "-".repeat(80));
+                    let mut sorted = sessions;
+                    sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                    for sess in &sorted {
+                        let ts_secs = sess.created_at / 1_000_000;
+                        let dt = chrono::DateTime::from_timestamp(ts_secs as i64, 0)
+                            .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let head = {
+                            let fut = journal.head_seq(&sess.session_id, &branch_id);
+                            match tokio::runtime::Handle::try_current() {
+                                Ok(h) => h.block_on(fut).unwrap_or(0),
+                                Err(_) => 0,
+                            }
+                        };
+                        let marker = if sess.session_id == lago_session_id {
+                            " *"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "{:<28} {:<20} {:>6}  {}{}",
+                            sess.session_id, dt, head, sess.config.name, marker
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // /session <id> — info about switching sessions
+            if input.starts_with("/session ") {
+                let target = input.strip_prefix("/session ").unwrap_or("").trim();
+                if target.is_empty() {
+                    eprintln!("Usage: /session <session-id>");
+                } else {
+                    let sessions = list_sessions_sync(journal.as_ref());
+                    if sessions.iter().any(|s| s.session_id.as_str() == target) {
+                        eprintln!("[lago] Note: /session switch is not yet supported mid-REPL.");
+                        eprintln!(
+                            "       Use `arcan shell --session {target} --resume` to resume."
+                        );
+                    } else {
+                        eprintln!("Session '{target}' not found. Use /sessions to list available.");
+                    }
+                }
+                continue;
+            }
 
             match commands.execute(input, &mut cmd_ctx) {
                 Some(CommandResult::Output(text)) => {
@@ -498,6 +785,19 @@ pub fn run_shell(
         cmd_ctx.session_turns += 1;
         cmd_ctx.message_count = messages.len();
 
+        // Persist user message (BRO-357)
+        append_event_sync(
+            journal.as_ref(),
+            make_message_event(
+                &lago_session_id,
+                &branch_id,
+                &seq_counter,
+                "user",
+                input,
+                None,
+            ),
+        );
+
         let response_text = run_agent_loop(
             &provider,
             &registry,
@@ -512,6 +812,18 @@ pub fn run_shell(
             Ok(text) => {
                 if !text.is_empty() {
                     messages.push(ChatMessage::assistant(&text));
+                    // Persist assistant response (BRO-357)
+                    append_event_sync(
+                        journal.as_ref(),
+                        make_message_event(
+                            &lago_session_id,
+                            &branch_id,
+                            &seq_counter,
+                            "assistant",
+                            &text,
+                            resolved.model.as_deref(),
+                        ),
+                    );
                 }
                 // Update message count after loop completes
                 cmd_ctx.message_count = messages.len();

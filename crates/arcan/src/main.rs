@@ -174,6 +174,10 @@ enum Command {
         /// Auto-approve all tool executions (skip permission prompts)
         #[arg(short, long)]
         yes: bool,
+
+        /// Resume the most recent session (or the one specified by --session)
+        #[arg(short, long)]
+        resume: bool,
     },
 }
 
@@ -1245,7 +1249,11 @@ fn main() -> anyhow::Result<()> {
             );
             run_skills(&data_dir, &resolved, &action)
         }
-        Some(Command::Shell { session, yes }) => {
+        Some(Command::Shell {
+            session,
+            yes,
+            resume,
+        }) => {
             let resolved = config::resolve(
                 &file_config,
                 cli.provider.as_deref(),
@@ -1267,7 +1275,7 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
-            shell::run_shell(&data_dir, &resolved, session, yes)
+            shell::run_shell(&data_dir, &resolved, session.as_deref(), yes, resume)
         }
         Some(Command::Status) => {
             let resolved = config::resolve(
