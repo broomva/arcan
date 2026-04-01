@@ -625,7 +625,7 @@ mod tests {
     fn resolve_defaults() {
         let config = ArcanConfig::default();
         let resolved = resolve(&config, None, None, None, None, None, None, None, None);
-        assert_eq!(resolved.provider, "");
+        assert_eq!(resolved.provider, "anthropic");
         assert!(resolved.model.is_none());
         assert_eq!(resolved.port, 3000);
         assert_eq!(resolved.max_iterations, 10);

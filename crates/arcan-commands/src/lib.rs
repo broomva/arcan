@@ -8,6 +8,7 @@ mod compact;
 mod cost;
 mod diff;
 mod help;
+mod memory;
 mod quit;
 
 use std::collections::{BTreeMap, HashSet};
@@ -47,6 +48,8 @@ pub struct CommandContext {
     pub session_approved_tools: HashSet<String>,
     /// Permission mode: "default" (prompt), "yes" (auto-approve all), "plan" (deny all writes).
     pub permission_mode: PermissionMode,
+    /// Directory for persistent agent memory files (`.arcan/memory/`).
+    pub memory_dir: PathBuf,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -168,6 +171,7 @@ impl CommandRegistry {
         registry.register(Box::new(cost::CostCommand));
         registry.register(Box::new(quit::QuitCommand));
         registry.register(Box::new(diff::DiffCommand));
+        registry.register(Box::new(memory::MemoryCommand));
         registry.rebuild_help_text();
         registry
     }
