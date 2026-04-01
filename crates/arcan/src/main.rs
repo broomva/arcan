@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod factory;
 mod nous_observer;
+mod prompt;
 mod sandbox_router;
 mod shell;
 mod skills;

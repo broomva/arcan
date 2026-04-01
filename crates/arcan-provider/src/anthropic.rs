@@ -107,14 +107,20 @@ impl AnthropicProvider {
     }
 
     fn build_messages(&self, messages: &[ChatMessage]) -> (Option<String>, Vec<ApiMessage>) {
-        let mut system_prompt = None;
+        let mut system_prompt: Option<String> = None;
         let mut api_messages = Vec::new();
 
         for msg in messages {
             match msg.role {
-                Role::System => {
-                    system_prompt = Some(msg.content.clone());
-                }
+                Role::System => match &mut system_prompt {
+                    Some(existing) => {
+                        existing.push_str("\n\n");
+                        existing.push_str(&msg.content);
+                    }
+                    None => {
+                        system_prompt = Some(msg.content.clone());
+                    }
+                },
                 Role::User => {
                     // Check if content is JSON-encoded content blocks (from shell tool results)
                     if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content) {
@@ -561,6 +567,29 @@ mod tests {
         let (system, api_msgs) = provider.build_messages(&messages);
         assert_eq!(system, Some("You are helpful.".to_string()));
         assert_eq!(api_msgs.len(), 2);
+    }
+
+    #[test]
+    fn concatenates_multiple_system_messages() {
+        let provider = AnthropicProvider::new(test_config());
+
+        let messages = vec![
+            ChatMessage::system("First system message."),
+            ChatMessage::system("Second system message."),
+            ChatMessage::user("Hello"),
+        ];
+
+        let (system, api_msgs) = provider.build_messages(&messages);
+        let system_text = system.expect("should have system prompt");
+        assert!(
+            system_text.contains("First system message."),
+            "missing first system message"
+        );
+        assert!(
+            system_text.contains("Second system message."),
+            "missing second system message"
+        );
+        assert_eq!(api_msgs.len(), 1);
     }
 
     #[test]
