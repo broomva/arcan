@@ -5,7 +5,7 @@
 //! LLM provider, execute tools inline, print response.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aios_protocol::sandbox::NetworkPolicy;
@@ -21,6 +21,7 @@ use arcan_core::runtime::{Provider, ProviderRequest, ToolContext, ToolRegistry};
 use arcan_core::state::AppState;
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, LocalFs, SandboxPolicy};
+use praxis_skills::registry::{SkillRegistry, active_skill_prompt, try_activate_skill};
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
@@ -93,6 +94,54 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
     *messages = kept;
 }
 
+/// Build the list of skill discovery directories.
+///
+/// Starts with the resolved config dirs (`.arcan/skills`, `.agents/skills`,
+/// `~/.agents/skills`), then adds `.claude/skills/` and `~/.claude/skills/`
+/// so that skills installed in Claude Code's native locations are also found.
+fn skill_discovery_dirs(resolved: &ResolvedConfig) -> Vec<PathBuf> {
+    let mut dirs = resolved.skill_dirs.clone();
+
+    // Add .claude/skills/ (project-local)
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let claude_local = cwd.join(".claude").join("skills");
+    if !dirs.contains(&claude_local) {
+        dirs.push(claude_local);
+    }
+
+    // Add ~/.claude/skills/ (global)
+    if let Some(home) = dirs::home_dir() {
+        let claude_global = home.join(".claude").join("skills");
+        if !dirs.contains(&claude_global) {
+            dirs.push(claude_global);
+        }
+    }
+
+    dirs
+}
+
+/// Discover skills from all configured + conventional directories.
+///
+/// Non-fatal: returns an empty registry on error rather than propagating.
+fn discover_shell_skills(data_dir: &Path, resolved: &ResolvedConfig) -> SkillRegistry {
+    if !resolved.skills_enabled {
+        return SkillRegistry::discover(&[])
+            .unwrap_or_else(|_| panic!("SkillRegistry::discover with empty dirs should not fail"));
+    }
+
+    let dirs = skill_discovery_dirs(resolved);
+
+    match crate::skills::discover_skills(&dirs, data_dir, resolved.skills_write_registry) {
+        Ok(registry) => registry,
+        Err(e) => {
+            tracing::warn!(error = %e, "skill discovery failed (non-fatal)");
+            SkillRegistry::discover(&[]).unwrap_or_else(|_| {
+                panic!("SkillRegistry::discover with empty dirs should not fail")
+            })
+        }
+    }
+}
+
 /// Run the interactive shell REPL.
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 pub fn run_shell(
@@ -141,6 +190,11 @@ pub fn run_shell(
     )));
     registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
 
+    // --- Skill discovery ---
+    let skill_registry = discover_shell_skills(data_dir, resolved);
+    let skill_names = skill_registry.skill_names();
+    let skill_system_prompt = crate::skills::build_system_prompt(&skill_registry);
+
     // --- Command registry ---
     let commands = CommandRegistry::with_builtins();
     let tool_defs = registry.definitions();
@@ -162,6 +216,12 @@ pub fn run_shell(
 
     // --- Session state ---
     let mut messages: Vec<ChatMessage> = Vec::new();
+
+    // Inject skill catalog as part of the system prompt if skills were discovered.
+    if !skill_system_prompt.is_empty() {
+        messages.push(ChatMessage::system(&skill_system_prompt));
+    }
+
     let permission_mode = if yes {
         PermissionMode::Yes
     } else {
@@ -170,15 +230,20 @@ pub fn run_shell(
     let mut cmd_ctx = CommandContext {
         workspace: workspace_root,
         permission_mode,
+        skill_names: skill_names.clone(),
         ..Default::default()
     };
+
+    // Track the currently activated skill (set via `/skill-name`).
+    let mut active_skill: Option<praxis_skills::registry::ActiveSkillState> = None;
 
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
     eprintln!(
-        "Provider: {} | Tools: {} | Hooks: {} | Type /help for commands",
+        "Provider: {} | Tools: {} | Skills: {} | Hooks: {} | Type /help for commands",
         provider.name(),
         tool_defs.len(),
+        skill_names.len(),
         hook_registry.len(),
     );
     eprintln!();
@@ -206,24 +271,29 @@ pub fn run_shell(
 
         // --- Slash command dispatch ---
         if input.starts_with('/') {
+            // Try built-in commands first
             match commands.execute(input, &mut cmd_ctx) {
                 Some(CommandResult::Output(text)) => {
                     println!("{text}");
+                    continue;
                 }
                 Some(CommandResult::ClearSession) => {
                     messages.clear();
+                    active_skill = None;
                     cmd_ctx.session_turns = 0;
                     cmd_ctx.session_input_tokens = 0;
                     cmd_ctx.session_output_tokens = 0;
                     cmd_ctx.session_cost_usd = 0.0;
                     cmd_ctx.session_approved_tools.clear();
                     eprintln!("Session cleared.");
+                    continue;
                 }
                 Some(CommandResult::CompactRequested) => {
                     let before = estimate_tokens(&messages);
                     compact_conversation(&mut messages, COMPACT_TARGET);
                     let after = estimate_tokens(&messages);
                     eprintln!("[compact] {before} tokens -> {after} tokens");
+                    continue;
                 }
                 Some(CommandResult::Quit) => {
                     eprintln!("Goodbye.");
@@ -231,17 +301,41 @@ pub fn run_shell(
                 }
                 Some(CommandResult::Error(err)) => {
                     eprintln!("Error: {err}");
+                    continue;
                 }
                 None => {
-                    eprintln!("Unknown command: {input}. Type /help for available commands.");
+                    // Not a built-in command -- try skill activation
+                    match try_activate_skill(&skill_registry, input) {
+                        Ok(Some((state, remaining))) => {
+                            eprintln!("[skill: {}] activated", state.name);
+                            active_skill = Some(state);
+                            // If the user also typed a message after the skill name, send it
+                            if remaining.is_empty() {
+                                continue;
+                            }
+                            // Fall through with the remaining text as the user message
+                            messages.push(ChatMessage::user(&remaining));
+                            cmd_ctx.session_turns += 1;
+                        }
+                        Ok(None) => {
+                            // Not a skill either
+                            eprintln!(
+                                "Unknown command: {input}. Type /help for commands or /skill for skills."
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            eprintln!("Error: {err}");
+                            continue;
+                        }
+                    }
                 }
             }
-            continue;
+        } else {
+            // --- Send to provider ---
+            messages.push(ChatMessage::user(input));
+            cmd_ctx.session_turns += 1;
         }
-
-        // --- Send to provider ---
-        messages.push(ChatMessage::user(input));
-        cmd_ctx.session_turns += 1;
 
         let response_text = run_agent_loop(
             &provider,
@@ -251,6 +345,7 @@ pub fn run_shell(
             &mut cmd_ctx,
             hook_registry,
             &hook_ctx,
+            active_skill.as_ref(),
         );
 
         match response_text {
@@ -292,12 +387,23 @@ fn run_agent_loop(
     cmd_ctx: &mut CommandContext,
     hook_registry: &HookRegistry,
     base_hook_ctx: &HookContext,
+    active_skill: Option<&praxis_skills::registry::ActiveSkillState>,
 ) -> anyhow::Result<String> {
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
     let state = AppState::default();
     let mut accumulated_text = String::new();
     let max_iterations = 24;
+
+    // Inject active skill instructions as a transient system message.
+    // This is a "liquid prompt" -- it lives for the duration of this run only.
+    let skill_msg_injected = if let Some(skill) = active_skill {
+        let prompt = active_skill_prompt(skill);
+        messages.push(ChatMessage::system(&prompt));
+        true
+    } else {
+        false
+    };
 
     // Fire RunStart hooks
     hook_registry.fire(&HookEvent::RunStart, base_hook_ctx);
@@ -523,6 +629,15 @@ fn run_agent_loop(
 
     // Fire RunEnd hooks
     hook_registry.fire(&HookEvent::RunEnd, base_hook_ctx);
+
+    // Remove the transient skill system message so it doesn't persist in history.
+    if skill_msg_injected {
+        if let Some(pos) = messages.iter().rposition(|m| {
+            m.role == arcan_core::protocol::Role::System && m.content.contains("<active-skill")
+        }) {
+            messages.remove(pos);
+        }
+    }
 
     Ok(accumulated_text)
 }
