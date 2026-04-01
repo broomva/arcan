@@ -29,6 +29,12 @@ use std::collections::BTreeSet;
 
 use crate::config::ResolvedConfig;
 
+/// Maximum number of lines to include in the session summary.
+const SUMMARY_MAX_LINES: usize = 50;
+
+/// Maximum number of characters from a single message to consider for extraction.
+const EXTRACT_MAX_CHARS: usize = 2000;
+
 /// Token threshold above which auto-compaction triggers after each agent turn.
 const COMPACT_THRESHOLD: usize = 100_000;
 
@@ -93,6 +99,174 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
     *messages = kept;
 }
 
+/// Load memory context from `.arcan/memory/*.md` files.
+///
+/// Reads all markdown files from the memory directory and returns a formatted
+/// string suitable for injection into the system prompt. Returns `None` if the
+/// directory doesn't exist or contains no memory files.
+fn load_memory_context(memory_dir: &Path) -> Option<String> {
+    if !memory_dir.exists() {
+        return None;
+    }
+
+    let entries = std::fs::read_dir(memory_dir).ok()?;
+    let mut sections = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let key = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if !content.trim().is_empty() {
+                sections.push(format!("## {key}\n{content}"));
+            }
+        }
+    }
+
+    if sections.is_empty() {
+        return None;
+    }
+
+    sections.sort();
+    Some(format!(
+        "# Agent Memory (cross-session)\n\n{}",
+        sections.join("\n\n")
+    ))
+}
+
+/// Extract key facts from the latest agent turn and save to `.arcan/memory/session_summary.md`.
+///
+/// Uses a heuristic approach (no API calls): scans the conversation for patterns
+/// that indicate decisions, file paths, errors, TODOs, and key findings.
+#[allow(clippy::print_stderr)]
+fn extract_and_save_memories(messages: &[ChatMessage], memory_dir: &Path) {
+    if messages.is_empty() {
+        return;
+    }
+
+    // Collect lines from assistant messages that look like key facts.
+    let mut facts = Vec::new();
+
+    for msg in messages.iter().rev().take(10) {
+        if msg.role != arcan_core::protocol::Role::Assistant {
+            continue;
+        }
+
+        let content = if msg.content.len() > EXTRACT_MAX_CHARS {
+            &msg.content[..EXTRACT_MAX_CHARS]
+        } else {
+            &msg.content
+        };
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.len() < 10 {
+                continue;
+            }
+
+            // Heuristic: keep lines that look like decisions, findings, or actions.
+            let dominated_by_signal = is_memory_signal(trimmed);
+            if dominated_by_signal {
+                facts.push(format!("- {trimmed}"));
+            }
+
+            if facts.len() >= SUMMARY_MAX_LINES {
+                break;
+            }
+        }
+    }
+
+    if facts.is_empty() {
+        return;
+    }
+
+    // Build the session summary markdown.
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let summary = format!(
+        "# Session Summary\n\n**Updated**: {timestamp}\n\n{}\n",
+        facts.join("\n")
+    );
+
+    // Write to memory directory, creating it if needed.
+    if let Err(e) = std::fs::create_dir_all(memory_dir) {
+        eprintln!("[memory] Failed to create memory dir: {e}");
+        return;
+    }
+
+    let path = memory_dir.join("session_summary.md");
+    if let Err(e) = std::fs::write(&path, summary) {
+        eprintln!("[memory] Failed to write session summary: {e}");
+    }
+}
+
+/// Determine whether a line looks like a key fact worth remembering.
+///
+/// Returns `true` for lines containing decision markers, file paths,
+/// error descriptions, TODOs, or other notable patterns.
+fn is_memory_signal(line: &str) -> bool {
+    let lower = line.to_lowercase();
+
+    // Decision / conclusion markers
+    if lower.starts_with("- ") || lower.starts_with("* ") {
+        // Bullet points are often summaries
+        return true;
+    }
+
+    // Headings (markdown)
+    if lower.starts_with("## ") || lower.starts_with("### ") {
+        return true;
+    }
+
+    // Explicit signal words
+    let signal_words = [
+        "decision:",
+        "decided",
+        "chose",
+        "created",
+        "implemented",
+        "fixed",
+        "error:",
+        "warning:",
+        "bug:",
+        "todo:",
+        "fixme:",
+        "note:",
+        "important:",
+        "key finding",
+        "conclusion",
+        "summary",
+        "architecture",
+        "pattern:",
+        "learned",
+        "discovered",
+        "the issue was",
+        "root cause",
+        "solution:",
+        "workaround:",
+    ];
+    if signal_words.iter().any(|w| lower.contains(w)) {
+        return true;
+    }
+
+    // File paths (likely references to code)
+    if line.contains('/')
+        && (lower.contains(".rs")
+            || lower.contains(".toml")
+            || lower.contains(".ts")
+            || lower.contains(".md"))
+    {
+        return true;
+    }
+
+    false
+}
+
 /// Run the interactive shell REPL.
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 pub fn run_shell(
@@ -139,7 +313,9 @@ pub fn run_shell(
     registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
         memory_dir.clone(),
     )));
-    registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+    registry.register(PraxisToolBridge::new(WriteMemoryTool::new(
+        memory_dir.clone(),
+    )));
 
     // --- Command registry ---
     let commands = CommandRegistry::with_builtins();
@@ -170,8 +346,14 @@ pub fn run_shell(
     let mut cmd_ctx = CommandContext {
         workspace: workspace_root,
         permission_mode,
+        memory_dir: memory_dir.clone(),
         ..Default::default()
     };
+
+    // --- Load cross-session memory into system prompt ---
+    if let Some(memory_context) = load_memory_context(&memory_dir) {
+        messages.push(ChatMessage::system(&memory_context));
+    }
 
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
@@ -258,6 +440,8 @@ pub fn run_shell(
                 if !text.is_empty() {
                     messages.push(ChatMessage::assistant(&text));
                 }
+                // Extract and save key facts from this turn to persistent memory.
+                extract_and_save_memories(&messages, &memory_dir);
             }
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -725,5 +909,152 @@ mod tests {
             result.unwrap(),
             arcan_commands::CommandResult::CompactRequested
         ));
+    }
+
+    #[test]
+    fn test_memory_command_in_registry() {
+        let registry = arcan_commands::CommandRegistry::with_builtins();
+        let mut ctx = arcan_commands::CommandContext::default();
+        // /memory and /mem alias should both resolve
+        let result = registry.execute("/memory", &mut ctx);
+        assert!(result.is_some());
+
+        let result = registry.execute("/mem", &mut ctx);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_is_memory_signal() {
+        // Bullet points
+        assert!(is_memory_signal("- This is a key decision we made"));
+        assert!(is_memory_signal("* Another bullet point summary"));
+
+        // Headings
+        assert!(is_memory_signal("## Architecture Overview"));
+        assert!(is_memory_signal("### Key Findings"));
+
+        // Signal words
+        assert!(is_memory_signal("Decision: use redb for persistence"));
+        assert!(is_memory_signal("Fixed the timeout bug in the agent loop"));
+        assert!(is_memory_signal("TODO: wire up the approval workflow"));
+        assert!(is_memory_signal("The root cause was a missing await"));
+
+        // File paths
+        assert!(is_memory_signal(
+            "Modified crates/arcan/src/shell.rs to add memory"
+        ));
+        assert!(is_memory_signal(
+            "Updated crates/arcan/Cargo.toml with new dependency"
+        ));
+
+        // Non-signals
+        assert!(!is_memory_signal(""));
+        assert!(!is_memory_signal("short"));
+        assert!(!is_memory_signal("Hello, how can I help you today?"));
+        assert!(!is_memory_signal("The weather is nice today and I like it"));
+    }
+
+    #[test]
+    fn test_load_memory_context_no_dir() {
+        let result = load_memory_context(std::path::Path::new("/nonexistent/dir/memory"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_memory_context_empty_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-mem-load-empty-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = load_memory_context(&dir);
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_load_memory_context_with_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-mem-load-files-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session_summary.md"), "# Summary\nKey fact here").unwrap();
+        std::fs::write(dir.join("global.md"), "# Global\nPersistent note").unwrap();
+        // Non-md file should be ignored
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+        let result = load_memory_context(&dir);
+        assert!(result.is_some());
+        let ctx = result.unwrap();
+        assert!(ctx.contains("# Agent Memory (cross-session)"));
+        assert!(ctx.contains("## global"));
+        assert!(ctx.contains("Persistent note"));
+        assert!(ctx.contains("## session_summary"));
+        assert!(ctx.contains("Key fact here"));
+        // .txt file should NOT appear
+        assert!(!ctx.contains("ignored"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_extract_and_save_memories() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-mem-extract-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        // Messages with extractable content
+        let messages = vec![
+            make_msg(Role::User, "Fix the timeout bug"),
+            make_msg(
+                Role::Assistant,
+                "- Found the root cause in the agent loop\n\
+                 - Fixed the timeout by adding a retry\n\
+                 Modified crates/arcan/src/shell.rs to handle edge case\n\
+                 The weather is nice",
+            ),
+        ];
+
+        extract_and_save_memories(&messages, &dir);
+
+        let summary_path = dir.join("session_summary.md");
+        assert!(summary_path.exists());
+        let content = std::fs::read_to_string(&summary_path).unwrap();
+        assert!(content.contains("# Session Summary"));
+        assert!(content.contains("Found the root cause"));
+        assert!(content.contains("Fixed the timeout"));
+        assert!(content.contains("shell.rs"));
+        // Non-signal line should not appear
+        assert!(!content.contains("weather is nice"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_extract_empty_messages() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-mem-extract-empty-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        extract_and_save_memories(&[], &dir);
+        // No file should be created for empty messages
+        assert!(!dir.join("session_summary.md").exists());
     }
 }
