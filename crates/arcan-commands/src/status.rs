@@ -57,6 +57,12 @@ impl Command for StatusCommand {
             }
         };
 
+        // Workspace journal line
+        let workspace_line = match &ctx.workspace_journal_status {
+            Some(status) => format!("  Workspace: {status}"),
+            None => "  Workspace: (not configured)".to_string(),
+        };
+
         let output = format!(
             "Session status:\n\
              \n  Provider: {}\
@@ -68,7 +74,8 @@ impl Command for StatusCommand {
              \n  Tokens:   {} (in: {}, out: {})\
              \n  Cost:     ${:.4}\
              \n{safety_line}\
-             \n{economic_line}",
+             \n{economic_line}\
+             \n{workspace_line}",
             ctx.provider_name,
             ctx.model_name,
             ctx.tools_count,

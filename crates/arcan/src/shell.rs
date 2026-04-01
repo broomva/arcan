@@ -7,6 +7,11 @@
 //! Since BRO-356, the shell also opens a Lago `RedbJournal` for persistent
 //! session history.  Events are appended best-effort (errors logged, never
 //! fatal) so an on-disk failure cannot break the interactive experience.
+//!
+//! Since BRO-385, a shared **workspace journal** (`LanceJournal`) is opened at
+//! `.arcan/workspace.lance/` for cross-session knowledge.  Governed memory
+//! tools target this shared journal so insights persist across sessions.  The
+//! per-session `RedbJournal` remains for conversation detail.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -32,6 +37,7 @@ use lago_core::event::{EventEnvelope, EventPayload};
 use lago_core::id::{BranchId, EventId, SessionId as LagoSessionId};
 use lago_core::session::{Session as LagoSession, SessionConfig};
 use lago_journal::RedbJournal;
+use lago_lance::LanceJournal;
 use nous_core::{EvalContext, EvalHook, EvaluatorRegistry};
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
@@ -554,10 +560,7 @@ pub fn run_shell(
     std::fs::create_dir_all(&journals_dir).ok();
 
     // Determine session ID early so we can name the journal file
-    let lago_session_id_for_journal = session
-        .as_ref()
-        .map(|s| LagoSessionId::from_string(s.clone()))
-        .unwrap_or_else(LagoSessionId::new);
+    let lago_session_id_for_journal = session.map(LagoSessionId::from_string).unwrap_or_default();
 
     let journal_path = journals_dir.join(format!("{}.redb", lago_session_id_for_journal));
     let (journal, journal_ephemeral): (Arc<dyn Journal>, bool) =
@@ -575,6 +578,42 @@ pub fn run_shell(
             }
         };
     let branch_id = BranchId::from_string("main");
+
+    // --- Workspace journal (BRO-385) ---
+    // Shared Lance-backed journal for cross-session knowledge.
+    // Governed memory tools target this so insights persist across sessions.
+    let workspace_path = data_dir.join("workspace.lance");
+    let workspace_journal: Option<Arc<dyn Journal>> = {
+        let open_fut = LanceJournal::open(&workspace_path);
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => Some(handle.block_on(open_fut)),
+            Err(_) => match tokio::runtime::Runtime::new() {
+                Ok(rt) => Some(rt.block_on(open_fut)),
+                Err(e) => {
+                    tracing::warn!("lago-lance: cannot create runtime: {e}");
+                    None
+                }
+            },
+        };
+        match result {
+            Some(Ok(j)) => {
+                eprintln!("[lago] Workspace journal: {}", workspace_path.display());
+                Some(Arc::new(j))
+            }
+            Some(Err(e)) => {
+                eprintln!(
+                    "[lago] Warning: could not open workspace Lance journal ({}). Governed memory will use session journal.",
+                    e
+                );
+                None
+            }
+            None => None,
+        }
+    };
+    // Sequence counter for workspace journal events (separate from session seq)
+    let workspace_seq = SeqCounter::new(0);
+    // Fixed session ID for workspace-level events
+    let workspace_session_id = LagoSessionId::from_string("workspace");
 
     // Session ID was determined above (for journal file naming).
     // If resuming, check if the journal has existing events.
@@ -654,15 +693,21 @@ pub fn run_shell(
         memory_dir.clone(),
     )));
 
-    // --- Phase 2: Governed memory tools (BRO-360, BRO-361) ---
+    // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
     // Register Lago-backed governed memory tools alongside the filesystem ones.
     // The governed tools (memory_query, memory_propose, memory_commit) provide
     // event-sourced memory with scopes, while the filesystem tools remain as
     // a fallback/export mechanism for cross-session persistence.
+    //
+    // BRO-385: When the shared workspace Lance journal is available, governed
+    // memory targets it so knowledge persists across sessions.  Falls back to
+    // the per-session journal otherwise.
+    let memory_journal: Arc<dyn Journal> =
+        workspace_journal.clone().unwrap_or_else(|| journal.clone());
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
     registry.register(MemoryQueryTool::new(memory_projection));
-    registry.register(MemoryProposeTool::new(journal.clone()));
-    registry.register(MemoryCommitTool::new(journal.clone()));
+    registry.register(MemoryProposeTool::new(memory_journal.clone()));
+    registry.register(MemoryCommitTool::new(memory_journal));
 
     // --- Phase 6: Spaces networking (BRO-368, BRO-369) ---
     #[cfg(feature = "spaces")]
@@ -798,6 +843,9 @@ pub fn run_shell(
         skill_names: skill_names.clone(),
         budget_usd: budget,
         economic_mode,
+        workspace_journal_status: workspace_journal
+            .as_ref()
+            .map(|_| format!("{} (shared)", workspace_path.display())),
         ..Default::default()
     };
 
@@ -884,6 +932,10 @@ pub fn run_shell(
             lago_session_id,
             journal_path.display()
         );
+    }
+    // BRO-385: Workspace journal banner line
+    if workspace_journal.is_some() {
+        eprintln!("Workspace: {} (shared)", workspace_path.display());
     }
     eprintln!();
 
@@ -1101,6 +1153,34 @@ pub fn run_shell(
                 cmd_ctx.message_count = messages.len();
                 // Extract and save key facts from this turn to persistent memory.
                 extract_and_save_memories(&messages, &memory_dir);
+
+                // --- BRO-385: Write session turn summary to workspace journal ---
+                if let Some(ref wj) = workspace_journal {
+                    let summary_content = if text.len() > 200 {
+                        format!(
+                            "Session {} turn {}: {}...",
+                            lago_session_id,
+                            cmd_ctx.session_turns,
+                            &text[..200]
+                        )
+                    } else {
+                        format!(
+                            "Session {} turn {}: {}",
+                            lago_session_id, cmd_ctx.session_turns, text
+                        )
+                    };
+                    append_event_sync(
+                        wj.as_ref(),
+                        make_message_event(
+                            &workspace_session_id,
+                            &branch_id,
+                            &workspace_seq,
+                            "system",
+                            &summary_content,
+                            None,
+                        ),
+                    );
+                }
 
                 // --- Refresh Autonomic economic mode (BRO-365) ---
                 if resolved.autonomic_url.is_some() {

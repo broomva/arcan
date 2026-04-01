@@ -82,6 +82,9 @@ pub struct CommandContext {
     /// Autonomic economic mode label (e.g. "Sovereign", "Conserving").
     /// Populated when `ARCAN_AUTONOMIC_URL` is configured.
     pub economic_mode: Option<String>,
+    /// Workspace journal status string (e.g. path or "unavailable").
+    /// Set when a shared Lance workspace journal is opened.
+    pub workspace_journal_status: Option<String>,
 }
 
 /// Permission mode governing tool approval in the shell.
