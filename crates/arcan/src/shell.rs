@@ -9,7 +9,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use aios_protocol::sandbox::NetworkPolicy;
-use arcan_commands::{CommandContext, CommandRegistry, CommandResult};
+use arcan_commands::{
+    CommandContext, CommandRegistry, CommandResult, PermissionMode, is_tool_auto_approved,
+    prompt_tool_permission,
+};
 use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ToolCall, ToolDefinition,
 };
@@ -31,6 +34,7 @@ pub fn run_shell(
     data_dir: &Path,
     resolved: &ResolvedConfig,
     _session: Option<String>,
+    yes: bool,
 ) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
@@ -78,8 +82,14 @@ pub fn run_shell(
 
     // --- Session state ---
     let mut messages: Vec<ChatMessage> = Vec::new();
+    let permission_mode = if yes {
+        PermissionMode::Yes
+    } else {
+        PermissionMode::Default
+    };
     let mut cmd_ctx = CommandContext {
         workspace: workspace_root,
+        permission_mode,
         ..Default::default()
     };
 
@@ -125,6 +135,7 @@ pub fn run_shell(
                     cmd_ctx.session_input_tokens = 0;
                     cmd_ctx.session_output_tokens = 0;
                     cmd_ctx.session_cost_usd = 0.0;
+                    cmd_ctx.session_approved_tools.clear();
                     eprintln!("Session cleared.");
                 }
                 Some(CommandResult::Quit) => {
@@ -288,6 +299,43 @@ fn run_agent_loop(
         let mut result_blocks = Vec::new();
         for call in &tool_calls {
             eprintln!("\n[tool: {}]", call.tool_name);
+
+            // --- Permission check ---
+            let is_read_only_annotation = tool_defs
+                .iter()
+                .find(|d| d.name == call.tool_name)
+                .and_then(|d| d.annotations.as_ref())
+                .is_some_and(|a| a.read_only);
+
+            let auto_approved = is_tool_auto_approved(
+                &call.tool_name,
+                cmd_ctx.permission_mode,
+                &cmd_ctx.session_approved_tools,
+                is_read_only_annotation,
+            );
+
+            if !auto_approved {
+                let choice = prompt_tool_permission(&call.tool_name);
+                match choice {
+                    'y' => { /* execute once */ }
+                    'a' => {
+                        cmd_ctx
+                            .session_approved_tools
+                            .insert(call.tool_name.clone());
+                    }
+                    _ => {
+                        // Denied — return permission denied as tool result
+                        eprintln!("[tool: {}] DENIED by user", call.tool_name);
+                        result_blocks.push(serde_json::json!({
+                            "type": "tool_result",
+                            "tool_use_id": call.call_id,
+                            "content": format!("Permission denied: user declined to run '{}'", call.tool_name),
+                            "is_error": true,
+                        }));
+                        continue;
+                    }
+                }
+            }
 
             let (content, is_error) = match registry.get(&call.tool_name) {
                 Some(tool) => match tool.execute(call, &ctx) {
