@@ -547,11 +547,26 @@ pub fn run_shell(
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago journal (BRO-356) ---
+    // Gracefully handle lock contention — fall back to ephemeral in-memory journal.
     let journal_path = data_dir.join("journal.redb");
-    let journal: Arc<dyn Journal> = Arc::new(
-        RedbJournal::open(&journal_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open Lago journal: {e}"))?,
-    );
+    let (journal, journal_ephemeral): (Arc<dyn Journal>, bool) =
+        match RedbJournal::open(&journal_path) {
+            Ok(j) => (Arc::new(j), false),
+            Err(e) => {
+                eprintln!(
+                    "[lago] Warning: could not open journal ({}). Using ephemeral session.",
+                    e
+                );
+                eprintln!(
+                    "[lago] Hint: another arcan instance may hold the lock on {}",
+                    journal_path.display()
+                );
+                (
+                    Arc::new(crate::ephemeral_journal::EphemeralJournal::new()),
+                    true,
+                )
+            }
+        };
     let branch_id = BranchId::from_string("main");
 
     // Determine session ID: explicit > resume (most recent) > new
@@ -862,11 +877,18 @@ pub fn run_shell(
     if spaces_connected {
         eprintln!("Spaces: connected ({})", resolved.spaces_backend);
     }
-    eprintln!(
-        "Session: {} | Journal: {} | Type /help for commands",
-        lago_session_id,
-        journal_path.display()
-    );
+    if journal_ephemeral {
+        eprintln!(
+            "Session: {} | Journal: ephemeral (in-memory) | Type /help for commands",
+            lago_session_id,
+        );
+    } else {
+        eprintln!(
+            "Session: {} | Journal: {} | Type /help for commands",
+            lago_session_id,
+            journal_path.display()
+        );
+    }
     eprintln!();
 
     // --- Phase 8: Vigil session span (BRO-372, BRO-373) ---

@@ -1,6 +1,7 @@
 mod cli_run;
 mod config;
 mod daemon;
+mod ephemeral_journal;
 mod factory;
 mod nous_observer;
 mod prompt;
