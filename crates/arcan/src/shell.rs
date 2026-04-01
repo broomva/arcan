@@ -547,8 +547,19 @@ pub fn run_shell(
     let workspace_root = std::env::current_dir()?;
 
     // --- Lago journal (BRO-356) ---
-    // Gracefully handle lock contention — fall back to ephemeral in-memory journal.
-    let journal_path = data_dir.join("journal.redb");
+    // Use per-session journal files to support parallel shell instances.
+    // Each session gets its own .redb file, avoiding lock contention.
+    // The main journal.redb is reserved for the daemon (arcan serve).
+    let journals_dir = data_dir.join("shell-journals");
+    std::fs::create_dir_all(&journals_dir).ok();
+
+    // Determine session ID early so we can name the journal file
+    let lago_session_id_for_journal = session
+        .as_ref()
+        .map(|s| LagoSessionId::from_string(s.clone()))
+        .unwrap_or_else(LagoSessionId::new);
+
+    let journal_path = journals_dir.join(format!("{}.redb", lago_session_id_for_journal));
     let (journal, journal_ephemeral): (Arc<dyn Journal>, bool) =
         match RedbJournal::open(&journal_path) {
             Ok(j) => (Arc::new(j), false),
@@ -556,10 +567,6 @@ pub fn run_shell(
                 eprintln!(
                     "[lago] Warning: could not open journal ({}). Using ephemeral session.",
                     e
-                );
-                eprintln!(
-                    "[lago] Hint: another arcan instance may hold the lock on {}",
-                    journal_path.display()
                 );
                 (
                     Arc::new(crate::ephemeral_journal::EphemeralJournal::new()),
@@ -569,21 +576,10 @@ pub fn run_shell(
         };
     let branch_id = BranchId::from_string("main");
 
-    // Determine session ID: explicit > resume (most recent) > new
-    let (lago_session_id, resuming) = if let Some(sid) = session {
-        (LagoSessionId::from_string(sid), resume)
-    } else if resume {
-        let sessions = list_sessions_sync(journal.as_ref());
-        if let Some(latest) = sessions.iter().max_by_key(|s| s.created_at) {
-            eprintln!("[lago] Resuming session: {}", latest.session_id);
-            (latest.session_id.clone(), true)
-        } else {
-            eprintln!("[lago] No previous sessions found, starting new.");
-            (LagoSessionId::new(), false)
-        }
-    } else {
-        (LagoSessionId::new(), false)
-    };
+    // Session ID was determined above (for journal file naming).
+    // If resuming, check if the journal has existing events.
+    let lago_session_id = lago_session_id_for_journal;
+    let resuming = resume;
 
     // Seed sequence counter from journal head
     let head_seq = {
@@ -931,9 +927,26 @@ pub fn run_shell(
 
             // --- BRO-359: /sessions and /session commands (need journal access) ---
             if input == "/sessions" || input == "/sess" {
+                // List sessions from journal files in shell-journals/ directory
                 let sessions = list_sessions_sync(journal.as_ref());
-                if sessions.is_empty() {
+                // Also scan directory for other session journal files
+                let mut extra_sessions: Vec<String> = Vec::new();
+                if let Ok(entries) = std::fs::read_dir(&journals_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                            if name != lago_session_id.to_string() {
+                                extra_sessions.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+                if sessions.is_empty() && extra_sessions.is_empty() {
                     println!("No sessions found.");
+                } else if sessions.is_empty() {
+                    println!("Other session journals (use --session <id> --resume):");
+                    for sid in &extra_sessions {
+                        println!("  {sid}");
+                    }
                 } else {
                     println!(
                         "{:<28} {:<20} {:>6}  NAME",
