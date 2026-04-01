@@ -104,6 +104,10 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
 /// Reads all markdown files from the memory directory and returns a formatted
 /// string suitable for injection into the system prompt. Returns `None` if the
 /// directory doesn't exist or contains no memory files.
+///
+/// Note: The system prompt now uses `crate::prompt::build_memory_section` instead.
+/// This function is retained for backward compatibility and tests.
+#[cfg(test)]
 fn load_memory_context(memory_dir: &Path) -> Option<String> {
     if !memory_dir.exists() {
         return None;
@@ -383,18 +387,22 @@ pub fn run_shell(
         ..Default::default()
     };
 
-    // --- Load cross-session memory into system prompt ---
-    if let Some(memory_context) = load_memory_context(&memory_dir) {
-        messages.push(ChatMessage::system(&memory_context));
-    }
+    // --- Build unified system prompt (liquid prompt) ---
+    let claude_md = crate::prompt::load_claude_md(&cmd_ctx.workspace);
+    let skill_catalog_text = skill_registry
+        .as_ref()
+        .map(crate::skills::build_system_prompt);
 
-    // --- Inject skill catalog into system prompt ---
-    if let Some(ref sr) = skill_registry {
-        let catalog = crate::skills::build_system_prompt(sr);
-        if !catalog.is_empty() {
-            messages.push(ChatMessage::system(&catalog));
-        }
-    }
+    let system_prompt = crate::prompt::build_system_prompt(
+        &cmd_ctx.workspace,
+        &provider_name,
+        &model_name,
+        &memory_dir,
+        skill_catalog_text.as_deref(),
+        claude_md.as_deref(),
+    );
+
+    messages.push(ChatMessage::system(&system_prompt));
 
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
