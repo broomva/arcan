@@ -2,6 +2,7 @@ pub mod aisdk;
 pub mod context;
 pub mod context_compiler;
 pub mod error;
+pub mod hooks;
 pub mod protocol;
 pub mod protocol_bridge;
 pub mod runtime;
@@ -12,6 +13,7 @@ pub use context_compiler::{
     CompiledContext, ContextBlock, ContextBlockKind, ContextCompilerConfig, compile_context,
 };
 pub use error::CoreError;
+pub use hooks::{HookConfig, HookContext, HookDenied, HookEvent, HookRegistry, HookResult};
 pub use protocol::*;
 pub use runtime::*;
 pub use state::{AppState, StateError};

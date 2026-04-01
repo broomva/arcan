@@ -13,6 +13,7 @@ use arcan_commands::{
     CommandContext, CommandRegistry, CommandResult, PermissionMode, is_tool_auto_approved,
     prompt_tool_permission,
 };
+use arcan_core::hooks::{HookContext, HookEvent, HookRegistry};
 use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ToolCall, ToolDefinition,
 };
@@ -80,6 +81,21 @@ pub fn run_shell(
     let commands = CommandRegistry::with_builtins();
     let tool_defs = registry.definitions();
 
+    // --- Hook registry ---
+    let hook_registry = &resolved.hook_registry;
+    let session_id = format!("shell-{}", uuid::Uuid::new_v4());
+    let hook_ctx = HookContext {
+        session_id: session_id.clone(),
+        tool_name: None,
+        tool_input: None,
+        workspace: workspace_root.display().to_string(),
+    };
+
+    // --- Fire SessionStart hooks ---
+    if !hook_registry.is_empty() {
+        hook_registry.fire(&HookEvent::SessionStart, &hook_ctx);
+    }
+
     // --- Session state ---
     let mut messages: Vec<ChatMessage> = Vec::new();
     let permission_mode = if yes {
@@ -96,9 +112,10 @@ pub fn run_shell(
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
     eprintln!(
-        "Provider: {} | Tools: {} | Type /help for commands",
+        "Provider: {} | Tools: {} | Hooks: {} | Type /help for commands",
         provider.name(),
         tool_defs.len(),
+        hook_registry.len(),
     );
     eprintln!();
 
@@ -162,6 +179,8 @@ pub fn run_shell(
             &tool_defs,
             &mut messages,
             &mut cmd_ctx,
+            hook_registry,
+            &hook_ctx,
         );
 
         match response_text {
@@ -176,6 +195,11 @@ pub fn run_shell(
         }
     }
 
+    // --- Fire SessionEnd hooks ---
+    if !hook_registry.is_empty() {
+        hook_registry.fire(&HookEvent::SessionEnd, &hook_ctx);
+    }
+
     Ok(())
 }
 
@@ -188,12 +212,17 @@ fn run_agent_loop(
     tool_defs: &[ToolDefinition],
     messages: &mut Vec<ChatMessage>,
     cmd_ctx: &mut CommandContext,
+    hook_registry: &HookRegistry,
+    base_hook_ctx: &HookContext,
 ) -> anyhow::Result<String> {
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
     let state = AppState::default();
     let mut accumulated_text = String::new();
     let max_iterations = 24;
+
+    // Fire RunStart hooks
+    hook_registry.fire(&HookEvent::RunStart, base_hook_ctx);
 
     for iteration in 1..=max_iterations {
         let request = ProviderRequest {
@@ -324,7 +353,6 @@ fn run_agent_loop(
                             .insert(call.tool_name.clone());
                     }
                     _ => {
-                        // Denied — return permission denied as tool result
                         eprintln!("[tool: {}] DENIED by user", call.tool_name);
                         result_blocks.push(serde_json::json!({
                             "type": "tool_result",
@@ -336,6 +364,30 @@ fn run_agent_loop(
                     }
                 }
             }
+
+            // Build hook context for this tool call
+            let tool_hook_ctx = HookContext {
+                session_id: base_hook_ctx.session_id.clone(),
+                tool_name: Some(call.tool_name.clone()),
+                tool_input: Some(call.input.clone()),
+                workspace: base_hook_ctx.workspace.clone(),
+            };
+
+            // Fire PreToolUse blocking hooks — deny if any returns non-zero
+            if let Err(denied) =
+                hook_registry.check_blocking(&HookEvent::PreToolUse, &tool_hook_ctx)
+            {
+                eprintln!("[hook] blocked {}: {}", call.tool_name, denied.message);
+                result_blocks.push(serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": call.call_id,
+                    "content": format!("Blocked by hook: {}", denied.message),
+                    "is_error": true,
+                }));
+                continue;
+            }
+            // Fire non-blocking PreToolUse hooks
+            hook_registry.fire(&HookEvent::PreToolUse, &tool_hook_ctx);
 
             let (content, is_error) = match registry.get(&call.tool_name) {
                 Some(tool) => match tool.execute(call, &ctx) {
@@ -350,15 +402,27 @@ fn run_agent_loop(
                             output_str.clone()
                         };
                         eprintln!("[tool: {}] OK: {display}", call.tool_name);
+
+                        // Fire PostToolUse hooks on success
+                        hook_registry.fire(&HookEvent::PostToolUse, &tool_hook_ctx);
+
                         (output_str, false)
                     }
                     Err(e) => {
                         eprintln!("[tool: {}] ERROR: {e}", call.tool_name);
+
+                        // Fire PostToolUseFailure hooks on error
+                        hook_registry.fire(&HookEvent::PostToolUseFailure, &tool_hook_ctx);
+
                         (format!("Error: {e}"), true)
                     }
                 },
                 None => {
                     eprintln!("[tool: {}] NOT FOUND", call.tool_name);
+
+                    // Fire PostToolUseFailure hooks for missing tool
+                    hook_registry.fire(&HookEvent::PostToolUseFailure, &tool_hook_ctx);
+
                     (format!("Error: tool '{}' not found", call.tool_name), true)
                 }
             };
@@ -378,6 +442,9 @@ fn run_agent_loop(
             tool_call_id: None,
         });
     }
+
+    // Fire RunEnd hooks
+    hook_registry.fire(&HookEvent::RunEnd, base_hook_ctx);
 
     Ok(accumulated_text)
 }
