@@ -28,6 +28,70 @@ use std::collections::BTreeSet;
 
 use crate::config::ResolvedConfig;
 
+/// Token threshold above which auto-compaction triggers after each agent turn.
+const COMPACT_THRESHOLD: usize = 100_000;
+
+/// Target token count after compaction.
+const COMPACT_TARGET: usize = 50_000;
+
+/// Estimate total token count for a message list using a character-based heuristic.
+///
+/// Uses ~4 characters per token as a rough approximation.
+fn estimate_tokens(messages: &[ChatMessage]) -> usize {
+    messages.iter().map(|m| m.content.len() / 4).sum()
+}
+
+/// Compact a conversation to fit within a target token budget.
+///
+/// Preserves the system context (first message if system role) and the most
+/// recent messages. Inserts a compaction marker so the agent knows earlier
+/// context was dropped.
+fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
+    if messages.len() <= 4 {
+        return;
+    }
+    let current = estimate_tokens(messages);
+    if current <= target {
+        return;
+    }
+
+    // Keep system context (first msg if system) + compaction marker
+    let mut kept = Vec::new();
+    let start_idx = if messages
+        .first()
+        .is_some_and(|m| m.role == arcan_core::protocol::Role::System)
+    {
+        kept.push(messages[0].clone());
+        1
+    } else {
+        0
+    };
+
+    // Add compaction marker
+    kept.push(ChatMessage::system(
+        "[Earlier conversation compacted to stay within context limits]",
+    ));
+
+    // Budget remaining after kept prefix
+    let budget = target.saturating_sub(estimate_tokens(&kept));
+
+    // Walk backwards from the end, keeping recent messages that fit
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for msg in messages[start_idx..].iter().rev() {
+        let cost = msg.content.len() / 4;
+        if used + cost > budget {
+            break;
+        }
+        used += cost;
+        tail.push(msg.clone());
+    }
+    tail.reverse();
+    kept.extend(tail);
+
+    *messages = kept;
+}
+
 /// Run the interactive shell REPL.
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 pub fn run_shell(
@@ -138,6 +202,12 @@ pub fn run_shell(
                     cmd_ctx.session_approved_tools.clear();
                     eprintln!("Session cleared.");
                 }
+                Some(CommandResult::CompactRequested) => {
+                    let before = estimate_tokens(&messages);
+                    compact_conversation(&mut messages, COMPACT_TARGET);
+                    let after = estimate_tokens(&messages);
+                    eprintln!("[compact] {before} tokens -> {after} tokens");
+                }
                 Some(CommandResult::Quit) => {
                     eprintln!("Goodbye.");
                     break;
@@ -173,6 +243,14 @@ pub fn run_shell(
             Err(e) => {
                 eprintln!("Error: {e}");
             }
+        }
+
+        // --- Auto-compact if conversation exceeds threshold ---
+        let tokens = estimate_tokens(&messages);
+        if tokens > COMPACT_THRESHOLD {
+            eprintln!("[compact] {tokens} tokens -> compacting to ~{COMPACT_TARGET}");
+            compact_conversation(&mut messages, COMPACT_TARGET);
+            eprintln!("[compact] now ~{} tokens", estimate_tokens(&messages));
         }
     }
 
@@ -380,4 +458,143 @@ fn run_agent_loop(
     }
 
     Ok(accumulated_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcan_core::protocol::Role;
+
+    fn make_msg(role: Role, content: &str) -> ChatMessage {
+        match role {
+            Role::System => ChatMessage::system(content),
+            Role::User => ChatMessage::user(content),
+            Role::Assistant => ChatMessage::assistant(content),
+            Role::Tool => ChatMessage::tool(content),
+        }
+    }
+
+    #[test]
+    fn test_estimate_tokens() {
+        // Empty conversation
+        assert_eq!(estimate_tokens(&[]), 0);
+
+        // "hello" = 5 chars / 4 = 1 token
+        let msgs = vec![make_msg(Role::User, "hello")];
+        assert_eq!(estimate_tokens(&msgs), 1);
+
+        // 400 chars / 4 = 100 tokens
+        let msgs = vec![make_msg(Role::User, &"a".repeat(400))];
+        assert_eq!(estimate_tokens(&msgs), 100);
+
+        // Multiple messages
+        let msgs = vec![
+            make_msg(Role::System, &"s".repeat(40)),     // 10
+            make_msg(Role::User, &"u".repeat(80)),       // 20
+            make_msg(Role::Assistant, &"a".repeat(120)), // 30
+        ];
+        assert_eq!(estimate_tokens(&msgs), 60);
+    }
+
+    #[test]
+    fn test_compact_preserves_recent() {
+        let mut messages = vec![
+            make_msg(Role::System, "You are a helpful assistant."),
+            make_msg(Role::User, &"old question ".repeat(1000)),
+            make_msg(Role::Assistant, &"old answer ".repeat(1000)),
+            make_msg(Role::User, &"another old question ".repeat(1000)),
+            make_msg(Role::Assistant, &"another old answer ".repeat(1000)),
+            make_msg(Role::User, "recent question"),
+            make_msg(Role::Assistant, "recent answer"),
+        ];
+
+        let before_len = messages.len();
+        compact_conversation(&mut messages, 200);
+
+        // Should have fewer messages than before
+        assert!(
+            messages.len() < before_len,
+            "Should have compacted: {} < {}",
+            messages.len(),
+            before_len
+        );
+
+        // System message should be preserved as first
+        assert_eq!(messages[0].role, Role::System);
+        assert_eq!(messages[0].content, "You are a helpful assistant.");
+
+        // Compaction marker should be second
+        assert_eq!(messages[1].role, Role::System);
+        assert!(messages[1].content.contains("compacted"));
+
+        // Recent messages should be present
+        assert!(messages.iter().any(|m| m.content == "recent answer"));
+        assert!(messages.iter().any(|m| m.content == "recent question"));
+    }
+
+    #[test]
+    fn test_compact_noop_under_threshold() {
+        let mut messages = vec![
+            make_msg(Role::System, "sys"),
+            make_msg(Role::User, "hello"),
+            make_msg(Role::Assistant, "hi"),
+        ];
+
+        let original = messages.clone();
+        // Target much larger than current tokens — should be a no-op
+        compact_conversation(&mut messages, 100_000);
+        assert_eq!(messages.len(), original.len());
+        for (a, b) in messages.iter().zip(original.iter()) {
+            assert_eq!(a.content, b.content);
+        }
+    }
+
+    #[test]
+    fn test_compact_noop_few_messages() {
+        // With 4 or fewer messages, compaction should be a no-op
+        let mut messages = vec![
+            make_msg(Role::System, &"s".repeat(100_000)),
+            make_msg(Role::User, &"u".repeat(100_000)),
+            make_msg(Role::Assistant, &"a".repeat(100_000)),
+            make_msg(Role::User, &"u2".repeat(100_000)),
+        ];
+
+        let original_len = messages.len();
+        compact_conversation(&mut messages, 100);
+        assert_eq!(messages.len(), original_len);
+    }
+
+    #[test]
+    fn test_compact_without_system_message() {
+        let mut messages = vec![
+            make_msg(Role::User, &"old ".repeat(5000)),
+            make_msg(Role::Assistant, &"old reply ".repeat(5000)),
+            make_msg(Role::User, &"old 2 ".repeat(5000)),
+            make_msg(Role::Assistant, &"old reply 2 ".repeat(5000)),
+            make_msg(Role::User, "recent"),
+            make_msg(Role::Assistant, "recent reply"),
+        ];
+
+        compact_conversation(&mut messages, 200);
+
+        // First message should be the compaction marker (no system msg to preserve)
+        assert_eq!(messages[0].role, Role::System);
+        assert!(messages[0].content.contains("compacted"));
+
+        // Recent messages should be preserved
+        assert!(messages.iter().any(|m| m.content == "recent"));
+        assert!(messages.iter().any(|m| m.content == "recent reply"));
+    }
+
+    #[test]
+    fn test_compact_command_in_registry() {
+        let registry = arcan_commands::CommandRegistry::with_builtins();
+        let mut ctx = arcan_commands::CommandContext::default();
+        let result = registry.execute("/compact", &mut ctx);
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap(),
+            arcan_commands::CommandResult::CompactRequested
+        ));
+    }
 }
