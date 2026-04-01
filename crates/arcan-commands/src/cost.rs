@@ -35,11 +35,13 @@ mod tests {
     #[test]
     fn cost_shows_usage() {
         let cmd = CostCommand;
-        let mut ctx = CommandContext::default();
-        ctx.session_turns = 5;
-        ctx.session_input_tokens = 1000;
-        ctx.session_output_tokens = 500;
-        ctx.session_cost_usd = 0.0123;
+        let mut ctx = CommandContext {
+            session_turns: 5,
+            session_input_tokens: 1000,
+            session_output_tokens: 500,
+            session_cost_usd: 0.0123,
+            ..Default::default()
+        };
         match cmd.execute("", &mut ctx) {
             CommandResult::Output(text) => {
                 assert!(text.contains("Turns:  5"));

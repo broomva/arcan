@@ -27,8 +27,10 @@ mod tests {
     #[test]
     fn help_returns_help_text() {
         let cmd = HelpCommand;
-        let mut ctx = CommandContext::default();
-        ctx.help_text = "test help".to_string();
+        let mut ctx = CommandContext {
+            help_text: "test help".to_string(),
+            ..Default::default()
+        };
         match cmd.execute("", &mut ctx) {
             CommandResult::Output(text) => assert_eq!(text, "test help"),
             other => panic!("expected Output, got {other:?}"),
