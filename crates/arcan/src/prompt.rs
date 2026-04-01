@@ -4,7 +4,7 @@
 //! 1. Role definition
 //! 2. Environment info (OS, shell, date, model)
 //! 3. Git context (branch, status, recent commits)
-//! 4. Project instructions (CLAUDE.md hierarchy)
+//! 4. Project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml)
 //! 5. Memory context (cross-session `.arcan/memory/*.md`)
 //! 6. Skill catalog
 //! 7. Guidelines
@@ -138,39 +138,127 @@ fn build_git_section(workspace: &Path) -> Option<String> {
     ))
 }
 
-/// Load CLAUDE.md files from the workspace hierarchy (like Claude Code).
+/// Load project instructions from the workspace hierarchy.
 ///
-/// Searches for project instructions in:
-/// 1. `<workspace>/CLAUDE.md`
-/// 2. `<workspace>/.claude/CLAUDE.md`
-/// 3. `<workspace>/.claude/rules/*.md`
+/// Searches for instructions in multiple locations (all optional, concatenated):
+///
+/// **Base rules** (project-level, not tied to any specific agent framework):
+/// 1. `<workspace>/CLAUDE.md` — Claude Code conventions
+/// 2. `<workspace>/AGENTS.md` — Agent operational rules and boundaries
+/// 3. `<workspace>/.claude/CLAUDE.md` — Additional Claude-specific instructions
+/// 4. `<workspace>/.claude/rules/*.md` — Granular rule files (sorted)
+///
+/// **Life framework context** (if running inside a Life Agent OS workspace):
+/// 5. `<workspace>/../CLAUDE.md` — Parent workspace instructions (e.g., `core/life/CLAUDE.md`)
+/// 6. `<workspace>/docs/STATUS.md` — Current implementation status
+/// 7. `<workspace>/docs/ARCHITECTURE.md` — System architecture
+/// 8. `<workspace>/docs/ROADMAP.md` — Development roadmap
+///
+/// **Control metalayer** (if present):
+/// 9. `<workspace>/.control/policy.yaml` — Enforceable policy constraints
 ///
 /// Returns the concatenated content, or `None` if nothing was found.
-pub fn load_claude_md(workspace: &Path) -> Option<String> {
+pub fn load_project_instructions(workspace: &Path) -> Option<String> {
     let mut contents = Vec::new();
 
-    // Check workspace CLAUDE.md
-    let claude_md = workspace.join("CLAUDE.md");
-    if claude_md.exists() {
-        if let Ok(content) = std::fs::read_to_string(&claude_md) {
+    // --- Base rules ---
+
+    // CLAUDE.md (Claude Code conventions — widely adopted standard)
+    load_file_if_exists(workspace, "CLAUDE.md", &mut contents);
+
+    // AGENTS.md (agent operational rules — framework-agnostic)
+    load_file_if_exists(workspace, "AGENTS.md", &mut contents);
+
+    // .claude/CLAUDE.md (additional instructions)
+    load_file_if_exists(workspace, ".claude/CLAUDE.md", &mut contents);
+
+    // .claude/rules/*.md (granular rules, sorted for deterministic ordering)
+    load_rules_dir(workspace, ".claude/rules", &mut contents);
+
+    // --- Life framework context (if present) ---
+
+    // Parent CLAUDE.md (e.g., core/life/CLAUDE.md when running in core/life/arcan/)
+    if let Some(parent) = workspace.parent() {
+        let parent_claude = parent.join("CLAUDE.md");
+        if parent_claude.exists() && parent_claude != workspace.join("CLAUDE.md") {
+            if let Ok(content) = std::fs::read_to_string(&parent_claude) {
+                if !content.trim().is_empty() {
+                    contents.push(format!(
+                        "<!-- from {} -->\n{}",
+                        parent_claude.display(),
+                        content
+                    ));
+                }
+            }
+        }
+    }
+
+    // docs/ context files — lightweight summaries that inform the agent
+    // about project status without requiring tool calls
+    for doc_file in &["docs/STATUS.md", "docs/ARCHITECTURE.md", "docs/ROADMAP.md"] {
+        let path = workspace.join(doc_file);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    // Truncate large docs to first 2000 chars to save tokens
+                    let truncated = if trimmed.len() > 2000 {
+                        format!(
+                            "{}\n\n... (truncated, {} total chars — use read_file for full content)",
+                            &trimmed[..2000],
+                            trimmed.len()
+                        )
+                    } else {
+                        trimmed.to_string()
+                    };
+                    contents.push(format!("<!-- from {doc_file} -->\n{truncated}"));
+                }
+            }
+        }
+    }
+
+    // --- Control metalayer ---
+
+    // .control/policy.yaml — machine-readable policy constraints
+    let policy_path = workspace.join(".control/policy.yaml");
+    if policy_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&policy_path) {
+            if !content.trim().is_empty() {
+                contents.push(format!(
+                    "<!-- Control policy (.control/policy.yaml) -->\n```yaml\n{}\n```",
+                    content.trim()
+                ));
+            }
+        }
+    }
+
+    if contents.is_empty() {
+        None
+    } else {
+        Some(contents.join("\n\n"))
+    }
+}
+
+/// Backward-compatible alias for `load_project_instructions`.
+pub fn load_claude_md(workspace: &Path) -> Option<String> {
+    load_project_instructions(workspace)
+}
+
+/// Load a single file relative to workspace if it exists and is non-empty.
+fn load_file_if_exists(workspace: &Path, relative: &str, contents: &mut Vec<String>) {
+    let path = workspace.join(relative);
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
             if !content.trim().is_empty() {
                 contents.push(content);
             }
         }
     }
+}
 
-    // Check .claude/CLAUDE.md
-    let dot_claude_md = workspace.join(".claude/CLAUDE.md");
-    if dot_claude_md.exists() {
-        if let Ok(content) = std::fs::read_to_string(&dot_claude_md) {
-            if !content.trim().is_empty() {
-                contents.push(content);
-            }
-        }
-    }
-
-    // Check .claude/rules/*.md (sorted for deterministic ordering)
-    let rules_dir = workspace.join(".claude/rules");
+/// Load all .md files from a rules directory, sorted alphabetically.
+fn load_rules_dir(workspace: &Path, relative: &str, contents: &mut Vec<String>) {
+    let rules_dir = workspace.join(relative);
     if rules_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&rules_dir) {
             let mut rule_files: Vec<_> = entries
@@ -187,12 +275,6 @@ pub fn load_claude_md(workspace: &Path) -> Option<String> {
                 }
             }
         }
-    }
-
-    if contents.is_empty() {
-        None
-    } else {
-        Some(contents.join("\n\n"))
     }
 }
 
@@ -326,13 +408,36 @@ mod tests {
         let workspace = tmp.path();
         fs::write(workspace.join("CLAUDE.md"), "# Instructions\nDo X.").unwrap();
 
-        let result = load_claude_md(workspace);
+        let result = load_project_instructions(workspace);
         assert!(result.is_some());
         assert!(result.unwrap().contains("Do X."));
     }
 
     #[test]
-    fn test_load_claude_md_rules_dir() {
+    fn test_load_agents_md() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        fs::write(workspace.join("AGENTS.md"), "# Agent Rules\nBe safe.").unwrap();
+
+        let result = load_project_instructions(workspace);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Be safe."));
+    }
+
+    #[test]
+    fn test_load_both_claude_and_agents_md() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        fs::write(workspace.join("CLAUDE.md"), "Claude rules.").unwrap();
+        fs::write(workspace.join("AGENTS.md"), "Agent rules.").unwrap();
+
+        let result = load_project_instructions(workspace).unwrap();
+        assert!(result.contains("Claude rules."));
+        assert!(result.contains("Agent rules."));
+    }
+
+    #[test]
+    fn test_load_rules_dir() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path();
         let rules_dir = workspace.join(".claude/rules");
@@ -340,7 +445,7 @@ mod tests {
         fs::write(rules_dir.join("code-style.md"), "Use snake_case.").unwrap();
         fs::write(rules_dir.join("testing.md"), "All code needs tests.").unwrap();
 
-        let result = load_claude_md(workspace);
+        let result = load_project_instructions(workspace);
         assert!(result.is_some());
         let content = result.unwrap();
         assert!(content.contains("Use snake_case."));
@@ -348,9 +453,40 @@ mod tests {
     }
 
     #[test]
-    fn test_load_claude_md_empty_returns_none() {
+    fn test_load_docs_context() {
         let tmp = TempDir::new().unwrap();
-        let result = load_claude_md(tmp.path());
+        let workspace = tmp.path();
+        let docs_dir = workspace.join("docs");
+        fs::create_dir_all(&docs_dir).unwrap();
+        fs::write(docs_dir.join("STATUS.md"), "# Status\n100% tests passing").unwrap();
+        fs::write(docs_dir.join("ARCHITECTURE.md"), "# Arch\nEvent-sourced.").unwrap();
+
+        let result = load_project_instructions(workspace).unwrap();
+        assert!(result.contains("100% tests passing"));
+        assert!(result.contains("Event-sourced."));
+    }
+
+    #[test]
+    fn test_load_control_policy() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let control_dir = workspace.join(".control");
+        fs::create_dir_all(&control_dir).unwrap();
+        fs::write(
+            control_dir.join("policy.yaml"),
+            "gates:\n  - name: G1\n    blocking: true",
+        )
+        .unwrap();
+
+        let result = load_project_instructions(workspace).unwrap();
+        assert!(result.contains("gates:"));
+        assert!(result.contains("blocking: true"));
+    }
+
+    #[test]
+    fn test_load_empty_workspace_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let result = load_project_instructions(tmp.path());
         assert!(result.is_none());
     }
 
@@ -435,22 +571,42 @@ mod tests {
     }
 
     #[test]
-    fn test_load_claude_md_combines_all_sources() {
+    fn test_load_combines_all_sources() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path();
 
-        // Create all three sources
+        // Create all sources
         fs::write(workspace.join("CLAUDE.md"), "Root instructions.").unwrap();
+        fs::write(workspace.join("AGENTS.md"), "Agent boundaries.").unwrap();
         let dot_claude = workspace.join(".claude");
         fs::create_dir_all(&dot_claude).unwrap();
         fs::write(dot_claude.join("CLAUDE.md"), "Dot-claude instructions.").unwrap();
         let rules_dir = dot_claude.join("rules");
         fs::create_dir_all(&rules_dir).unwrap();
         fs::write(rules_dir.join("style.md"), "Style rules.").unwrap();
+        let docs = workspace.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("STATUS.md"), "All green.").unwrap();
+        let control = workspace.join(".control");
+        fs::create_dir_all(&control).unwrap();
+        fs::write(control.join("policy.yaml"), "version: 1").unwrap();
 
-        let result = load_claude_md(workspace).unwrap();
+        let result = load_project_instructions(workspace).unwrap();
         assert!(result.contains("Root instructions."));
+        assert!(result.contains("Agent boundaries."));
         assert!(result.contains("Dot-claude instructions."));
         assert!(result.contains("Style rules."));
+        assert!(result.contains("All green."));
+        assert!(result.contains("version: 1"));
+    }
+
+    #[test]
+    fn test_backward_compat_load_claude_md() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        fs::write(workspace.join("CLAUDE.md"), "Legacy call.").unwrap();
+        let result = load_claude_md(workspace);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Legacy call."));
     }
 }
