@@ -38,8 +38,87 @@ use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileT
 use praxis_tools::memory::{ReadMemoryTool, WriteMemoryTool};
 use praxis_tools::shell::BashTool;
 use std::collections::BTreeSet;
+use std::sync::RwLock;
+
+// Phase 2: Governed memory tools (BRO-360, BRO-361)
+use arcan_lago::{MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool};
 
 use crate::config::ResolvedConfig;
+
+// ---------------------------------------------------------------------------
+// Phase 7: Identity (BRO-370, BRO-371)
+// ---------------------------------------------------------------------------
+
+/// Supported identity tiers for Arcan users.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IdentityTier {
+    Anonymous,
+    Free,
+    Pro,
+    Enterprise,
+}
+
+impl std::fmt::Display for IdentityTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anonymous => write!(f, "anonymous"),
+            Self::Free => write!(f, "free"),
+            Self::Pro => write!(f, "pro"),
+            Self::Enterprise => write!(f, "enterprise"),
+        }
+    }
+}
+
+/// Parsed identity information.
+#[derive(Debug, Clone)]
+struct IdentityInfo {
+    tier: IdentityTier,
+    subject: Option<String>,
+}
+
+/// Resolve identity from `ARCAN_IDENTITY_TOKEN` env var or `~/.arcan/identity.json`.
+///
+/// The identity file/token is expected to be a JSON object with at least a `tier` field.
+/// Example: `{"tier": "pro", "sub": "user@example.com"}`
+///
+/// Returns `None` if no identity source is found.
+fn resolve_identity() -> Option<IdentityInfo> {
+    // Try env var first
+    if let Ok(token) = std::env::var("ARCAN_IDENTITY_TOKEN") {
+        if let Some(info) = parse_identity_json(&token) {
+            return Some(info);
+        }
+    }
+
+    // Fall back to ~/.arcan/identity.json
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".arcan/identity.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(info) = parse_identity_json(&content) {
+                return Some(info);
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse identity JSON (from env var or file).
+fn parse_identity_json(json_str: &str) -> Option<IdentityInfo> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let tier_str = value
+        .get("tier")
+        .and_then(|v| v.as_str())
+        .unwrap_or("anonymous");
+    let tier = match tier_str {
+        "free" => IdentityTier::Free,
+        "pro" => IdentityTier::Pro,
+        "enterprise" => IdentityTier::Enterprise,
+        _ => IdentityTier::Anonymous,
+    };
+    let subject = value.get("sub").and_then(|v| v.as_str()).map(String::from);
+    Some(IdentityInfo { tier, subject })
+}
 
 /// Maximum number of lines to include in the session summary.
 const SUMMARY_MAX_LINES: usize = 50;
@@ -564,6 +643,68 @@ pub fn run_shell(
         memory_dir.clone(),
     )));
 
+    // --- Phase 2: Governed memory tools (BRO-360, BRO-361) ---
+    // Register Lago-backed governed memory tools alongside the filesystem ones.
+    // The governed tools (memory_query, memory_propose, memory_commit) provide
+    // event-sourced memory with scopes, while the filesystem tools remain as
+    // a fallback/export mechanism for cross-session persistence.
+    let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
+    registry.register(MemoryQueryTool::new(memory_projection));
+    registry.register(MemoryProposeTool::new(journal.clone()));
+    registry.register(MemoryCommitTool::new(journal.clone()));
+
+    // --- Phase 6: Spaces networking (BRO-368, BRO-369) ---
+    #[cfg(feature = "spaces")]
+    let spaces_connected = {
+        let mut connected = false;
+        if resolved.spaces_backend != "none" {
+            match resolved.spaces_backend.as_str() {
+                "spacetimedb" | "mainnet" => {
+                    match arcan_spaces::SpacetimeDbConfig::resolve(
+                        resolved.spaces_host.as_deref(),
+                        resolved.spaces_database_id.as_deref(),
+                        resolved.spaces_token.as_deref(),
+                    ) {
+                        Ok(stdb_config) => {
+                            let spaces_port: Arc<dyn arcan_spaces::SpacesPort> =
+                                Arc::new(arcan_spaces::SpacetimeDbClient::new(stdb_config));
+                            arcan_spaces::register_spaces_tools(&mut registry, spaces_port);
+                            connected = true;
+                            eprintln!("[spaces] SpacetimeDB backend connected");
+                        }
+                        Err(e) => {
+                            eprintln!("[spaces] SpacetimeDB config failed (non-fatal): {e}");
+                        }
+                    }
+                }
+                "mock" => {
+                    let spaces_port: Arc<dyn arcan_spaces::SpacesPort> =
+                        Arc::new(arcan_spaces::MockSpacesClient::default_hub());
+                    arcan_spaces::register_spaces_tools(&mut registry, spaces_port);
+                    connected = true;
+                    eprintln!("[spaces] Mock backend connected");
+                }
+                _ => {
+                    // Unknown backend — skip silently
+                }
+            }
+        }
+        connected
+    };
+    #[cfg(not(feature = "spaces"))]
+    let spaces_connected = false;
+
+    // --- Phase 7: Identity resolution (BRO-370, BRO-371) ---
+    let identity = resolve_identity();
+    if let Some(ref id) = identity {
+        let subject_display = id
+            .subject
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default();
+        eprintln!("[identity] Tier: {}{}", id.tier, subject_display);
+    }
+
     // --- Skill discovery ---
     let skill_registry = if resolved.skills_enabled {
         match crate::skills::discover_skills(
@@ -708,12 +849,37 @@ pub fn run_shell(
     if let Some(b) = budget {
         eprintln!("Budget: ${b:.2}");
     }
+    // Phase 7: Identity in banner
+    if let Some(ref id) = identity {
+        let subject_display = id
+            .subject
+            .as_deref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default();
+        eprintln!("Identity: {}{}", id.tier, subject_display);
+    }
+    // Phase 6: Spaces status in banner
+    if spaces_connected {
+        eprintln!("Spaces: connected ({})", resolved.spaces_backend);
+    }
     eprintln!(
         "Session: {} | Journal: {} | Type /help for commands",
         lago_session_id,
         journal_path.display()
     );
     eprintln!();
+
+    // --- Phase 8: Vigil session span (BRO-372, BRO-373) ---
+    // Wrap the entire REPL session in a tracing span for observability.
+    // If no OTLP endpoint is configured, these are no-op structured log entries.
+    let _session_span = tracing::info_span!(
+        "arcan_shell_session",
+        session_id = %lago_session_id,
+        provider = %provider_name,
+        model = %model_name,
+        identity_tier = identity.as_ref().map(|id| id.tier.to_string()).unwrap_or_else(|| "none".to_string()),
+    )
+    .entered();
 
     // --- REPL loop ---
     let stdin = std::io::stdin();
@@ -947,6 +1113,14 @@ fn run_agent_loop(
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
     let state = AppState::default();
+
+    // Phase 8: Vigil span for the entire agent loop run (BRO-372)
+    let _run_span = tracing::info_span!(
+        "agent_loop_run",
+        run_id = %run_id,
+        session_id = session_id,
+    )
+    .entered();
     let mut accumulated_text = String::new();
     let max_iterations = 24;
 
@@ -954,6 +1128,14 @@ fn run_agent_loop(
     hook_registry.fire(&HookEvent::RunStart, base_hook_ctx);
 
     for iteration in 1..=max_iterations {
+        // Phase 8: Vigil span per iteration (BRO-372)
+        let _iter_span = tracing::info_span!(
+            "agent_loop_iteration",
+            iteration = iteration,
+            run_id = %run_id,
+        )
+        .entered();
+
         // --- Budget enforcement (BRO-364) ---
         if let Some(budget) = cmd_ctx.budget_usd {
             if cmd_ctx.session_cost_usd >= budget {
@@ -983,11 +1165,22 @@ fn run_agent_loop(
             state: state.clone(),
         };
 
+        // Phase 8: Vigil span for provider call (BRO-372)
+        let _provider_span = tracing::info_span!(
+            "provider_call",
+            provider = %cmd_ctx.provider_name,
+            model = %cmd_ctx.model_name,
+            iteration = iteration,
+        )
+        .entered();
+
         let turn = provider.complete_streaming(&request, &|delta| {
             let mut out = std::io::stdout().lock();
             let _ = write!(out, "{delta}");
             let _ = out.flush();
         })?;
+
+        drop(_provider_span);
 
         // Track token usage with per-model cost estimation (BRO-364)
         if let Some(usage) = &turn.usage {
@@ -1298,6 +1491,14 @@ fn run_agent_loop(
 /// This is a pure helper extracted so it can be called from scoped threads
 /// during parallel tool execution.
 fn execute_tool(registry: &ToolRegistry, call: &ToolCall, ctx: &ToolContext) -> (String, bool) {
+    // Phase 8: Vigil span per tool execution (BRO-372)
+    let _tool_span = tracing::info_span!(
+        "execute_tool",
+        tool_name = %call.tool_name,
+        tool_call_id = %call.call_id,
+    )
+    .entered();
+
     match registry.get(&call.tool_name) {
         Some(tool) => match tool.execute(call, ctx) {
             Ok(result) => {
@@ -1305,11 +1506,18 @@ fn execute_tool(registry: &ToolRegistry, call: &ToolCall, ctx: &ToolContext) -> 
                     serde_json::Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
+                tracing::debug!(tool_name = %call.tool_name, status = "ok", "tool completed");
                 (output_str, false)
             }
-            Err(e) => (format!("Error: {e}"), true),
+            Err(e) => {
+                tracing::warn!(tool_name = %call.tool_name, error = %e, "tool failed");
+                (format!("Error: {e}"), true)
+            }
         },
-        None => (format!("Error: tool '{}' not found", call.tool_name), true),
+        None => {
+            tracing::warn!(tool_name = %call.tool_name, "tool not found");
+            (format!("Error: tool '{}' not found", call.tool_name), true)
+        }
     }
 }
 
@@ -1640,5 +1848,67 @@ mod tests {
         let cost = estimate_cost(5000, 1000, "claude-sonnet-4-20250514");
         // (5000 * 3 + 1000 * 15) / 1_000_000 = (15000 + 15000) / 1_000_000 = 0.03
         assert!((cost - 0.03).abs() < 0.001);
+    }
+
+    // --- Phase 7: Identity tests (BRO-370) ---
+
+    #[test]
+    fn test_parse_identity_json_pro() {
+        let json = r#"{"tier": "pro", "sub": "user@example.com"}"#;
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Pro);
+        assert_eq!(info.subject.as_deref(), Some("user@example.com"));
+    }
+
+    #[test]
+    fn test_parse_identity_json_free() {
+        let json = r#"{"tier": "free"}"#;
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Free);
+        assert!(info.subject.is_none());
+    }
+
+    #[test]
+    fn test_parse_identity_json_enterprise() {
+        let json = r#"{"tier": "enterprise", "sub": "admin@corp.com"}"#;
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Enterprise);
+        assert_eq!(info.subject.as_deref(), Some("admin@corp.com"));
+    }
+
+    #[test]
+    fn test_parse_identity_json_unknown_tier_defaults_to_anonymous() {
+        let json = r#"{"tier": "unknown_value"}"#;
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Anonymous);
+    }
+
+    #[test]
+    fn test_parse_identity_json_no_tier_defaults_to_anonymous() {
+        let json = r#"{"sub": "user@example.com"}"#;
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Anonymous);
+    }
+
+    #[test]
+    fn test_parse_identity_json_invalid_json() {
+        let json = "not valid json";
+        assert!(parse_identity_json(json).is_none());
+    }
+
+    #[test]
+    fn test_parse_identity_json_empty() {
+        let json = "{}";
+        let info = parse_identity_json(json).unwrap();
+        assert_eq!(info.tier, IdentityTier::Anonymous);
+        assert!(info.subject.is_none());
+    }
+
+    #[test]
+    fn test_identity_tier_display() {
+        assert_eq!(IdentityTier::Anonymous.to_string(), "anonymous");
+        assert_eq!(IdentityTier::Free.to_string(), "free");
+        assert_eq!(IdentityTier::Pro.to_string(), "pro");
+        assert_eq!(IdentityTier::Enterprise.to_string(), "enterprise");
     }
 }
