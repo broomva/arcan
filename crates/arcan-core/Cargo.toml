@@ -16,9 +16,13 @@ workspace = true
 
 [dependencies]
 aios-protocol.workspace = true
+chrono.workspace = true
 json-patch.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 wait-timeout.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

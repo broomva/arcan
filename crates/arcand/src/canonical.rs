@@ -189,6 +189,11 @@ struct CanonicalState {
     started_at: Instant,
     /// Root directory for per-session sandbox directories (BRO-215).
     data_dir: Arc<std::path::PathBuf>,
+    /// Workspace root (cwd at daemon startup) — used for git context and project instructions.
+    workspace_root: Arc<std::path::PathBuf>,
+    /// Cached project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml).
+    /// Loaded once at startup; project instructions rarely change during a session.
+    cached_project_instructions: Option<String>,
     /// Shared skill registry for activation and tool filtering.
     skill_registry: Option<Arc<praxis_skills::registry::SkillRegistry>>,
     /// Observers notified on run completion (async judge evaluators, EGRI bridge).
@@ -550,6 +555,7 @@ pub fn create_canonical_router(
         Vec::new(),
         None,
         std::env::temp_dir(),
+        None, // workspace_root
         None, // session_selector (BRO-217)
         None, // free_tier_journal (BRO-218)
     )
@@ -573,6 +579,7 @@ pub fn create_canonical_router_with_skills(
     run_observers: Vec<Arc<dyn ToolHarnessObserver>>,
     identity: Option<Arc<dyn AgentIdentityProvider>>,
     data_dir: impl Into<std::path::PathBuf>,
+    workspace_root: Option<std::path::PathBuf>,
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
     free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
 ) -> Router {
@@ -602,12 +609,26 @@ pub fn create_canonical_router_with_skills(
         );
     }
 
+    // BRO-366/375: Resolve workspace root and cache project instructions at startup.
+    let ws_root = workspace_root
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(std::env::temp_dir);
+    let cached_project_instructions = arcan_core::prompt::load_project_instructions(&ws_root);
+    if cached_project_instructions.is_some() {
+        tracing::info!(
+            workspace = %ws_root.display(),
+            "loaded project instructions for liquid prompt (BRO-375)"
+        );
+    }
+
     let state = CanonicalState {
         runtime,
         provider_handle,
         provider_factory,
         started_at: Instant::now(),
         data_dir: Arc::new(data_dir.into()),
+        workspace_root: Arc::new(ws_root),
+        cached_project_instructions,
         skill_registry,
         run_observers,
         identity,
@@ -1399,7 +1420,8 @@ async fn run_session(
         .map(|registry| build_tiered_skill_catalog(registry, tier_allowed_tools.as_deref()))
         .unwrap_or_default();
 
-    // Build system prompt: tier-filtered skill catalog + persona + sandbox note + active skill.
+    // BRO-366/374/375: Build unified liquid prompt — git context, project instructions,
+    // environment, memory, persona, skill catalog, and guidelines.
     let persona = state.identity.persona_block();
     // Append sandbox workspace note to persona so the LLM knows where to write files.
     let sandbox_note = sandbox_path
@@ -1413,16 +1435,59 @@ async fn run_session(
             )
         })
         .unwrap_or_default();
+
     let system_prompt = Some({
-        let base = if skill_catalog.is_empty() {
-            format!("{persona}{sandbox_note}")
-        } else {
-            format!("{skill_catalog}\n\n---\n\n{persona}{sandbox_note}")
-        };
-        match skill_prompt {
-            Some(skill) => format!("{base}\n\n---\n\n{skill}"),
-            None => base,
+        let mut sections = Vec::new();
+
+        // 1. Persona (agent identity)
+        sections.push(format!("{persona}{sandbox_note}"));
+
+        // 2. Environment info (BRO-366)
+        let provider_name = state
+            .provider_handle
+            .read()
+            .ok()
+            .map(|p| p.name().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let model_name = std::env::var("ARCAN_MODEL")
+            .or_else(|_| std::env::var("MODEL"))
+            .unwrap_or_else(|_| "default".to_string());
+        sections.push(arcan_core::prompt::build_environment_section(
+            &state.workspace_root,
+            &provider_name,
+            &model_name,
+        ));
+
+        // 3. Git context (BRO-374) — computed per-request for freshness
+        if let Some(git) = arcan_core::prompt::build_git_section(&state.workspace_root) {
+            sections.push(git);
         }
+
+        // 4. Project instructions (BRO-375) — cached at startup
+        if let Some(ref instructions) = state.cached_project_instructions {
+            sections.push(format!("# Project Instructions\n\n{instructions}"));
+        }
+
+        // 5. Memory (from data_dir)
+        let memory_dir = state.data_dir.join("memory");
+        if let Some(memory) = arcan_core::prompt::build_memory_section(&memory_dir) {
+            sections.push(memory);
+        }
+
+        // 6. Tier-filtered skill catalog
+        if !skill_catalog.is_empty() {
+            sections.push(skill_catalog);
+        }
+
+        // 7. Active skill prompt
+        if let Some(skill) = skill_prompt {
+            sections.push(skill);
+        }
+
+        // 8. Guidelines
+        sections.push(arcan_core::prompt::build_guidelines_section());
+
+        sections.join("\n\n---\n\n")
     });
 
     // Combine tier restriction with any active skill's allowed_tools.

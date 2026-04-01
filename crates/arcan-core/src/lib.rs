@@ -3,6 +3,7 @@ pub mod context;
 pub mod context_compiler;
 pub mod error;
 pub mod hooks;
+pub mod prompt;
 pub mod protocol;
 pub mod protocol_bridge;
 pub mod runtime;

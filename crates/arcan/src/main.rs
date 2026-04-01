@@ -692,7 +692,8 @@ fn run_serve(
             run_observers,
             None, // identity — use BasicIdentity default; Anima can be wired later
             data_dir,
-            Some(session_selector), // BRO-217: ephemeral journal routing for anonymous tiers
+            Some(workspace_root),    // BRO-366: workspace root for liquid prompt
+            Some(session_selector),  // BRO-217: ephemeral journal routing for anonymous tiers
             Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
         );
 
