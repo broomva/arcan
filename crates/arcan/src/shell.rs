@@ -397,14 +397,27 @@ fn run_agent_loop(
 
         // Execute tool calls and collect results as a single user message
         // with tool_result content blocks (Anthropic API format).
+        //
+        // Phase 1 (sequential): permission checks and pre-tool hooks.
+        // Phase 2 (parallel):   execute approved tools concurrently.
+        // Phase 3 (sequential): fire post-tool hooks in order.
         let ctx = ToolContext {
             run_id: run_id.clone(),
             session_id: session_id.to_string(),
             iteration,
         };
 
-        let mut result_blocks = Vec::new();
-        for call in &tool_calls {
+        // result_blocks[i] corresponds to tool_calls[i]. Pre-fill with None;
+        // denied/blocked calls are resolved in Phase 1, approved calls in Phase 2.
+        let mut result_blocks: Vec<Option<serde_json::Value>> = vec![None; tool_calls.len()];
+
+        // Indices of tool calls approved for execution after permission + hook gates.
+        let mut approved_indices: Vec<usize> = Vec::new();
+        // Hook contexts built per-call (needed in Phase 3 for post-tool hooks).
+        let mut hook_contexts: Vec<Option<HookContext>> = vec![None; tool_calls.len()];
+
+        // --- Phase 1: sequential permission checks and pre-tool hooks ---
+        for (i, call) in tool_calls.iter().enumerate() {
             eprintln!("\n[tool: {}]", call.tool_name);
 
             // --- Permission check ---
@@ -432,7 +445,7 @@ fn run_agent_loop(
                     }
                     _ => {
                         eprintln!("[tool: {}] DENIED by user", call.tool_name);
-                        result_blocks.push(serde_json::json!({
+                        result_blocks[i] = Some(serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": call.call_id,
                             "content": format!("Permission denied: user declined to run '{}'", call.tool_name),
@@ -456,7 +469,7 @@ fn run_agent_loop(
                 hook_registry.check_blocking(&HookEvent::PreToolUse, &tool_hook_ctx)
             {
                 eprintln!("[hook] blocked {}: {}", call.tool_name, denied.message);
-                result_blocks.push(serde_json::json!({
+                result_blocks[i] = Some(serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": call.call_id,
                     "content": format!("Blocked by hook: {}", denied.message),
@@ -467,51 +480,80 @@ fn run_agent_loop(
             // Fire non-blocking PreToolUse hooks
             hook_registry.fire(&HookEvent::PreToolUse, &tool_hook_ctx);
 
-            let (content, is_error) = match registry.get(&call.tool_name) {
-                Some(tool) => match tool.execute(call, &ctx) {
-                    Ok(result) => {
-                        let output_str = match &result.output {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        let display = if output_str.len() > 200 {
-                            format!("{}... ({} bytes)", &output_str[..200], output_str.len())
-                        } else {
-                            output_str.clone()
-                        };
-                        eprintln!("[tool: {}] OK: {display}", call.tool_name);
+            hook_contexts[i] = Some(tool_hook_ctx);
+            approved_indices.push(i);
+        }
 
-                        // Fire PostToolUse hooks on success
-                        hook_registry.fire(&HookEvent::PostToolUse, &tool_hook_ctx);
+        // --- Phase 2: parallel tool execution via std::thread::scope ---
+        // Each approved tool runs in its own scoped thread. Results are
+        // collected into a Vec indexed by position in approved_indices.
+        let parallel_results: Vec<(usize, String, bool)> = if approved_indices.len() <= 1 {
+            // Single tool — no threading overhead needed.
+            approved_indices
+                .iter()
+                .map(|&i| {
+                    let call = &tool_calls[i];
+                    let (content, is_error) = execute_tool(registry, call, &ctx);
+                    (i, content, is_error)
+                })
+                .collect()
+        } else {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = approved_indices
+                    .iter()
+                    .map(|&i| {
+                        let call = &tool_calls[i];
+                        let ctx_ref = &ctx;
+                        s.spawn(move || {
+                            let (content, is_error) = execute_tool(registry, call, ctx_ref);
+                            (i, content, is_error)
+                        })
+                    })
+                    .collect();
 
-                        (output_str, false)
-                    }
-                    Err(e) => {
-                        eprintln!("[tool: {}] ERROR: {e}", call.tool_name);
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("tool thread panicked"))
+                    .collect()
+            })
+        };
 
-                        // Fire PostToolUseFailure hooks on error
-                        hook_registry.fire(&HookEvent::PostToolUseFailure, &tool_hook_ctx);
-
-                        (format!("Error: {e}"), true)
-                    }
-                },
-                None => {
-                    eprintln!("[tool: {}] NOT FOUND", call.tool_name);
-
-                    // Fire PostToolUseFailure hooks for missing tool
-                    hook_registry.fire(&HookEvent::PostToolUseFailure, &tool_hook_ctx);
-
-                    (format!("Error: tool '{}' not found", call.tool_name), true)
-                }
+        // --- Phase 3: sequential post-tool hooks + assemble result blocks ---
+        for (i, content, is_error) in parallel_results {
+            let call = &tool_calls[i];
+            let display = if content.len() > 200 {
+                format!("{}... ({} bytes)", &content[..200], content.len())
+            } else {
+                content.clone()
             };
+            if is_error {
+                eprintln!("[tool: {}] ERROR: {display}", call.tool_name);
+            } else {
+                eprintln!("[tool: {}] OK: {display}", call.tool_name);
+            }
 
-            result_blocks.push(serde_json::json!({
+            // Fire post-tool hooks (must be sequential — may have side effects)
+            if let Some(ref tool_hook_ctx) = hook_contexts[i] {
+                if is_error {
+                    hook_registry.fire(&HookEvent::PostToolUseFailure, tool_hook_ctx);
+                } else {
+                    hook_registry.fire(&HookEvent::PostToolUse, tool_hook_ctx);
+                }
+            }
+
+            result_blocks[i] = Some(serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": call.call_id,
                 "content": content,
                 "is_error": is_error,
             }));
         }
+
+        // Flatten Option<Value> → Value (all slots should be filled by now).
+        let result_blocks: Vec<serde_json::Value> = result_blocks
+            .into_iter()
+            .map(|opt| opt.expect("tool result slot was not filled"))
+            .collect();
 
         // Push tool results as a single user message with structured blocks.
         messages.push(ChatMessage {
@@ -525,6 +567,26 @@ fn run_agent_loop(
     hook_registry.fire(&HookEvent::RunEnd, base_hook_ctx);
 
     Ok(accumulated_text)
+}
+
+/// Execute a single tool call against the registry, returning (content, is_error).
+///
+/// This is a pure helper extracted so it can be called from scoped threads
+/// during parallel tool execution.
+fn execute_tool(registry: &ToolRegistry, call: &ToolCall, ctx: &ToolContext) -> (String, bool) {
+    match registry.get(&call.tool_name) {
+        Some(tool) => match tool.execute(call, ctx) {
+            Ok(result) => {
+                let output_str = match &result.output {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                (output_str, false)
+            }
+            Err(e) => (format!("Error: {e}"), true),
+        },
+        None => (format!("Error: tool '{}' not found", call.tool_name), true),
+    }
 }
 
 #[cfg(test)]
