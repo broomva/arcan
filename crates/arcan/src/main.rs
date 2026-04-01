@@ -169,6 +169,10 @@ enum Command {
         /// Session ID to use (creates new if not provided)
         #[arg(short, long)]
         session: Option<String>,
+
+        /// Auto-approve all tool executions (skip permission prompts)
+        #[arg(short, long)]
+        yes: bool,
     },
 }
 
@@ -1239,7 +1243,7 @@ fn main() -> anyhow::Result<()> {
             );
             run_skills(&data_dir, &resolved, &action)
         }
-        Some(Command::Shell { session }) => {
+        Some(Command::Shell { session, yes }) => {
             let resolved = config::resolve(
                 &file_config,
                 cli.provider.as_deref(),
@@ -1261,7 +1265,7 @@ fn main() -> anyhow::Result<()> {
                 .with_env_filter(EnvFilter::from_default_env())
                 .init();
 
-            shell::run_shell(&data_dir, &resolved, session)
+            shell::run_shell(&data_dir, &resolved, session, yes)
         }
         Some(Command::Status) => {
             let resolved = config::resolve(

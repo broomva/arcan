@@ -9,7 +9,7 @@ mod diff;
 mod help;
 mod quit;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 /// Result of executing a slash command.
@@ -40,6 +40,85 @@ pub struct CommandContext {
     pub workspace: PathBuf,
     /// Pre-rendered help text (set by the registry).
     pub help_text: String,
+    /// Tools the user has permanently approved for this session (via "always" response).
+    pub session_approved_tools: HashSet<String>,
+    /// Permission mode: "default" (prompt), "yes" (auto-approve all), "plan" (deny all writes).
+    pub permission_mode: PermissionMode,
+}
+
+/// Permission mode governing tool approval in the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    /// Prompt the user for non-read-only tools.
+    #[default]
+    Default,
+    /// Auto-approve all tools (--yes flag).
+    Yes,
+    /// Plan mode: deny all write/destructive tools.
+    Plan,
+}
+
+/// Well-known read-only tool names that never require permission prompts.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "glob",
+    "grep",
+    "file_read",
+    "list_dir",
+    "read_file",
+    "list_directory",
+    "memory_read",
+    "read_memory",
+];
+
+/// Determine whether a tool requires user permission before execution.
+///
+/// Returns `true` if the tool should be auto-approved (no prompt needed),
+/// `false` if the user must be prompted.
+pub fn is_tool_auto_approved(
+    tool_name: &str,
+    permission_mode: PermissionMode,
+    session_approved: &HashSet<String>,
+    is_read_only_annotation: bool,
+) -> bool {
+    // --yes mode: everything is auto-approved
+    if permission_mode == PermissionMode::Yes {
+        return true;
+    }
+
+    // Tools with read_only annotation or in the well-known list
+    if is_read_only_annotation || READ_ONLY_TOOLS.contains(&tool_name) {
+        return true;
+    }
+
+    // User previously chose "always" for this tool
+    if session_approved.contains(tool_name) {
+        return true;
+    }
+
+    false
+}
+
+/// Prompt the user for permission to execute a tool.
+///
+/// Returns the user's choice: `'y'` (once), `'n'` (deny), or `'a'` (always).
+/// On EOF or invalid input, defaults to `'n'`.
+#[allow(clippy::print_stderr)]
+pub fn prompt_tool_permission(tool_name: &str) -> char {
+    use std::io::Write;
+
+    eprint!("[y/n/a] Allow {tool_name}? ");
+    std::io::stderr().flush().ok();
+
+    let mut response = String::new();
+    match std::io::stdin().read_line(&mut response) {
+        Ok(0) => 'n', // EOF
+        Ok(_) => match response.trim().to_lowercase().as_str() {
+            "y" | "yes" => 'y',
+            "a" | "always" => 'a',
+            _ => 'n',
+        },
+        Err(_) => 'n',
+    }
 }
 
 /// Trait implemented by each slash command.
@@ -230,5 +309,152 @@ mod tests {
         // /help with trailing args — should still work
         let result = registry.execute("/help some args", &mut ctx);
         assert!(matches!(result.unwrap(), CommandResult::Output(_)));
+    }
+
+    // ── Permission logic tests ──
+
+    #[test]
+    fn read_only_tools_auto_approved() {
+        let empty = HashSet::new();
+        assert!(is_tool_auto_approved(
+            "glob",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "grep",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "file_read",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "list_dir",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "read_file",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+    }
+
+    #[test]
+    fn read_only_annotation_auto_approved() {
+        let empty = HashSet::new();
+        // Even an unknown tool with read_only annotation should be auto-approved
+        assert!(is_tool_auto_approved(
+            "custom_reader",
+            PermissionMode::Default,
+            &empty,
+            true
+        ));
+    }
+
+    #[test]
+    fn yes_mode_auto_approves_all() {
+        let empty = HashSet::new();
+        assert!(is_tool_auto_approved(
+            "bash",
+            PermissionMode::Yes,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "write_file",
+            PermissionMode::Yes,
+            &empty,
+            false
+        ));
+        assert!(is_tool_auto_approved(
+            "edit_file",
+            PermissionMode::Yes,
+            &empty,
+            false
+        ));
+    }
+
+    #[test]
+    fn session_memory_works_after_always() {
+        let mut approved = HashSet::new();
+        // bash is not auto-approved by default
+        assert!(!is_tool_auto_approved(
+            "bash",
+            PermissionMode::Default,
+            &approved,
+            false
+        ));
+
+        // After adding to session_approved, it should be auto-approved
+        approved.insert("bash".to_string());
+        assert!(is_tool_auto_approved(
+            "bash",
+            PermissionMode::Default,
+            &approved,
+            false
+        ));
+    }
+
+    #[test]
+    fn non_read_only_tools_require_permission() {
+        let empty = HashSet::new();
+        assert!(!is_tool_auto_approved(
+            "bash",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(!is_tool_auto_approved(
+            "write_file",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+        assert!(!is_tool_auto_approved(
+            "edit_file",
+            PermissionMode::Default,
+            &empty,
+            false
+        ));
+    }
+
+    #[test]
+    fn plan_mode_still_requires_permission_for_writes() {
+        let empty = HashSet::new();
+        // Plan mode does NOT auto-approve write tools
+        assert!(!is_tool_auto_approved(
+            "bash",
+            PermissionMode::Plan,
+            &empty,
+            false
+        ));
+        // But read-only tools are still auto-approved
+        assert!(is_tool_auto_approved(
+            "glob",
+            PermissionMode::Plan,
+            &empty,
+            false
+        ));
+    }
+
+    #[test]
+    fn permission_mode_default_trait() {
+        assert_eq!(PermissionMode::default(), PermissionMode::Default);
+    }
+
+    #[test]
+    fn command_context_default_has_empty_approved_tools() {
+        let ctx = CommandContext::default();
+        assert!(ctx.session_approved_tools.is_empty());
+        assert_eq!(ctx.permission_mode, PermissionMode::Default);
     }
 }
