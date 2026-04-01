@@ -4,12 +4,19 @@
 //! built-in commands (`/help`, `/clear`, `/cost`, `/quit`, `/diff`).
 
 mod clear;
+mod commit;
 mod compact;
+mod config_cmd;
 mod cost;
 mod diff;
 mod help;
+mod history;
 mod memory;
+mod model;
 mod quit;
+mod skill;
+mod status;
+mod undo;
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -50,6 +57,24 @@ pub struct CommandContext {
     pub permission_mode: PermissionMode,
     /// Directory for persistent agent memory files (`.arcan/memory/`).
     pub memory_dir: PathBuf,
+    /// Provider name (e.g. "anthropic", "openai", "mock").
+    pub provider_name: String,
+    /// Current model name (e.g. "claude-sonnet-4-20250514").
+    pub model_name: String,
+    /// Model override requested via `/model` command (applied on next turn).
+    pub model_override: Option<String>,
+    /// Data directory for persistent storage (`.arcan/`).
+    pub data_dir: PathBuf,
+    /// Number of messages in the conversation history.
+    pub message_count: usize,
+    /// Number of tool calls executed this session.
+    pub tool_call_count: usize,
+    /// Number of registered tools.
+    pub tools_count: usize,
+    /// Number of registered hooks.
+    pub hooks_count: usize,
+    /// Names of discovered skills.
+    pub skill_names: Vec<String>,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -172,8 +197,21 @@ impl CommandRegistry {
         registry.register(Box::new(quit::QuitCommand));
         registry.register(Box::new(diff::DiffCommand));
         registry.register(Box::new(memory::MemoryCommand));
+        registry.register(Box::new(status::StatusCommand));
+        registry.register(Box::new(model::ModelCommand));
+        registry.register(Box::new(commit::CommitCommand));
+        registry.register(Box::new(config_cmd::ConfigCommand));
+        registry.register(Box::new(undo::UndoCommand));
+        registry.register(Box::new(history::HistoryCommand));
+        registry.register(Box::new(skill::SkillCommand));
         registry.rebuild_help_text();
         registry
+    }
+
+    /// Check if a name (or alias) is registered as a built-in command.
+    pub fn has_command(&self, name: &str) -> bool {
+        let name = name.strip_prefix('/').unwrap_or(name);
+        self.commands.contains_key(name) || self.aliases.contains_key(name)
     }
 
     /// Register a command. Overwrites any existing command with the same name.
@@ -280,6 +318,65 @@ mod tests {
         assert!(text.contains("/cost"));
         assert!(text.contains("/quit"));
         assert!(text.contains("/diff"));
+        assert!(text.contains("/status"));
+        assert!(text.contains("/model"));
+        assert!(text.contains("/commit"));
+        assert!(text.contains("/config"));
+        assert!(text.contains("/undo"));
+        assert!(text.contains("/history"));
+        assert!(text.contains("/skill"));
+    }
+
+    #[test]
+    fn new_command_aliases_dispatch() {
+        let registry = CommandRegistry::with_builtins();
+        let mut ctx = CommandContext::default();
+
+        // /info -> /status
+        let result = registry.execute("/info", &mut ctx);
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), CommandResult::Output(_)));
+
+        // /git-status -> /commit
+        let result = registry.execute("/git-status", &mut ctx);
+        assert!(result.is_some());
+
+        // /settings -> /config
+        let result = registry.execute("/settings", &mut ctx);
+        assert!(result.is_some());
+
+        // /messages -> /history
+        let result = registry.execute("/messages", &mut ctx);
+        assert!(result.is_some());
+
+        // /skills -> /skill
+        let result = registry.execute("/skills", &mut ctx);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn has_command_checks_names_and_aliases() {
+        let registry = CommandRegistry::with_builtins();
+        assert!(registry.has_command("help"));
+        assert!(registry.has_command("/help"));
+        assert!(registry.has_command("status"));
+        assert!(registry.has_command("/info"));
+        assert!(registry.has_command("skill"));
+        assert!(registry.has_command("/skills"));
+        assert!(!registry.has_command("nonexistent"));
+    }
+
+    #[test]
+    fn command_context_new_fields_default() {
+        let ctx = CommandContext::default();
+        assert!(ctx.provider_name.is_empty());
+        assert!(ctx.model_name.is_empty());
+        assert!(ctx.model_override.is_none());
+        assert_eq!(ctx.message_count, 0);
+        assert_eq!(ctx.tool_call_count, 0);
+        assert_eq!(ctx.tools_count, 0);
+        assert_eq!(ctx.hooks_count, 0);
+        assert!(ctx.skill_names.is_empty());
     }
 
     #[test]
