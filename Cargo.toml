@@ -143,6 +143,7 @@ lago-fs = { path = "../lago/crates/lago-fs", version = "0.2.1" }
 lago-journal = { path = "../lago/crates/lago-journal", version = "0.2.1" }
 lago-store = { path = "../lago/crates/lago-store", version = "0.2.1" }
 lago-policy = { path = "../lago/crates/lago-policy", version = "0.2.1" }
+lago-lance = { path = "../lago/crates/lago-lance", version = "0.2.1" }
 lago-aios-eventstore-adapter = { path = "../lago/crates/lago-aios-eventstore-adapter", version = "0.2.1" }
 
 # Anima identity, beliefs, and self-model

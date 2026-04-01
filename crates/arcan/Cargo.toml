@@ -50,6 +50,7 @@ lago-core.workspace = true
 lago-fs.workspace = true
 lago-aios-eventstore-adapter.workspace = true
 lago-journal.workspace = true
+lago-lance.workspace = true
 lago-policy.workspace = true
 lago-store.workspace = true
 anyhow.workspace = true
