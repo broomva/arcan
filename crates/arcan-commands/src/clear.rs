@@ -28,6 +28,9 @@ mod tests {
     fn clear_returns_clear_session() {
         let cmd = ClearCommand;
         let mut ctx = CommandContext::default();
-        assert!(matches!(cmd.execute("", &mut ctx), CommandResult::ClearSession));
+        assert!(matches!(
+            cmd.execute("", &mut ctx),
+            CommandResult::ClearSession
+        ));
     }
 }

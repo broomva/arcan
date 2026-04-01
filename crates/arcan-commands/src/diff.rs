@@ -56,8 +56,9 @@ mod tests {
         // In a non-git directory, this should return an error (not panic).
         let result = cmd.execute("", &mut ctx);
         // Either an error or output is fine — just verify it doesn't panic.
-        assert!(
-            matches!(result, CommandResult::Output(_) | CommandResult::Error(_))
-        );
+        assert!(matches!(
+            result,
+            CommandResult::Output(_) | CommandResult::Error(_)
+        ));
     }
 }

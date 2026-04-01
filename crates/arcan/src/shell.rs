@@ -61,9 +61,8 @@ pub fn run_shell(
     };
 
     let sandbox_provider = crate::sandbox_router::build_sandbox_provider_with_fallback();
-    let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
-        arcan_praxis::SandboxCommandRunner::new(sandbox_provider),
-    );
+    let runner: Box<dyn praxis_core::sandbox::CommandRunner> =
+        Box::new(arcan_praxis::SandboxCommandRunner::new(sandbox_provider));
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
     let memory_dir = data_dir.join("memory");
@@ -206,9 +205,8 @@ fn run_agent_loop(
             cmd_ctx.session_input_tokens += usage.input_tokens;
             cmd_ctx.session_output_tokens += usage.output_tokens;
             // Rough cost estimate (Claude pricing: $3/MTok input, $15/MTok output)
-            cmd_ctx.session_cost_usd += (usage.input_tokens as f64 * 3.0
-                + usage.output_tokens as f64 * 15.0)
-                / 1_000_000.0;
+            cmd_ctx.session_cost_usd +=
+                (usage.input_tokens as f64 * 3.0 + usage.output_tokens as f64 * 15.0) / 1_000_000.0;
         }
 
         // Process directives

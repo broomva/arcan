@@ -110,11 +110,7 @@ impl CommandRegistry {
         // Inject help text so /help can display it.
         ctx.help_text.clone_from(&self.help_text);
 
-        let canonical = self
-            .aliases
-            .get(name)
-            .map(String::as_str)
-            .unwrap_or(name);
+        let canonical = self.aliases.get(name).map(String::as_str).unwrap_or(name);
 
         self.commands
             .get(canonical)
