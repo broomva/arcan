@@ -1,0 +1,17 @@
+[package]
+name = "arcan-commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Slash command system for the Arcan agent runtime"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true

@@ -236,6 +236,7 @@ dependencies = [
  "aios-runtime",
  "anyhow",
  "arcan-aios-adapters",
+ "arcan-commands",
  "arcan-console",
  "arcan-core",
  "arcan-harness",
@@ -283,6 +284,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
  "walkdir",
 ]
 
@@ -332,6 +334,13 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "arcan-commands"
+version = "0.2.1"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ members = [
   "crates/arcand",
   "crates/arcan-lago",
   "crates/arcan-spaces",
+  "crates/arcan-commands",
   "crates/arcan",
 ]
 resolver = "2"
@@ -152,6 +153,7 @@ anima-lago = { path = "../anima/crates/anima-lago", version = "0.1.0" }
 life-vigil = { version = "0.1.0", path = "../vigil" }
 
 # Arcan sandbox provider abstraction
+arcan-commands = { path = "crates/arcan-commands", version = "0.2.1" }
 arcan-sandbox = { path = "crates/arcan-sandbox", version = "0.2.1" }
 arcan-provider-vercel = { path = "crates/arcan-provider-vercel", version = "0.2.1" }
 arcan-provider-bubblewrap = { path = "crates/arcan-provider-bubblewrap", version = "0.2.1" }

@@ -4,6 +4,7 @@ mod daemon;
 mod factory;
 mod nous_observer;
 mod sandbox_router;
+mod shell;
 mod skills;
 
 use aios_protocol::sandbox::NetworkPolicy;
@@ -162,6 +163,12 @@ enum Command {
     Skills {
         #[command(subcommand)]
         action: SkillsAction,
+    },
+    /// Interactive REPL with slash commands (single-process, no daemon)
+    Shell {
+        /// Session ID to use (creates new if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 }
 
@@ -1231,6 +1238,30 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
             );
             run_skills(&data_dir, &resolved, &action)
+        }
+        Some(Command::Shell { session }) => {
+            let resolved = config::resolve(
+                &file_config,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+                cli.port,
+                None,
+                None,
+                cli.autonomic_url.as_deref(),
+                cli.spaces_backend.as_deref(),
+                cli.spaces_token.as_deref(),
+            );
+
+            // Shell mode uses file-based logging to avoid clobbering the terminal.
+            let log_dir = data_dir.join("logs");
+            std::fs::create_dir_all(&log_dir)?;
+            let file_appender = tracing_appender::rolling::never(&log_dir, "shell.log");
+            tracing_subscriber::fmt()
+                .with_writer(file_appender)
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+
+            shell::run_shell(&data_dir, &resolved, session)
         }
         Some(Command::Status) => {
             let resolved = config::resolve(
