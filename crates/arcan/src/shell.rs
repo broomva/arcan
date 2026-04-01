@@ -317,6 +317,28 @@ pub fn run_shell(
         memory_dir.clone(),
     )));
 
+    // --- Skill discovery ---
+    let skill_registry = if resolved.skills_enabled {
+        match crate::skills::discover_skills(
+            &resolved.skill_dirs,
+            data_dir,
+            resolved.skills_write_registry,
+        ) {
+            Ok(reg) => Some(reg),
+            Err(e) => {
+                eprintln!("[skills] Discovery failed (non-fatal): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let skill_names: Vec<String> = skill_registry
+        .as_ref()
+        .map(praxis_skills::registry::SkillRegistry::skill_names)
+        .unwrap_or_default();
+
     // --- Command registry ---
     let commands = CommandRegistry::with_builtins();
     let tool_defs = registry.definitions();
@@ -343,10 +365,21 @@ pub fn run_shell(
     } else {
         PermissionMode::Default
     };
+    let provider_name = provider.name().to_string();
+    let model_name = resolved
+        .model
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let mut cmd_ctx = CommandContext {
         workspace: workspace_root,
         permission_mode,
         memory_dir: memory_dir.clone(),
+        provider_name: provider_name.clone(),
+        model_name: model_name.clone(),
+        data_dir: data_dir.to_path_buf(),
+        tools_count: tool_defs.len(),
+        hooks_count: hook_registry.len(),
+        skill_names: skill_names.clone(),
         ..Default::default()
     };
 
@@ -355,13 +388,23 @@ pub fn run_shell(
         messages.push(ChatMessage::system(&memory_context));
     }
 
+    // --- Inject skill catalog into system prompt ---
+    if let Some(ref sr) = skill_registry {
+        let catalog = crate::skills::build_system_prompt(sr);
+        if !catalog.is_empty() {
+            messages.push(ChatMessage::system(&catalog));
+        }
+    }
+
     // --- Welcome banner ---
     eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
     eprintln!(
-        "Provider: {} | Tools: {} | Hooks: {} | Type /help for commands",
-        provider.name(),
+        "Provider: {} | Model: {} | Tools: {} | Hooks: {} | Skills: {} | Type /help for commands",
+        provider_name,
+        model_name,
         tool_defs.len(),
         hook_registry.len(),
+        skill_names.len(),
     );
     eprintln!();
 
@@ -388,6 +431,9 @@ pub fn run_shell(
 
         // --- Slash command dispatch ---
         if input.starts_with('/') {
+            // Update message_count before command dispatch
+            cmd_ctx.message_count = messages.len();
+
             match commands.execute(input, &mut cmd_ctx) {
                 Some(CommandResult::Output(text)) => {
                     println!("{text}");
@@ -398,6 +444,8 @@ pub fn run_shell(
                     cmd_ctx.session_input_tokens = 0;
                     cmd_ctx.session_output_tokens = 0;
                     cmd_ctx.session_cost_usd = 0.0;
+                    cmd_ctx.message_count = 0;
+                    cmd_ctx.tool_call_count = 0;
                     cmd_ctx.session_approved_tools.clear();
                     eprintln!("Session cleared.");
                 }
@@ -415,6 +463,22 @@ pub fn run_shell(
                     eprintln!("Error: {err}");
                 }
                 None => {
+                    // Not a builtin command — try to activate it as a skill.
+                    if let Some(ref sr) = skill_registry {
+                        match crate::skills::try_activate_skill(sr, input) {
+                            Ok(Some((skill_state, _remaining))) => {
+                                eprintln!("[skill] Activated: {}", skill_state.name);
+                                let instructions = crate::skills::active_skill_prompt(&skill_state);
+                                messages.push(ChatMessage::system(&instructions));
+                                continue;
+                            }
+                            Ok(None) => { /* not a skill prefix */ }
+                            Err(e) => {
+                                eprintln!("[skill] {e}");
+                            }
+                        }
+                    }
+
                     eprintln!("Unknown command: {input}. Type /help for available commands.");
                 }
             }
@@ -424,6 +488,7 @@ pub fn run_shell(
         // --- Send to provider ---
         messages.push(ChatMessage::user(input));
         cmd_ctx.session_turns += 1;
+        cmd_ctx.message_count = messages.len();
 
         let response_text = run_agent_loop(
             &provider,
@@ -440,6 +505,8 @@ pub fn run_shell(
                 if !text.is_empty() {
                     messages.push(ChatMessage::assistant(&text));
                 }
+                // Update message count after loop completes
+                cmd_ctx.message_count = messages.len();
                 // Extract and save key facts from this turn to persistent memory.
                 extract_and_save_memories(&messages, &memory_dir);
             }
@@ -548,6 +615,9 @@ fn run_agent_loop(
             }
             break;
         }
+
+        // Track tool call count
+        cmd_ctx.tool_call_count += tool_calls.len();
 
         // Build assistant message with tool_use content blocks.
         // The Anthropic API requires: assistant msg (with tool_use) → user msg (with tool_result).
