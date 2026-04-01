@@ -116,12 +116,40 @@ impl AnthropicProvider {
                     system_prompt = Some(msg.content.clone());
                 }
                 Role::User => {
+                    // Check if content is JSON-encoded content blocks (from shell tool results)
+                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content) {
+                        if !blocks.is_empty()
+                            && blocks
+                                .iter()
+                                .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                        {
+                            api_messages.push(ApiMessage {
+                                role: "user".to_string(),
+                                content: ApiContent::Blocks(blocks),
+                            });
+                            continue;
+                        }
+                    }
                     api_messages.push(ApiMessage {
                         role: "user".to_string(),
                         content: ApiContent::Text(msg.content.clone()),
                     });
                 }
                 Role::Assistant => {
+                    // Check if content is JSON-encoded content blocks (from shell tool_use)
+                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content) {
+                        if !blocks.is_empty()
+                            && blocks
+                                .iter()
+                                .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                        {
+                            api_messages.push(ApiMessage {
+                                role: "assistant".to_string(),
+                                content: ApiContent::Blocks(blocks),
+                            });
+                            continue;
+                        }
+                    }
                     api_messages.push(ApiMessage {
                         role: "assistant".to_string(),
                         content: ApiContent::Text(msg.content.clone()),
@@ -137,6 +165,7 @@ impl AnthropicProvider {
                         content: ApiContent::Blocks(vec![ContentBlock::ToolResult {
                             tool_use_id,
                             content: msg.content.clone(),
+                            is_error: false,
                         }]),
                     });
                 }
@@ -276,12 +305,22 @@ enum ApiContent {
     Blocks(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(default)]
+        is_error: bool,
     },
 }
 

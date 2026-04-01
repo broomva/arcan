@@ -217,9 +217,14 @@ fn run_agent_loop(
             match directive {
                 ModelDirective::Text { delta } => {
                     accumulated_text.push_str(delta);
+                    // Print text as it arrives (non-streaming providers)
+                    print!("{delta}");
+                    let _ = std::io::stdout().flush();
                 }
                 ModelDirective::FinalAnswer { text } => {
                     accumulated_text.push_str(text);
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
                 }
                 ModelDirective::ToolCall { call } => {
                     tool_calls.push(call.clone());
@@ -238,59 +243,88 @@ fn run_agent_loop(
             break;
         }
 
-        // Build the assistant message with tool_use content for the provider
-        // (accumulate text + indicate tool use happened)
-        if !accumulated_text.is_empty() {
-            messages.push(ChatMessage::assistant(&accumulated_text));
-            accumulated_text.clear();
+        // Build assistant message with tool_use content blocks.
+        // The Anthropic API requires: assistant msg (with tool_use) → user msg (with tool_result).
+        // Since ChatMessage.content is a String, we encode the tool_use blocks as JSON
+        // that the provider can detect and parse as structured content.
+        {
+            let mut content_blocks = Vec::new();
+            if !accumulated_text.is_empty() {
+                content_blocks.push(serde_json::json!({
+                    "type": "text",
+                    "text": accumulated_text,
+                }));
+                accumulated_text.clear();
+            }
+            for call in &tool_calls {
+                content_blocks.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": call.call_id,
+                    "name": call.tool_name,
+                    "input": call.input,
+                }));
+            }
+            // Store as JSON array — the provider's build_messages will
+            // detect this and use it as structured content blocks.
+            messages.push(ChatMessage {
+                role: arcan_core::protocol::Role::Assistant,
+                content: serde_json::to_string(&content_blocks).unwrap_or_default(),
+                tool_call_id: None,
+            });
         }
 
-        // Execute tool calls
+        // Execute tool calls and collect results as a single user message
+        // with tool_result content blocks (Anthropic API format).
         let ctx = ToolContext {
             run_id: run_id.clone(),
             session_id: session_id.to_string(),
             iteration,
         };
 
+        let mut result_blocks = Vec::new();
         for call in &tool_calls {
             eprintln!("\n[tool: {}]", call.tool_name);
 
-            match registry.get(&call.tool_name) {
+            let (content, is_error) = match registry.get(&call.tool_name) {
                 Some(tool) => match tool.execute(call, &ctx) {
                     Ok(result) => {
                         let output_str = match &result.output {
                             serde_json::Value::String(s) => s.clone(),
                             other => other.to_string(),
                         };
-                        // Truncate long output for display
                         let display = if output_str.len() > 200 {
                             format!("{}... ({} bytes)", &output_str[..200], output_str.len())
                         } else {
                             output_str.clone()
                         };
                         eprintln!("[tool: {}] OK: {display}", call.tool_name);
-                        messages.push(ChatMessage::tool_result(
-                            &call.call_id,
-                            &output_str,
-                        ));
+                        (output_str, false)
                     }
                     Err(e) => {
                         eprintln!("[tool: {}] ERROR: {e}", call.tool_name);
-                        messages.push(ChatMessage::tool_result(
-                            &call.call_id,
-                            format!("Error: {e}"),
-                        ));
+                        (format!("Error: {e}"), true)
                     }
                 },
                 None => {
                     eprintln!("[tool: {}] NOT FOUND", call.tool_name);
-                    messages.push(ChatMessage::tool_result(
-                        &call.call_id,
-                        format!("Error: tool '{}' not found", call.tool_name),
-                    ));
+                    (format!("Error: tool '{}' not found", call.tool_name), true)
                 }
-            }
+            };
+
+            result_blocks.push(serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": call.call_id,
+                "content": content,
+                "is_error": is_error,
+            }));
         }
+
+        // Push tool results as a single user message with structured blocks.
+        messages.push(ChatMessage {
+            role: arcan_core::protocol::Role::User,
+            content: serde_json::to_string(&result_blocks).unwrap_or_default(),
+            tool_call_id: None,
+        });
     }
 
     Ok(accumulated_text)
