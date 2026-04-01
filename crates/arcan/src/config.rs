@@ -375,7 +375,7 @@ pub fn resolve(
         .map(String::from)
         .or_else(|| std::env::var("ARCAN_PROVIDER").ok())
         .or_else(|| config.defaults.provider.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| "anthropic".to_string());
 
     // Model: CLI > env > provider-specific config > defaults config > None
     let model = cli_model
