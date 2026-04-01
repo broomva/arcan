@@ -9,6 +9,7 @@ mod cost;
 mod diff;
 mod help;
 mod quit;
+mod skill;
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -47,6 +48,8 @@ pub struct CommandContext {
     pub session_approved_tools: HashSet<String>,
     /// Permission mode: "default" (prompt), "yes" (auto-approve all), "plan" (deny all writes).
     pub permission_mode: PermissionMode,
+    /// Discovered skill names available via `/skill` command.
+    pub skill_names: Vec<String>,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -168,6 +171,7 @@ impl CommandRegistry {
         registry.register(Box::new(cost::CostCommand));
         registry.register(Box::new(quit::QuitCommand));
         registry.register(Box::new(diff::DiffCommand));
+        registry.register(Box::new(skill::SkillCommand));
         registry.rebuild_help_text();
         registry
     }
@@ -276,6 +280,7 @@ mod tests {
         assert!(text.contains("/cost"));
         assert!(text.contains("/quit"));
         assert!(text.contains("/diff"));
+        assert!(text.contains("/skill"));
     }
 
     #[test]
@@ -461,5 +466,6 @@ mod tests {
         let ctx = CommandContext::default();
         assert!(ctx.session_approved_tools.is_empty());
         assert_eq!(ctx.permission_mode, PermissionMode::Default);
+        assert!(ctx.skill_names.is_empty());
     }
 }
