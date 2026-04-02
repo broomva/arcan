@@ -102,7 +102,7 @@ impl Command for ContextCommand {
 
         lines.push(String::new());
         lines.push(format!("  TOTAL:                    ~{:>6} tokens", total));
-        lines.push(format!("  Window:                    200,000 tokens"));
+        lines.push("  Window:                    200,000 tokens".to_string());
         lines.push(format!(
             "  Utilization:               {:.1}%",
             (total as f64 / 200_000.0) * 100.0
@@ -133,7 +133,7 @@ impl Command for ContextCommand {
 }
 
 fn estimate(text: &str) -> usize {
-    (text.len() + 3) / 4
+    text.len().div_ceil(4)
 }
 
 #[cfg(test)]

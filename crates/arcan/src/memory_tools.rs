@@ -759,7 +759,7 @@ mod tests {
             "---\ntitle: Deploy Notes\ntype: procedural\n---\n\nDeploy process uses Docker.",
         );
 
-        let tool = MemorySearchTool::new(&dir.path().to_path_buf());
+        let tool = MemorySearchTool::new(dir.path());
         let call = make_call("memory_search", json!({"query": "auth middleware"}));
         let result = tool.execute(&call, &make_ctx()).unwrap();
 
@@ -774,7 +774,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         create_memory_file(dir.path(), "notes", "---\ntitle: Notes\n---\n\nSome text.");
 
-        let tool = MemorySearchTool::new(&dir.path().to_path_buf());
+        let tool = MemorySearchTool::new(dir.path());
         let call = make_call("memory_search", json!({"query": "nonexistent keyword xyz"}));
         let result = tool.execute(&call, &make_ctx()).unwrap();
 
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn search_rejects_empty_query() {
         let dir = TempDir::new().unwrap();
-        let tool = MemorySearchTool::new(&dir.path().to_path_buf());
+        let tool = MemorySearchTool::new(dir.path());
         let call = make_call("memory_search", json!({"query": "   "}));
         let err = tool.execute(&call, &make_ctx()).unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput { .. }));
@@ -806,7 +806,7 @@ mod tests {
             "---\ntitle: Session B\ntype: session\ntier: procedural\n---\n\nContent B.",
         );
 
-        let tool = MemoryBrowseTool::new(&dir.path().to_path_buf());
+        let tool = MemoryBrowseTool::new(dir.path());
 
         // No filter — returns all
         let call = make_call("memory_browse", json!({}));
@@ -836,7 +836,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         create_memory_file(dir.path(), "new", "---\ntitle: New\n---\n\nNew content.");
 
-        let tool = MemoryRecentTool::new(&dir.path().to_path_buf());
+        let tool = MemoryRecentTool::new(dir.path());
         let call = make_call("memory_recent", json!({"limit": 1}));
         let result = tool.execute(&call, &make_ctx()).unwrap();
 
@@ -856,7 +856,7 @@ mod tests {
             );
         }
 
-        let tool = MemoryRecentTool::new(&dir.path().to_path_buf());
+        let tool = MemoryRecentTool::new(dir.path());
         let call = make_call("memory_recent", json!({}));
         let result = tool.execute(&call, &make_ctx()).unwrap();
 
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn offload_creates_file_with_frontmatter() {
         let dir = TempDir::new().unwrap();
-        let tool = MemoryOffloadTool::new(&dir.path().to_path_buf());
+        let tool = MemoryOffloadTool::new(dir.path());
 
         let call = make_call(
             "memory_offload",
@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn offload_updates_memory_index() {
         let dir = TempDir::new().unwrap();
-        let tool = MemoryOffloadTool::new(&dir.path().to_path_buf());
+        let tool = MemoryOffloadTool::new(dir.path());
 
         let call = make_call(
             "memory_offload",
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn offload_sanitizes_title() {
         let dir = TempDir::new().unwrap();
-        let tool = MemoryOffloadTool::new(&dir.path().to_path_buf());
+        let tool = MemoryOffloadTool::new(dir.path());
 
         let call = make_call(
             "memory_offload",
@@ -946,7 +946,7 @@ mod tests {
             "---\ntitle: Old Summary\nimportance: 0.5\n---\n\nContent.",
         );
 
-        let tool = MemoryForgetTool::new(&dir.path().to_path_buf());
+        let tool = MemoryForgetTool::new(dir.path());
         let call = make_call("memory_forget", json!({"key": "old-summary"}));
         let result = tool.execute(&call, &make_ctx()).unwrap();
         assert!(!result.is_error);
@@ -965,7 +965,7 @@ mod tests {
             "---\ntitle: No Importance\n---\n\nContent.",
         );
 
-        let tool = MemoryForgetTool::new(&dir.path().to_path_buf());
+        let tool = MemoryForgetTool::new(dir.path());
         let call = make_call("memory_forget", json!({"key": "no-importance"}));
         tool.execute(&call, &make_ctx()).unwrap();
 
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn forget_nonexistent_file_returns_error() {
         let dir = TempDir::new().unwrap();
-        let tool = MemoryForgetTool::new(&dir.path().to_path_buf());
+        let tool = MemoryForgetTool::new(dir.path());
         let call = make_call("memory_forget", json!({"key": "nonexistent"}));
         let err = tool.execute(&call, &make_ctx()).unwrap_err();
         assert!(matches!(err, ToolError::ExecutionFailed { .. }));
@@ -985,7 +985,7 @@ mod tests {
     #[test]
     fn forget_rejects_invalid_key() {
         let dir = TempDir::new().unwrap();
-        let tool = MemoryForgetTool::new(&dir.path().to_path_buf());
+        let tool = MemoryForgetTool::new(dir.path());
 
         let call = make_call("memory_forget", json!({"key": "../escape"}));
         let err = tool.execute(&call, &make_ctx()).unwrap_err();
