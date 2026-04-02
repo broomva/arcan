@@ -693,6 +693,23 @@ pub fn run_shell(
         memory_dir.clone(),
     )));
 
+    // --- BRO-417: Agent-driven memory retrieval tools ---
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemorySearchTool::new(&memory_dir),
+    ));
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemoryBrowseTool::new(&memory_dir),
+    ));
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemoryRecentTool::new(&memory_dir),
+    ));
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemoryOffloadTool::new(&memory_dir),
+    ));
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemoryForgetTool::new(&memory_dir),
+    ));
+
     // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
     // Register Lago-backed governed memory tools alongside the filesystem ones.
     // The governed tools (memory_query, memory_propose, memory_commit) provide
