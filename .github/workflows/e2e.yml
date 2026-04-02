@@ -1,0 +1,85 @@
+name: Shell E2E
+
+on:
+  pull_request:
+    paths:
+      # Arcan shell + core runtime
+      - 'crates/arcan/src/shell.rs'
+      - 'crates/arcan/src/memory_tools.rs'
+      - 'crates/arcan/src/consolidator.rs'
+      - 'crates/arcan/src/prompt.rs'
+      - 'crates/arcan/src/skills.rs'
+      - 'crates/arcan/src/nous_observer.rs'
+      - 'crates/arcan/src/ephemeral_journal.rs'
+      - 'crates/arcan/src/main.rs'
+      - 'crates/arcan/src/config.rs'
+      # Commands (slash commands)
+      - 'crates/arcan-commands/src/**'
+      # Provider (streaming, API parsing)
+      - 'crates/arcan-provider/src/**'
+      # Core types (protocol, runtime traits)
+      - 'crates/arcan-core/src/**'
+      # Tool harness (praxis bridge, sandbox)
+      - 'crates/arcan-harness/src/**'
+      # Lago bridge (memory tools, journal)
+      - 'crates/arcan-lago/src/**'
+      # Workspace config
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      # The E2E script itself
+      - 'scripts/e2e-smoke.sh'
+      - '.github/workflows/e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-mock:
+    name: Shell E2E (mock, Levels 0-3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
+          git clone --depth 1 https://github.com/broomva/nous.git ../nous
+          git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run E2E smoke (Levels 0-3, no API key)
+        run: bash scripts/e2e-smoke.sh
+
+  e2e-anthropic:
+    name: Shell E2E (Anthropic, Levels 4-5)
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e-full')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
+          git clone --depth 1 https://github.com/broomva/nous.git ../nous
+          git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run E2E smoke (all levels)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash scripts/e2e-smoke.sh

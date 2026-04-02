@@ -328,7 +328,10 @@ fn put_session_sync(journal: &dyn Journal, session: LagoSession) {
     let fut = journal.put_session(session);
     let result = match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle.block_on(fut),
-        Err(_) => return,
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(fut),
+            Err(_) => return,
+        },
     };
     if let Err(e) = result {
         tracing::warn!("lago: failed to put session: {e}");
@@ -340,7 +343,10 @@ fn list_sessions_sync(journal: &dyn Journal) -> Vec<LagoSession> {
     let fut = journal.list_sessions();
     let result = match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle.block_on(fut),
-        Err(_) => return Vec::new(),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(fut),
+            Err(_) => return Vec::new(),
+        },
     };
     result.unwrap_or_default()
 }
@@ -362,7 +368,10 @@ fn replay_session_messages(
     let fut = journal.read(query);
     let events = match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle.block_on(fut).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(fut).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
     };
 
     let mut messages = Vec::new();
@@ -644,7 +653,10 @@ pub fn run_shell(
         let fut = journal.head_seq(&lago_session_id, &branch_id);
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => handle.block_on(fut).unwrap_or(0),
-            Err(_) => 0,
+            Err(_) => match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt.block_on(fut).unwrap_or(0),
+                Err(_) => 0,
+            },
         }
     };
     let seq_counter = SeqCounter::new(head_seq);
@@ -1065,7 +1077,10 @@ pub fn run_shell(
                             let fut = journal.head_seq(&sess.session_id, &branch_id);
                             match tokio::runtime::Handle::try_current() {
                                 Ok(h) => h.block_on(fut).unwrap_or(0),
-                                Err(_) => 0,
+                                Err(_) => match tokio::runtime::Runtime::new() {
+                                    Ok(rt) => rt.block_on(fut).unwrap_or(0),
+                                    Err(_) => 0,
+                                },
                             }
                         };
                         let marker = if sess.session_id == lago_session_id {
