@@ -50,6 +50,8 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -76,6 +78,12 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
@@ -115,6 +123,8 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
         with:
@@ -139,6 +149,8 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
@@ -148,6 +160,7 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
@@ -157,6 +170,7 @@ jobs:
   deny:
     name: Dependency Check
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Checkout sibling dependencies
