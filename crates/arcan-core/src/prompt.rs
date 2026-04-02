@@ -522,7 +522,12 @@ pub fn build_guidelines_section() -> String {
      - Be concise and direct in responses\n\
      - Follow existing code style and conventions\n\
      - Prefer editing existing files over creating new ones\n\
-     - Do not add features beyond what was asked"
+     - Do not add features beyond what was asked\n\n\
+     ## Context Management\n\n\
+     You have memory_offload and memory_forget tools. Use them proactively:\n\
+     - When you discover something important, offload it to memory before it gets compacted\n\
+     - When context is getting full (check /context), offload non-essential findings\n\
+     - Don't wait for auto-compact \u{2014} manage your own context budget"
         .to_string()
 }
 
@@ -766,6 +771,9 @@ mod tests {
         let guidelines = build_guidelines_section();
         assert!(guidelines.contains("Read files before editing"));
         assert!(guidelines.contains("Do not add features beyond what was asked"));
+        // BRO-418: proactive context management hints
+        assert!(guidelines.contains("memory_offload"));
+        assert!(guidelines.contains("Context Management"));
     }
 
     #[test]

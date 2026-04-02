@@ -241,6 +241,73 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
     *messages = kept;
 }
 
+/// Compact conversation with simultaneous memory extraction (BRO-418).
+///
+/// This is the reactive backstop: when auto-compact fires or `/compact` is used,
+/// we extract memories from the FULL conversation before compressing it.
+/// The proactive mechanism is the `memory_offload` tool the agent can call anytime.
+#[allow(clippy::print_stderr)]
+fn compact_with_extraction(
+    messages: &mut Vec<ChatMessage>,
+    memory_dir: &Path,
+    target_tokens: usize,
+) {
+    // 1. BEFORE compacting, extract insights from the FULL conversation
+    //    (this is the last chance to see the uncompressed messages)
+    extract_and_save_memories(messages, memory_dir);
+
+    // 2. Update MEMORY.md index with any new memories
+    arcan_core::prompt::write_memory_index(memory_dir);
+
+    // 3. MicroCompact: shrink verbose tool outputs in-place
+    micro_compact(messages);
+
+    // 4. THEN compact the conversation (remove old messages)
+    compact_conversation(messages, target_tokens);
+
+    // 5. Log as EGRI signal
+    eprintln!(
+        "[compact] \u{26a0} Emergency compaction triggered. \
+         Consider using memory_offload proactively."
+    );
+}
+
+/// Compress individual tool outputs in-place (Bash, FileRead, Grep).
+///
+/// Reduces verbose outputs without removing messages. This is a lightweight
+/// pre-pass that shrinks oversized content before the main compaction removes
+/// entire messages.
+fn micro_compact(messages: &mut [ChatMessage]) {
+    use arcan_core::protocol::Role;
+
+    for msg in messages.iter_mut() {
+        if msg.role != Role::User {
+            continue;
+        }
+
+        let content = &msg.content;
+
+        // Truncate bash outputs over 2K chars
+        if content.len() > 2000 && (content.contains("exit code:") || content.contains("stdout:")) {
+            let truncated = format!(
+                "{}...\n[output truncated from {} to 2000 chars]",
+                &content[..2000],
+                content.len()
+            );
+            msg.content = truncated;
+            continue;
+        }
+
+        // Truncate file read outputs over 4K chars (tab-prefixed numbered lines)
+        if content.len() > 4000 && content.contains('\t') && content.lines().count() > 50 {
+            let lines: Vec<&str> = content.lines().collect();
+            let kept = lines[..30].join("\n");
+            let truncated = format!("{}\n...[{} lines truncated to 30]", kept, lines.len());
+            msg.content = truncated;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lago journal helpers (BRO-356 / BRO-357)
 // ---------------------------------------------------------------------------
@@ -1099,9 +1166,15 @@ pub fn run_shell(
                 }
                 Some(CommandResult::CompactRequested) => {
                     let before = estimate_tokens(&messages);
-                    compact_conversation(&mut messages, COMPACT_TARGET);
+                    compact_with_extraction(&mut messages, &memory_dir, COMPACT_TARGET);
                     let after = estimate_tokens(&messages);
                     eprintln!("[compact] {before} tokens -> {after} tokens");
+                }
+                Some(CommandResult::ConsolidateRequested) => {
+                    eprintln!("[consolidate] Running on-demand consolidation...");
+                    crate::consolidator::consolidate(&memory_dir);
+                    arcan_core::prompt::write_memory_index(&memory_dir);
+                    eprintln!("[consolidate] Done.");
                 }
                 Some(CommandResult::Quit) => {
                     eprintln!("Goodbye.");
@@ -1181,10 +1254,6 @@ pub fn run_shell(
                 }
                 // Update message count after loop completes
                 cmd_ctx.message_count = messages.len();
-                // Extract and save key facts from this turn to persistent memory.
-                extract_and_save_memories(&messages, &memory_dir);
-                // Regenerate MEMORY.md index after memory extraction (BRO-419)
-                crate::prompt::write_memory_index(&memory_dir);
 
                 // --- BRO-385: Write session turn summary to workspace journal ---
                 if let Some(ref wj) = workspace_journal {
@@ -1231,10 +1300,16 @@ pub fn run_shell(
         let tokens = estimate_tokens(&messages);
         if tokens > COMPACT_THRESHOLD {
             eprintln!("[compact] {tokens} tokens -> compacting to ~{COMPACT_TARGET}");
-            compact_conversation(&mut messages, COMPACT_TARGET);
+            compact_with_extraction(&mut messages, &memory_dir, COMPACT_TARGET);
             eprintln!("[compact] now ~{} tokens", estimate_tokens(&messages));
         }
     }
+
+    // --- End-of-session consolidation (BRO-421) ---
+    eprintln!("[consolidate] Running end-of-session consolidation...");
+    crate::consolidator::consolidate(&memory_dir);
+    arcan_core::prompt::write_memory_index(&memory_dir);
+    eprintln!("[consolidate] Done.");
 
     // --- Fire SessionEnd hooks ---
     if !hook_registry.is_empty() {
@@ -2057,5 +2132,109 @@ mod tests {
         assert_eq!(IdentityTier::Free.to_string(), "free");
         assert_eq!(IdentityTier::Pro.to_string(), "pro");
         assert_eq!(IdentityTier::Enterprise.to_string(), "enterprise");
+    }
+
+    // --- BRO-418: MicroCompact tests ---
+
+    #[test]
+    fn test_micro_compact_truncates_bash() {
+        let long_output = format!("stdout: {}\nexit code: 0", "x".repeat(3000));
+        let mut messages = vec![make_msg(Role::User, &long_output)];
+        micro_compact(&mut messages);
+
+        assert!(
+            messages[0].content.len() < long_output.len(),
+            "Bash output should be truncated"
+        );
+        assert!(messages[0].content.contains("[output truncated from"));
+    }
+
+    #[test]
+    fn test_micro_compact_truncates_file_read() {
+        // Simulate a long file read with tab-prefixed numbered lines
+        let lines: Vec<String> = (1..=100)
+            .map(|i| {
+                format!(
+                    "{i}\tlet x = {i}; // some code that fills out the line with content padding"
+                )
+            })
+            .collect();
+        let long_read = lines.join("\n");
+        let mut messages = vec![make_msg(Role::User, &long_read)];
+        micro_compact(&mut messages);
+
+        assert!(
+            messages[0].content.contains("lines truncated to 30"),
+            "File read output should be truncated"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_leaves_short_output() {
+        let short = "stdout: hello\nexit code: 0";
+        let mut messages = vec![make_msg(Role::User, short)];
+        let original = messages[0].content.clone();
+        micro_compact(&mut messages);
+
+        assert_eq!(
+            messages[0].content, original,
+            "Short output should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_micro_compact_skips_assistant_messages() {
+        let long_output = format!("stdout: {}\nexit code: 0", "x".repeat(3000));
+        let mut messages = vec![make_msg(Role::Assistant, &long_output)];
+        let original = messages[0].content.clone();
+        micro_compact(&mut messages);
+
+        assert_eq!(
+            messages[0].content, original,
+            "Assistant messages should not be micro-compacted"
+        );
+    }
+
+    #[test]
+    fn test_compact_with_extraction_creates_memories() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-compact-extract-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut messages = vec![
+            make_msg(Role::User, "Investigate the bug"),
+            make_msg(
+                Role::Assistant,
+                "- Found the root cause in the retry logic\n\
+                 - Fixed by adding exponential backoff\n\
+                 Modified crates/arcan/src/shell.rs",
+            ),
+            make_msg(Role::User, "Thanks"),
+            make_msg(Role::Assistant, "You're welcome."),
+        ];
+
+        compact_with_extraction(&mut messages, &dir, 200);
+
+        // Memories should have been extracted
+        let summary_path = dir.join("session_summary.md");
+        assert!(
+            summary_path.exists(),
+            "Session summary should be created during compact"
+        );
+        let content = std::fs::read_to_string(&summary_path).unwrap();
+        assert!(content.contains("root cause"));
+
+        // MEMORY.md index should also exist
+        let index_path = dir.join("MEMORY.md");
+        assert!(
+            index_path.exists(),
+            "MEMORY.md index should be created during compact"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

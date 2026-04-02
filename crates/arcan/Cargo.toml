@@ -81,4 +81,5 @@ walkdir.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+filetime = "0.2"
 tempfile = "3"
