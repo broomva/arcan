@@ -866,6 +866,14 @@ pub fn run_shell(
         skill_catalog_text.as_deref(),
         claude_md.as_deref(),
     );
+    // Populate context token estimates for /context command
+    cmd_ctx.project_instructions_tokens = claude_md.as_deref().map_or(0, |s| s.len() / 4);
+    cmd_ctx.skills_catalog_tokens = skill_catalog_text.as_deref().map_or(0, |s| s.len() / 4);
+    cmd_ctx.git_context_tokens =
+        crate::prompt::build_git_section(&cmd_ctx.workspace).map_or(0, |s| s.len() / 4);
+    cmd_ctx.memory_index_tokens =
+        crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
+
     // Combine for backward-compatible single system message
     let system_prompt = system_prompt_struct.combined();
 
