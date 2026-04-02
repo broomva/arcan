@@ -117,6 +117,9 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "read_file",
     "list_directory",
     "memory_read",
+    "memory_search",
+    "memory_browse",
+    "memory_recent",
     "read_memory",
 ];
 

@@ -3,6 +3,7 @@ mod config;
 mod daemon;
 mod ephemeral_journal;
 mod factory;
+mod memory_tools;
 mod nous_observer;
 mod prompt;
 mod sandbox_router;

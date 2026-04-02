@@ -190,13 +190,54 @@ pub fn print_cached_skills(data_dir: &Path) -> bool {
     }
 }
 
-/// Build a system prompt from the skill registry for injection into provider calls.
-#[allow(dead_code)] // used in tests; per-session injection now happens in arcand/canonical.rs
+/// Build a **compact** system prompt from the skill registry.
 ///
-/// Wraps the skill catalog in a context block with instructions for the LLM.
-/// This is the "liquid prompt" — a dynamic system prompt that flows through the
-/// provider adapter, making skills visible to the model.
+/// Instead of dumping all skill descriptions (which can be 18K+ tokens for 300+
+/// skills), this produces a ~200-token summary with category breakdown and
+/// instructions for activation. Full skill details are injected only when a
+/// skill is activated via `/skill <name>`.
+///
+/// The full catalog remains available via `/skill list`.
 pub fn build_system_prompt(registry: &SkillRegistry) -> String {
+    let count = registry.count();
+    if count == 0 {
+        return String::new();
+    }
+
+    // Collect unique tags across all skills as category hints
+    let mut categories = std::collections::BTreeSet::new();
+    for name in registry.skill_names() {
+        if let Some(skill) = registry.activate(&name) {
+            for tag in &skill.meta.tags {
+                categories.insert(tag.clone());
+            }
+        }
+    }
+
+    let categories_str = if categories.is_empty() {
+        "various".to_string()
+    } else {
+        // Show up to 20 categories to keep it compact
+        let cats: Vec<&str> = categories.iter().map(String::as_str).take(20).collect();
+        let mut result = cats.join(", ");
+        if categories.len() > 20 {
+            result.push_str(", ...");
+        }
+        result
+    };
+
+    format!(
+        "<skills>\n# Available Skills ({count} discovered)\n\n\
+         Use `/skill <name>` to activate a skill. Use `/skill list` for the full catalog.\n\n\
+         Categories: {categories_str}\n\
+         </skills>"
+    )
+}
+
+/// Build the full (uncapped) system prompt catalog for use when the user
+/// explicitly requests the skill list. This is the original verbose format.
+#[allow(dead_code)]
+pub fn build_full_system_prompt(registry: &SkillRegistry) -> String {
     let catalog = registry.system_prompt_catalog();
     if catalog.is_empty() {
         return String::new();
@@ -422,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn build_system_prompt_includes_catalog() {
+    fn build_system_prompt_compact_format() {
         let skills_dir = TempDir::new().unwrap();
         create_skill(
             skills_dir.path(),
@@ -434,6 +475,34 @@ mod tests {
         let registry = SkillRegistry::discover(&[skills_dir.path().to_path_buf()]).unwrap();
 
         let prompt = build_system_prompt(&registry);
+        assert!(prompt.contains("<skills>"));
+        assert!(prompt.contains("</skills>"));
+        assert!(prompt.contains("2 discovered"));
+        assert!(prompt.contains("/skill <name>"));
+        // Compact format should NOT contain individual skill descriptions
+        assert!(!prompt.contains("Helps create git commits"));
+        assert!(!prompt.contains("Runs test suites"));
+        // Should be compact — well under 500 tokens (~2000 chars)
+        assert!(
+            prompt.len() < 2000,
+            "Compact prompt too large: {} chars",
+            prompt.len()
+        );
+    }
+
+    #[test]
+    fn build_full_system_prompt_includes_catalog() {
+        let skills_dir = TempDir::new().unwrap();
+        create_skill(
+            skills_dir.path(),
+            "commit-helper",
+            "Helps create git commits",
+        );
+        create_skill(skills_dir.path(), "test-runner", "Runs test suites");
+
+        let registry = SkillRegistry::discover(&[skills_dir.path().to_path_buf()]).unwrap();
+
+        let prompt = build_full_system_prompt(&registry);
         assert!(prompt.contains("<skills>"));
         assert!(prompt.contains("</skills>"));
         assert!(prompt.contains("commit-helper"));
