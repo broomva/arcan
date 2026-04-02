@@ -74,3 +74,4 @@ docker-compose.override.yml
 *.tmp
 *.bak
 *.orig
+.claude/worktrees/

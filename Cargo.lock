@@ -272,6 +272,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs 6.0.0",
+ "filetime",
  "futures-util",
  "lago-aios-eventstore-adapter",
  "lago-core",
@@ -2989,6 +2990,17 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "winapi",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f98844151eee8917efc50bd9e8318cb963ae8b297431495d3f758616ea5c57db"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "libredox",
 ]
 
 [[package]]

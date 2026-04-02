@@ -7,6 +7,7 @@ mod clear;
 mod commit;
 mod compact;
 mod config_cmd;
+mod consolidate;
 mod context;
 mod cost;
 mod diff;
@@ -31,6 +32,8 @@ pub enum CommandResult {
     ClearSession,
     /// Compact conversation history to reduce token usage.
     CompactRequested,
+    /// Run memory consolidation (decay, extract patterns, prune).
+    ConsolidateRequested,
     /// Exit the REPL.
     Quit,
     /// An error occurred during command execution.
@@ -227,6 +230,7 @@ impl CommandRegistry {
         registry.register(Box::new(history::HistoryCommand));
         registry.register(Box::new(skill::SkillCommand));
         registry.register(Box::new(context::ContextCommand));
+        registry.register(Box::new(consolidate::ConsolidateCommand));
         registry.rebuild_help_text();
         registry
     }

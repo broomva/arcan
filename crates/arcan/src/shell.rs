@@ -192,6 +192,25 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 
 /// Compact a conversation to fit within a target token budget.
 ///
+/// Smart compaction: extract memories THEN compress conversation.
+/// This is the Claude Code pattern — compression and crystallization happen simultaneously.
+#[allow(clippy::print_stderr)]
+fn compact_with_extraction(messages: &mut Vec<ChatMessage>, memory_dir: &Path, target: usize) {
+    // 1. Extract insights BEFORE compacting (last chance to see full conversation)
+    extract_and_save_memories(messages, memory_dir);
+
+    // 2. Update MEMORY.md index
+    crate::prompt::write_memory_index(memory_dir);
+
+    // 3. Compress the conversation
+    compact_conversation(messages, target);
+
+    // 4. EGRI signal: compaction = proactive management failed
+    eprintln!(
+        "[compact] ⚠ Emergency compaction triggered. Use memory_offload proactively to avoid this."
+    );
+}
+
 /// Preserves the system context (first message if system role) and the most
 /// recent messages. Inserts a compaction marker so the agent knows earlier
 /// context was dropped.
@@ -1099,9 +1118,15 @@ pub fn run_shell(
                 }
                 Some(CommandResult::CompactRequested) => {
                     let before = estimate_tokens(&messages);
-                    compact_conversation(&mut messages, COMPACT_TARGET);
+                    compact_with_extraction(&mut messages, &memory_dir, COMPACT_TARGET);
                     let after = estimate_tokens(&messages);
                     eprintln!("[compact] {before} tokens -> {after} tokens");
+                }
+                Some(CommandResult::ConsolidateRequested) => {
+                    eprintln!("[consolidate] Running memory consolidation...");
+                    crate::consolidator::consolidate(&memory_dir);
+                    crate::prompt::write_memory_index(&memory_dir);
+                    eprintln!("[consolidate] Done.");
                 }
                 Some(CommandResult::Quit) => {
                     eprintln!("Goodbye.");
