@@ -56,7 +56,7 @@ fi
 echo ""
 echo "--- Level 1: Shell Boot (mock provider) ---"
 DATA_L1="/tmp/arcan-e2e-L1-$$"
-OUTPUT_L1=$(printf '/help\n/status\n/context\n/cost\n/history\n/config\n/memory\n/skill\n/model\n/diff\n/commit\n/sessions\n/consolidate\n' \
+OUTPUT_L1=$(printf '/help\n/status\n/context\n/cost\n/history\n/config\n/memory\n/skill\n/model\n/diff\n/commit\n/sessions\n/consolidate\n/search\n' \
   | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_L1" --budget 10.0 -y 2>&1)
 
 has "banner: Tools: 17"            "$OUTPUT_L1" "Tools: 17"
@@ -80,6 +80,7 @@ has "/memory lists MEMORY"         "$OUTPUT_L1" "MEMORY"
 has "/skill lists skills"          "$OUTPUT_L1" "Discovered skills"
 has "/model shows model"           "$OUTPUT_L1" "model"
 has "/consolidate runs"            "$OUTPUT_L1" "consolidation"
+has "/search shows usage"          "$OUTPUT_L1" "Usage:"
 ok  "redb journal created"         test -f "$DATA_L1/shell-journals/"*.redb
 ok  "workspace.lance created"      test -d "$DATA_L1/workspace.lance"
 ok  "MEMORY.md created"            test -f "$DATA_L1/memory/MEMORY.md"

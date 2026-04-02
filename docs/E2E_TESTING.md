@@ -68,6 +68,7 @@ printf '/help\n/status\n/context\n/cost\n/history\n/config\n/memory\n/skill\n/mo
 | `/commit` | Shows git status output |
 | `/sessions` | Lists sessions or reports none |
 | `/consolidate` | Prints "Running memory consolidation... Done." |
+| `/search` | Shows usage hint (no query provided) |
 
 ### Level 2: Tool Execution + Nous Safety (mock provider, no API key)
 

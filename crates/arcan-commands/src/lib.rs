@@ -16,6 +16,7 @@ mod history;
 mod memory;
 mod model;
 mod quit;
+mod search;
 mod skill;
 mod status;
 mod undo;
@@ -231,6 +232,7 @@ impl CommandRegistry {
         registry.register(Box::new(skill::SkillCommand));
         registry.register(Box::new(context::ContextCommand));
         registry.register(Box::new(consolidate::ConsolidateCommand));
+        registry.register(Box::new(search::SearchCommand));
         registry.rebuild_help_text();
         registry
     }
