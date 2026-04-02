@@ -146,7 +146,12 @@ impl MemoryProposeTool {
     }
 
     fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::runtime::Handle::current().block_on(f)
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(f),
+            Err(_) => tokio::runtime::Runtime::new()
+                .expect("failed to create fallback Tokio runtime")
+                .block_on(f),
+        }
     }
 }
 
@@ -290,7 +295,12 @@ impl MemoryCommitTool {
     }
 
     fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::runtime::Handle::current().block_on(f)
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(f),
+            Err(_) => tokio::runtime::Runtime::new()
+                .expect("failed to create fallback Tokio runtime")
+                .block_on(f),
+        }
     }
 }
 
