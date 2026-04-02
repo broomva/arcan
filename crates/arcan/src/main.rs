@@ -2,6 +2,7 @@ mod cli_run;
 mod config;
 mod consolidator;
 mod daemon;
+mod embedding;
 mod ephemeral_journal;
 mod factory;
 mod memory_tools;

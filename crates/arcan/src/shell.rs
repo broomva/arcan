@@ -847,6 +847,13 @@ pub fn run_shell(
         }
     };
 
+    // --- Embedding provider (BRO-388) ---
+    let embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>> =
+        crate::embedding::HttpEmbeddingProvider::from_env().map(|p| Arc::new(p) as _);
+    if embedding_provider.is_some() {
+        eprintln!("[embedding] Provider configured (embed-on-write active)");
+    }
+
     // --- Hook registry ---
     let hook_registry = &resolved.hook_registry;
     let session_id_str = lago_session_id.to_string();
@@ -1191,6 +1198,16 @@ pub fn run_shell(
             ),
         );
 
+        let emb_ctx = match (&embedding_provider, &workspace_journal) {
+            (Some(ep), Some(wj)) => Some(EmbeddingContext {
+                provider: ep.as_ref(),
+                workspace_journal: wj.as_ref(),
+                workspace_session_id: &workspace_session_id,
+                branch_id: &branch_id,
+                workspace_seq: &workspace_seq,
+            }),
+            _ => None,
+        };
         let response_text = run_agent_loop(
             &provider,
             &registry,
@@ -1200,6 +1217,7 @@ pub fn run_shell(
             hook_registry,
             &hook_ctx,
             nous_registry.as_ref(),
+            emb_ctx.as_ref(),
         );
 
         match response_text {
@@ -1284,9 +1302,18 @@ pub fn run_shell(
     Ok(())
 }
 
+/// Optional embedding context for dual-write (BRO-388).
+struct EmbeddingContext<'a> {
+    provider: &'a dyn crate::embedding::EmbeddingProvider,
+    workspace_journal: &'a dyn Journal,
+    workspace_session_id: &'a LagoSessionId,
+    branch_id: &'a BranchId,
+    workspace_seq: &'a SeqCounter,
+}
+
 /// Execute the agent loop: call provider, execute tools, repeat until done.
 /// Returns the accumulated text response.
-#[allow(clippy::print_stdout, clippy::print_stderr)]
+#[allow(clippy::print_stdout, clippy::print_stderr, clippy::too_many_arguments)]
 fn run_agent_loop(
     provider: &Arc<dyn Provider>,
     registry: &ToolRegistry,
@@ -1296,6 +1323,7 @@ fn run_agent_loop(
     hook_registry: &HookRegistry,
     base_hook_ctx: &HookContext,
     nous_registry: Option<&EvaluatorRegistry>,
+    embedding_ctx: Option<&EmbeddingContext<'_>>,
 ) -> anyhow::Result<String> {
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
@@ -1640,6 +1668,60 @@ fn run_agent_loop(
                                 error = %e,
                                 "nous eval error (non-fatal)"
                             );
+                        }
+                    }
+                }
+            }
+
+            // --- BRO-388: Embed-on-write for memory_offload ---
+            // When memory_offload succeeds and an embedding provider is configured,
+            // embed the saved content and write to the workspace Lance journal.
+            // This is the dual-write: filesystem (.md) + Lance (with vector).
+            if call.tool_name == "memory_offload" && !is_error {
+                if let Some(ectx) = embedding_ctx {
+                    if let Some(content_text) = call.input.get("content").and_then(|v| v.as_str()) {
+                        match ectx.provider.embed(content_text) {
+                            Ok(embedding) => {
+                                let title = call
+                                    .input
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("memory");
+                                let mem_event = EventEnvelope {
+                                    event_id: lago_core::id::EventId::new(),
+                                    session_id: ectx.workspace_session_id.clone(),
+                                    branch_id: ectx.branch_id.clone(),
+                                    run_id: None,
+                                    seq: ectx.workspace_seq.next(),
+                                    timestamp: EventEnvelope::now_micros(),
+                                    parent_id: None,
+                                    payload: lago_core::event::EventPayload::Message {
+                                        role: "memory".to_string(),
+                                        content: content_text.to_string(),
+                                        model: None,
+                                        token_usage: None,
+                                    },
+                                    metadata: {
+                                        let mut m = std::collections::HashMap::new();
+                                        m.insert("title".to_string(), title.to_string());
+                                        m.insert(
+                                            lago_lance::EMBEDDING_META_KEY.to_string(),
+                                            serde_json::to_string(&embedding).unwrap_or_default(),
+                                        );
+                                        m
+                                    },
+                                    schema_version: 1,
+                                };
+                                append_event_sync(ectx.workspace_journal, mem_event);
+                                tracing::debug!(
+                                    title = title,
+                                    dim = embedding.len(),
+                                    "embedded memory offload to workspace lance"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "embedding failed (non-fatal)");
+                            }
                         }
                     }
                 }
