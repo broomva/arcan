@@ -849,13 +849,16 @@ pub fn run_shell(
         ..Default::default()
     };
 
-    // --- Build unified system prompt (liquid prompt) ---
+    // --- Generate MEMORY.md index (BRO-419) ---
+    crate::prompt::write_memory_index(&memory_dir);
+
+    // --- Build unified system prompt (liquid prompt, BRO-420 cache split) ---
     let claude_md = crate::prompt::load_claude_md(&cmd_ctx.workspace);
     let skill_catalog_text = skill_registry
         .as_ref()
         .map(crate::skills::build_system_prompt);
 
-    let system_prompt = crate::prompt::build_system_prompt(
+    let system_prompt_struct = crate::prompt::build_system_prompt(
         &cmd_ctx.workspace,
         &provider_name,
         &model_name,
@@ -863,6 +866,8 @@ pub fn run_shell(
         skill_catalog_text.as_deref(),
         claude_md.as_deref(),
     );
+    // Combine for backward-compatible single system message
+    let system_prompt = system_prompt_struct.combined();
 
     // --- Replay or initialize message history (BRO-358) ---
     let mut messages: Vec<ChatMessage> = Vec::new();
@@ -1153,6 +1158,8 @@ pub fn run_shell(
                 cmd_ctx.message_count = messages.len();
                 // Extract and save key facts from this turn to persistent memory.
                 extract_and_save_memories(&messages, &memory_dir);
+                // Regenerate MEMORY.md index after memory extraction (BRO-419)
+                crate::prompt::write_memory_index(&memory_dir);
 
                 // --- BRO-385: Write session turn summary to workspace journal ---
                 if let Some(ref wj) = workspace_journal {

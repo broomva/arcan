@@ -1,23 +1,52 @@
-//! Liquid prompt system — assembles a single, structured system prompt from multiple sources.
+//! Liquid prompt system — assembles a structured system prompt from multiple sources.
 //!
-//! Mirrors the 6-layer architecture used by Claude Code:
+//! Architecture (cacheable vs. dynamic split for prompt cache savings):
+//!
+//! **Cacheable** (stable across turns — Anthropic auto-caches matching prefixes):
 //! 1. Role definition
 //! 2. Environment info (OS, shell, date, model)
-//! 3. Git context (branch, status, recent commits)
-//! 4. Project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml)
-//! 5. Memory context (cross-session `.arcan/memory/*.md`)
-//! 6. Skill catalog
-//! 7. Guidelines
+//! 3. Project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml)
+//! 4. Guidelines
+//!
+//! **Dynamic** (changes per turn — appended after cacheable prefix):
+//! 5. Git context (branch, status, recent commits)
+//! 6. Memory context (MEMORY.md index from `.arcan/memory/*.md`)
+//! 7. Skill catalog
 //!
 //! This module lives in `arcan-core` so both the shell REPL (`arcan` binary)
 //! and the daemon HTTP server (`arcand`) can share the same prompt builder.
 
+use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Structured system prompt split into cacheable and dynamic sections.
+///
+/// Anthropic automatically caches the longest matching prefix of the system
+/// prompt across turns. By placing stable content first (cacheable) and
+/// per-turn content after (dynamic), we get ~75% token savings on cache hits.
+#[derive(Debug, Clone)]
+pub struct SystemPrompt {
+    /// Stable across turns — gets Anthropic prompt cache hits.
+    pub cacheable: String,
+    /// Changes per turn — always re-sent fresh.
+    pub dynamic: String,
+}
+
+impl SystemPrompt {
+    /// Combine both sections into a single prompt string (backward compatible).
+    pub fn combined(&self) -> String {
+        if self.dynamic.is_empty() {
+            self.cacheable.clone()
+        } else {
+            format!("{}\n\n---\n\n{}", self.cacheable, self.dynamic)
+        }
+    }
+}
 
 /// Build the complete system prompt from all available context sources.
 ///
-/// Each non-empty section is separated by a horizontal rule for readability.
-/// The result is a single string suitable for a single `ChatMessage::system()`.
+/// Returns a [`SystemPrompt`] with cacheable (stable) and dynamic (per-turn)
+/// sections. Use [`SystemPrompt::combined()`] for backward-compatible single string.
 pub fn build_system_prompt(
     workspace: &Path,
     provider_name: &str,
@@ -25,47 +54,59 @@ pub fn build_system_prompt(
     memory_dir: &Path,
     skill_catalog: Option<&str>,
     claude_md_content: Option<&str>,
-) -> String {
-    let mut sections = Vec::new();
+) -> SystemPrompt {
+    // --- CACHEABLE (stable across turns) ---
+    let mut cacheable_sections = Vec::new();
 
     // 1. Role definition
-    sections.push(build_role_section());
+    cacheable_sections.push(build_role_section());
 
     // 2. Environment info
-    sections.push(build_environment_section(
+    cacheable_sections.push(build_environment_section(
         workspace,
         provider_name,
         model_name,
     ));
 
-    // 3. Git context
-    if let Some(git) = build_git_section(workspace) {
-        sections.push(git);
-    }
-
-    // 4. CLAUDE.md / project instructions
+    // 3. CLAUDE.md / project instructions
     if let Some(instructions) = claude_md_content {
         if !instructions.is_empty() {
-            sections.push(format!("# Project Instructions\n\n{instructions}"));
+            cacheable_sections.push(format!("# Project Instructions\n\n{instructions}"));
         }
     }
 
-    // 5. Memory context
-    if let Some(memory) = build_memory_section(memory_dir) {
-        sections.push(memory);
+    // 4. Guidelines
+    cacheable_sections.push(build_guidelines_section());
+
+    let cacheable = cacheable_sections.join("\n\n---\n\n");
+
+    // --- DYNAMIC (changes per turn) ---
+    let mut dynamic_sections = Vec::new();
+
+    // 5. Git context
+    if let Some(git) = build_git_section(workspace) {
+        dynamic_sections.push(git);
     }
 
-    // 6. Skills catalog
+    // 6. Memory context (MEMORY.md index)
+    if let Some(memory) = build_memory_section(memory_dir) {
+        dynamic_sections.push(memory);
+    }
+
+    // 7. Skills catalog
     if let Some(catalog) = skill_catalog {
         if !catalog.is_empty() {
-            sections.push(format!("# Available Skills\n\n{catalog}"));
+            dynamic_sections.push(format!("# Available Skills\n\n{catalog}"));
         }
     }
 
-    // 7. Guidelines
-    sections.push(build_guidelines_section());
+    let dynamic = if dynamic_sections.is_empty() {
+        String::new()
+    } else {
+        dynamic_sections.join("\n\n---\n\n")
+    };
 
-    sections.join("\n\n---\n\n")
+    SystemPrompt { cacheable, dynamic }
 }
 
 /// The role identity block — defines what the agent is and how it should behave.
@@ -281,21 +322,38 @@ fn load_rules_dir(workspace: &Path, relative: &str, contents: &mut Vec<String>) 
     }
 }
 
-/// Cross-session memory from `.arcan/memory/*.md` files.
+/// Cross-session memory loaded from the MEMORY.md index.
 ///
-/// Reads all markdown files from the memory directory and returns a formatted
-/// string. Returns `None` if the directory doesn't exist or contains no files.
+/// Reads the generated `MEMORY.md` index from the memory directory and returns
+/// a formatted string for inclusion in the system prompt. Falls back to reading
+/// individual `.md` files if the index doesn't exist.
+///
+/// Returns `None` if the directory doesn't exist or contains no memory files.
 pub fn build_memory_section(memory_dir: &Path) -> Option<String> {
     if !memory_dir.exists() {
         return None;
     }
 
+    // Prefer the generated MEMORY.md index
+    let index_path = memory_dir.join("MEMORY.md");
+    if index_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&index_path) {
+            if !content.trim().is_empty() {
+                return Some(format!("# Agent Memory\n\n{content}"));
+            }
+        }
+    }
+
+    // Fallback: read individual files (backward compat)
     let entries = std::fs::read_dir(memory_dir).ok()?;
     let mut sections = Vec::new();
 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some("MEMORY.md") {
             continue;
         }
         let key = path
@@ -319,6 +377,141 @@ pub fn build_memory_section(memory_dir: &Path) -> Option<String> {
         "# Agent Memory (cross-session)\n\n{}",
         sections.join("\n\n")
     ))
+}
+
+// ---------------------------------------------------------------------------
+// MEMORY.md index generation (BRO-419)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of lines allowed in the MEMORY.md index.
+const MEMORY_INDEX_MAX_LINES: usize = 200;
+
+/// Maximum number of bytes allowed in the MEMORY.md index.
+const MEMORY_INDEX_MAX_BYTES: usize = 25_000;
+
+/// Generate a `MEMORY.md` index from all `.md` files in the memory directory.
+///
+/// Groups entries by the `type` field in YAML frontmatter (defaults to "general").
+/// Each entry is a markdown link with a description extracted from the first
+/// non-frontmatter, non-heading content line.
+///
+/// The output is capped at 200 lines / 25KB.
+pub fn generate_memory_index(memory_dir: &Path) -> String {
+    let mut sections: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    let Ok(entries) = std::fs::read_dir(memory_dir) else {
+        return String::from("# Memory Index\n");
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some("MEMORY.md") {
+            continue;
+        }
+
+        let key = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+
+        let mem_type = extract_frontmatter_type(&content).unwrap_or_else(|| "general".to_string());
+
+        let description = extract_first_content_line(&content);
+
+        sections
+            .entry(mem_type)
+            .or_default()
+            .push(format!("- [{}]({}.md) — {}", key, key, description));
+    }
+
+    let mut index = String::from("# Memory Index\n\n");
+    for (section, entries) in &sections {
+        index.push_str(&format!("## {}\n", capitalize(section)));
+        for entry in entries {
+            index.push_str(entry);
+            index.push('\n');
+        }
+        index.push('\n');
+    }
+
+    // Cap at 200 lines
+    let lines: Vec<&str> = index.lines().collect();
+    if lines.len() > MEMORY_INDEX_MAX_LINES {
+        index = lines[..MEMORY_INDEX_MAX_LINES].join("\n");
+        index.push_str("\n\n... (truncated, showing first 200 entries)\n");
+    }
+
+    // Cap at 25KB
+    if index.len() > MEMORY_INDEX_MAX_BYTES {
+        index.truncate(MEMORY_INDEX_MAX_BYTES);
+        index.push_str("\n\n... (truncated at 25KB)\n");
+    }
+
+    index
+}
+
+/// Write the generated MEMORY.md index to disk.
+///
+/// Creates the memory directory if it doesn't exist.
+pub fn write_memory_index(memory_dir: &Path) {
+    let _ = std::fs::create_dir_all(memory_dir);
+    let index = generate_memory_index(memory_dir);
+    let index_path = memory_dir.join("MEMORY.md");
+    let _ = std::fs::write(&index_path, &index);
+}
+
+/// Extract the `type` value from YAML frontmatter (between `---` markers).
+///
+/// Returns `None` if no frontmatter or no `type:` field is found.
+fn extract_frontmatter_type(content: &str) -> Option<String> {
+    if !content.starts_with("---") {
+        return None;
+    }
+    let end = content[3..].find("---")?;
+    let frontmatter = &content[3..3 + end];
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("type:") {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Extract the first non-empty, non-heading content line after any frontmatter.
+///
+/// Skips YAML frontmatter (between `---` markers) and markdown headings.
+/// Truncates to 120 characters.
+fn extract_first_content_line(content: &str) -> String {
+    let body = if let Some(after_prefix) = content.strip_prefix("---") {
+        after_prefix
+            .find("---")
+            .map(|i| &after_prefix[i + 3..])
+            .unwrap_or(content)
+    } else {
+        content
+    };
+    body.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("(no description)")
+        .chars()
+        .take(120)
+        .collect()
+}
+
+/// Capitalize the first character of a string.
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Behavioral guidelines that bound how the agent operates.
@@ -347,7 +540,7 @@ mod tests {
         fs::create_dir_all(&memory_dir).unwrap();
         fs::write(memory_dir.join("notes.md"), "Some notes here").unwrap();
 
-        let prompt = build_system_prompt(
+        let sp = build_system_prompt(
             workspace,
             "anthropic",
             "claude-sonnet-4-5-20250929",
@@ -355,6 +548,7 @@ mod tests {
             Some("- skill_a: Does A\n- skill_b: Does B"),
             Some("# My Project\n\nBuild fast."),
         );
+        let prompt = sp.combined();
 
         // All sections should be present
         assert!(prompt.contains("# System"), "missing role section");
@@ -386,7 +580,8 @@ mod tests {
         let memory_dir = workspace.join(".arcan/memory");
         // Don't create memory dir — should be omitted
 
-        let prompt = build_system_prompt(workspace, "mock", "mock-model", &memory_dir, None, None);
+        let sp = build_system_prompt(workspace, "mock", "mock-model", &memory_dir, None, None);
+        let prompt = sp.combined();
 
         assert!(prompt.contains("# System"));
         assert!(prompt.contains("# Environment"));
@@ -616,14 +811,403 @@ mod tests {
     /// Verify the prompt module is accessible from arcan-core's public API.
     #[test]
     fn test_prompt_available_from_core() {
-        // These are the key public functions that both shell and daemon need.
+        // Key public functions that both shell and daemon need.
         let _ = build_system_prompt
-            as fn(&Path, &str, &str, &Path, Option<&str>, Option<&str>) -> String;
+            as fn(&Path, &str, &str, &Path, Option<&str>, Option<&str>) -> SystemPrompt;
         let _ = build_git_section as fn(&Path) -> Option<String>;
         let _ = load_project_instructions as fn(&Path) -> Option<String>;
         let _ = build_environment_section as fn(&Path, &str, &str) -> String;
         let _ = build_memory_section as fn(&Path) -> Option<String>;
         let _ = build_role_section as fn() -> String;
         let _ = build_guidelines_section as fn() -> String;
+        let _ = generate_memory_index as fn(&Path) -> String;
+        let _ = write_memory_index as fn(&Path);
+    }
+
+    // ── BRO-419: MEMORY.md index tests ──
+
+    #[test]
+    fn test_generate_memory_index() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        fs::write(
+            memory_dir.join("project_notes.md"),
+            "Key architecture decisions for the project.",
+        )
+        .unwrap();
+        fs::write(
+            memory_dir.join("user_prefs.md"),
+            "---\ntype: user\n---\n# Preferences\nPrefers dark mode.",
+        )
+        .unwrap();
+
+        let index = generate_memory_index(&memory_dir);
+
+        assert!(index.contains("# Memory Index"), "missing header");
+        assert!(
+            index.contains("[project_notes]"),
+            "missing project_notes entry"
+        );
+        assert!(index.contains("[user_prefs]"), "missing user_prefs entry");
+        // user_prefs should be grouped under "User" section
+        assert!(index.contains("## User"), "missing User section header");
+        // project_notes has no frontmatter, defaults to "General"
+        assert!(
+            index.contains("## General"),
+            "missing General section header"
+        );
+        // Description extraction
+        assert!(
+            index.contains("Key architecture decisions"),
+            "missing description from project_notes"
+        );
+        assert!(
+            index.contains("Prefers dark mode"),
+            "missing description from user_prefs"
+        );
+    }
+
+    #[test]
+    fn test_memory_index_skips_memory_md() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        fs::write(memory_dir.join("MEMORY.md"), "# Old index").unwrap();
+        fs::write(memory_dir.join("real_note.md"), "A real note.").unwrap();
+
+        let index = generate_memory_index(&memory_dir);
+        assert!(index.contains("[real_note]"));
+        // MEMORY.md should not appear as an entry
+        assert!(!index.contains("[MEMORY]"));
+    }
+
+    #[test]
+    fn test_memory_index_caps_at_200_lines() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        // Create enough files to exceed 200 lines.
+        // Each file adds 1 line. With header (2 lines), section header (1 line),
+        // and trailing blank (1 line), we need >196 files to exceed 200 lines.
+        for i in 0..250 {
+            fs::write(
+                memory_dir.join(format!("note_{i:03}.md")),
+                format!("Content for note {i}."),
+            )
+            .unwrap();
+        }
+
+        let index = generate_memory_index(&memory_dir);
+        let line_count = index.lines().count();
+        // Should be capped (200 lines + truncation message ~2 more lines)
+        assert!(line_count <= 205, "expected <= 205 lines, got {line_count}");
+        assert!(
+            index.contains("truncated"),
+            "should contain truncation notice"
+        );
+    }
+
+    #[test]
+    fn test_memory_index_extracts_frontmatter_type() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        fs::write(
+            memory_dir.join("arch_notes.md"),
+            "---\ntype: project\ntags: [arch]\n---\n# Architecture\nEvent-sourced design.",
+        )
+        .unwrap();
+        fs::write(
+            memory_dir.join("tax_info.md"),
+            "---\ntype: user\n---\nColombian tax rules.",
+        )
+        .unwrap();
+        fs::write(
+            memory_dir.join("general_stuff.md"),
+            "Just some general notes without frontmatter.",
+        )
+        .unwrap();
+
+        let index = generate_memory_index(&memory_dir);
+
+        assert!(index.contains("## Project"), "missing Project section");
+        assert!(index.contains("## User"), "missing User section");
+        assert!(index.contains("## General"), "missing General section");
+    }
+
+    #[test]
+    fn test_write_memory_index_creates_file() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        fs::write(memory_dir.join("test.md"), "Test content.").unwrap();
+
+        write_memory_index(&memory_dir);
+
+        let index_path = memory_dir.join("MEMORY.md");
+        assert!(index_path.exists(), "MEMORY.md should be created");
+        let content = fs::read_to_string(&index_path).unwrap();
+        assert!(content.contains("# Memory Index"));
+        assert!(content.contains("[test]"));
+    }
+
+    #[test]
+    fn test_memory_section_prefers_index() {
+        let tmp = TempDir::new().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        fs::write(memory_dir.join("notes.md"), "Individual note.").unwrap();
+        // Write a MEMORY.md index
+        write_memory_index(&memory_dir);
+
+        let section = build_memory_section(&memory_dir).unwrap();
+        // Should use the MEMORY.md index (contains "Memory Index" heading)
+        assert!(
+            section.contains("Memory Index"),
+            "should prefer MEMORY.md index"
+        );
+    }
+
+    // ── BRO-420: Prompt cache boundary tests ──
+
+    #[test]
+    fn test_system_prompt_struct_has_both_sections() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        fs::write(memory_dir.join("notes.md"), "Some notes.").unwrap();
+
+        let sp = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            Some("- skill_a: Does A"),
+            Some("Build fast."),
+        );
+
+        assert!(!sp.cacheable.is_empty(), "cacheable should not be empty");
+        assert!(!sp.dynamic.is_empty(), "dynamic should not be empty");
+    }
+
+    #[test]
+    fn test_cacheable_section_stable() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        fs::write(workspace.join("CLAUDE.md"), "Project rules.").unwrap();
+        let memory_dir = workspace.join(".arcan/memory");
+
+        let sp1 = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            Some("Project rules."),
+        );
+        let sp2 = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            Some("Project rules."),
+        );
+
+        assert_eq!(
+            sp1.cacheable, sp2.cacheable,
+            "cacheable section should be identical for same inputs"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_section_changes_with_memory() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+
+        // No memory files
+        let sp1 = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            None,
+        );
+
+        // Add a memory file
+        fs::write(memory_dir.join("new_note.md"), "New insight.").unwrap();
+
+        let sp2 = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            None,
+        );
+
+        assert_ne!(
+            sp1.dynamic, sp2.dynamic,
+            "dynamic section should change when memory files are added"
+        );
+        // Cacheable should remain the same
+        assert_eq!(
+            sp1.cacheable, sp2.cacheable,
+            "cacheable section should not change with memory"
+        );
+    }
+
+    #[test]
+    fn test_cacheable_contains_role_env_guidelines() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join("memory");
+
+        let sp = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            None,
+        );
+
+        assert!(
+            sp.cacheable.contains("# System"),
+            "cacheable should contain role"
+        );
+        assert!(
+            sp.cacheable.contains("# Environment"),
+            "cacheable should contain environment"
+        );
+        assert!(
+            sp.cacheable.contains("# Guidelines"),
+            "cacheable should contain guidelines"
+        );
+    }
+
+    #[test]
+    fn test_dynamic_contains_git_memory_skills() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        fs::write(memory_dir.join("notes.md"), "Remember.").unwrap();
+
+        let sp = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            Some("- skill_a"),
+            None,
+        );
+
+        assert!(
+            sp.dynamic.contains("# Agent Memory"),
+            "dynamic should contain memory"
+        );
+        assert!(
+            sp.dynamic.contains("# Available Skills"),
+            "dynamic should contain skills"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_combined() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+        fs::create_dir_all(&memory_dir).unwrap();
+        fs::write(memory_dir.join("notes.md"), "Some notes.").unwrap();
+
+        let sp = build_system_prompt(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            Some("- skill_a"),
+            Some("Project instructions."),
+        );
+        let combined = sp.combined();
+
+        // Combined should contain content from both sections
+        assert!(combined.contains("# System"));
+        assert!(combined.contains("# Guidelines"));
+        assert!(combined.contains("# Agent Memory"));
+        assert!(combined.contains("# Available Skills"));
+    }
+
+    #[test]
+    fn test_combined_empty_dynamic() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join("nonexistent");
+
+        let sp = build_system_prompt(workspace, "mock", "mock", &memory_dir, None, None);
+
+        // With no git, no memory, no skills — dynamic should be empty
+        let combined = sp.combined();
+        // Combined should just be the cacheable section (no trailing ---)
+        assert_eq!(combined, sp.cacheable);
+    }
+
+    // ── Helper function tests ──
+
+    #[test]
+    fn test_extract_frontmatter_type_valid() {
+        let content = "---\ntype: project\ntags: [a, b]\n---\n# Title\nBody.";
+        assert_eq!(
+            extract_frontmatter_type(content),
+            Some("project".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_frontmatter_type_missing() {
+        let content = "---\ntags: [a]\n---\nNo type field.";
+        assert_eq!(extract_frontmatter_type(content), None);
+    }
+
+    #[test]
+    fn test_extract_frontmatter_type_no_frontmatter() {
+        let content = "Just plain text.";
+        assert_eq!(extract_frontmatter_type(content), None);
+    }
+
+    #[test]
+    fn test_extract_first_content_line_with_frontmatter() {
+        let content = "---\ntype: user\n---\n# Heading\nFirst real line.";
+        assert_eq!(extract_first_content_line(content), "First real line.");
+    }
+
+    #[test]
+    fn test_extract_first_content_line_no_frontmatter() {
+        let content = "# Heading\nContent line.";
+        assert_eq!(extract_first_content_line(content), "Content line.");
+    }
+
+    #[test]
+    fn test_extract_first_content_line_empty() {
+        let content = "";
+        assert_eq!(extract_first_content_line(content), "(no description)");
+    }
+
+    #[test]
+    fn test_capitalize() {
+        assert_eq!(capitalize("general"), "General");
+        assert_eq!(capitalize("user"), "User");
+        assert_eq!(capitalize(""), "");
+        assert_eq!(capitalize("ALREADY"), "ALREADY");
     }
 }
