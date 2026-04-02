@@ -7,6 +7,7 @@ mod clear;
 mod commit;
 mod compact;
 mod config_cmd;
+mod context;
 mod cost;
 mod diff;
 mod help;
@@ -85,6 +86,14 @@ pub struct CommandContext {
     /// Workspace journal status string (e.g. path or "unavailable").
     /// Set when a shared Lance workspace journal is opened.
     pub workspace_journal_status: Option<String>,
+    /// Estimated tokens for project instructions (CLAUDE.md, AGENTS.md, docs/).
+    pub project_instructions_tokens: usize,
+    /// Estimated tokens for git context section.
+    pub git_context_tokens: usize,
+    /// Estimated tokens for MEMORY.md index.
+    pub memory_index_tokens: usize,
+    /// Estimated tokens for skills catalog.
+    pub skills_catalog_tokens: usize,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -214,6 +223,7 @@ impl CommandRegistry {
         registry.register(Box::new(undo::UndoCommand));
         registry.register(Box::new(history::HistoryCommand));
         registry.register(Box::new(skill::SkillCommand));
+        registry.register(Box::new(context::ContextCommand));
         registry.rebuild_help_text();
         registry
     }
