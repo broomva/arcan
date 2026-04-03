@@ -1,19 +1,23 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
 use aios_protocol::{
-    ApprovalPort, EventStorePort, KernelResult, ModelCompletion, ModelCompletionRequest,
-    ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort, PolicySet, ToolHarnessPort,
+    AgentId, AgentIdentityProvider, ApprovalPort, EventStorePort, KernelResult, ModelCompletion,
+    ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort,
+    PolicySet, SoulProfile, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
 use aios_tools::{ToolDispatcher, ToolRegistry};
 use arcan_core::error::CoreError;
 use arcan_core::runtime::{Provider, ProviderFactory, SwappableProviderHandle};
-use arcand::canonical::{create_canonical_router, openapi_spec};
+use arcand::canonical::{
+    create_canonical_router, create_canonical_router_with_skills, openapi_spec,
+};
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde_json::json;
@@ -76,6 +80,74 @@ impl ModelProviderPort for TestProvider {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CapturingProvider {
+    requests: Arc<Mutex<Vec<ModelCompletionRequest>>>,
+}
+
+impl CapturingProvider {
+    fn new(requests: Arc<Mutex<Vec<ModelCompletionRequest>>>) -> Self {
+        Self { requests }
+    }
+}
+
+#[async_trait]
+impl ModelProviderPort for CapturingProvider {
+    async fn complete(&self, request: ModelCompletionRequest) -> KernelResult<ModelCompletion> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(ModelCompletion {
+            provider: "test".to_owned(),
+            model: "test-model".to_owned(),
+            directives: vec![ModelDirective::Message {
+                role: "assistant".to_owned(),
+                content: format!("ack: {}", request.objective),
+            }],
+            stop_reason: ModelStopReason::Completed,
+            usage: None,
+            final_answer: Some("ok".to_owned()),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct MutablePersonaIdentity {
+    agent_id: AgentId,
+    soul: SoulProfile,
+    generation: Arc<AtomicUsize>,
+}
+
+impl MutablePersonaIdentity {
+    fn new(generation: Arc<AtomicUsize>) -> Self {
+        Self {
+            agent_id: AgentId::default(),
+            soul: SoulProfile {
+                name: "Prompt Cache Tester".to_owned(),
+                mission: "Validate frozen system-prompt prefixes".to_owned(),
+                ..Default::default()
+            },
+            generation,
+        }
+    }
+}
+
+impl AgentIdentityProvider for MutablePersonaIdentity {
+    fn agent_id(&self) -> &AgentId {
+        &self.agent_id
+    }
+
+    fn soul_profile(&self) -> &SoulProfile {
+        &self.soul
+    }
+
+    fn persona_block(&self) -> String {
+        let generation = self.generation.load(Ordering::SeqCst);
+        format!(
+            "You are {} — {}.\nPersona generation: {generation}",
+            self.soul.name, self.soul.mission
+        )
+    }
+}
+
 fn unique_root(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -85,6 +157,13 @@ fn unique_root(name: &str) -> PathBuf {
 }
 
 fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
+    build_runtime_with_provider(root, Arc::new(TestProvider))
+}
+
+fn build_runtime_with_provider(
+    root: PathBuf,
+    provider: Arc<dyn ModelProviderPort>,
+) -> Arc<KernelRuntime> {
     let event_store_backend = Arc::new(FileEventStore::new(root.join("kernel")));
     let journal = Arc::new(EventJournal::new(
         event_store_backend,
@@ -101,8 +180,6 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
     let dispatcher = Arc::new(ToolDispatcher::new(registry, policy_engine, sandbox));
     let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
 
-    let provider: Arc<dyn ModelProviderPort> = Arc::new(TestProvider);
-
     Arc::new(KernelRuntime::new(
         RuntimeConfig::new(root),
         event_store,
@@ -111,6 +188,18 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
         approvals,
         policy_gate,
     ))
+}
+
+fn captured_system_prompt(
+    requests: &Arc<Mutex<Vec<ModelCompletionRequest>>>,
+    index: usize,
+) -> String {
+    requests
+        .lock()
+        .unwrap()
+        .get(index)
+        .and_then(|request| request.system_prompt.clone())
+        .expect("captured system prompt")
 }
 
 #[tokio::test]
@@ -536,6 +625,91 @@ async fn canonical_stream_branch_isolation() {
     assert!(
         !body.contains("feature-b branch work"),
         "main branch stream should not contain feature-b events, body: {body}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn canonical_freezes_system_prompt_prefix_per_session() {
+    let captured_requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = build_runtime_with_provider(
+        unique_root("arcand-frozen-prefix"),
+        Arc::new(CapturingProvider::new(captured_requests.clone())),
+    );
+    let persona_generation = Arc::new(AtomicUsize::new(1));
+    let identity: Arc<dyn AgentIdentityProvider> =
+        Arc::new(MutablePersonaIdentity::new(persona_generation.clone()));
+    let router = create_canonical_router_with_skills(
+        runtime,
+        test_provider_handle(),
+        test_provider_factory(),
+        None,
+        None,
+        Vec::new(),
+        Some(identity),
+        std::env::temp_dir(),
+        None,
+        None,
+        None,
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let session_a = "frozen-prefix-a";
+    let session_b = "frozen-prefix-b";
+
+    let first_run = client
+        .post(format!("{base}/sessions/{session_a}/runs"))
+        .json(&json!({ "objective": "first turn" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_run.status(), StatusCode::OK);
+
+    persona_generation.store(2, Ordering::SeqCst);
+
+    let second_run = client
+        .post(format!("{base}/sessions/{session_a}/runs"))
+        .json(&json!({ "objective": "second turn" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_run.status(), StatusCode::OK);
+
+    let third_run = client
+        .post(format!("{base}/sessions/{session_b}/runs"))
+        .json(&json!({ "objective": "new session turn" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(third_run.status(), StatusCode::OK);
+
+    let first_prompt = captured_system_prompt(&captured_requests, 0);
+    let second_prompt = captured_system_prompt(&captured_requests, 1);
+    let third_prompt = captured_system_prompt(&captured_requests, 2);
+
+    assert!(
+        first_prompt.contains("Persona generation: 1"),
+        "first session should capture generation 1, prompt: {first_prompt}"
+    );
+    assert_eq!(
+        first_prompt, second_prompt,
+        "same session should reuse the frozen prompt prefix"
+    );
+    assert!(
+        third_prompt.contains("Persona generation: 2"),
+        "new session should pick up the updated prefix, prompt: {third_prompt}"
+    );
+    assert_ne!(
+        second_prompt, third_prompt,
+        "new sessions should recompute the prompt prefix"
     );
 
     server.abort();
