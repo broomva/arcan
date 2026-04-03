@@ -1,5 +1,6 @@
 use crate::context::{ContextConfig, compact_messages};
 use crate::error::CoreError;
+use crate::lifecycle::LifecycleHook;
 use crate::protocol::{
     AgentEvent, ChatMessage, ModelDirective, ModelStopReason, ModelTurn, RunStopReason, TokenUsage,
     ToolCall, ToolDefinition, ToolResult, ToolResultSummary,
@@ -255,6 +256,7 @@ pub struct Orchestrator {
     provider: Arc<std::sync::RwLock<Arc<dyn Provider>>>,
     tools: ToolRegistry,
     turn_middlewares: Vec<Arc<dyn TurnMiddleware>>,
+    lifecycle_hooks: Vec<Arc<dyn LifecycleHook>>,
     config: OrchestratorConfig,
 }
 
@@ -274,6 +276,7 @@ impl Orchestrator {
                     Arc::new(LegacyMiddlewareAdapter::new(middleware)) as Arc<dyn TurnMiddleware>
                 })
                 .collect(),
+            lifecycle_hooks: Vec::new(),
             config,
         }
     }
@@ -288,8 +291,25 @@ impl Orchestrator {
             provider: Arc::new(std::sync::RwLock::new(provider)),
             tools,
             turn_middlewares,
+            lifecycle_hooks: Vec::new(),
             config,
         }
+    }
+
+    /// Set lifecycle hooks for this orchestrator.
+    ///
+    /// Lifecycle hooks are fire-and-forget observers that cannot block or
+    /// transform the agent loop. They are called at key points (session
+    /// start/end, pre/post tool call, pre/post LLM call) for telemetry,
+    /// billing, and notification use-cases.
+    pub fn with_lifecycle_hooks(mut self, hooks: Vec<Arc<dyn LifecycleHook>>) -> Self {
+        self.lifecycle_hooks = hooks;
+        self
+    }
+
+    /// Add a single lifecycle hook to this orchestrator.
+    pub fn add_lifecycle_hook(&mut self, hook: Arc<dyn LifecycleHook>) {
+        self.lifecycle_hooks.push(hook);
     }
 
     /// Swap the active provider at runtime. Returns the name of the new provider.
@@ -367,6 +387,11 @@ impl Orchestrator {
         event_handler(start_event.clone());
         events.push(start_event);
 
+        // Fire lifecycle hooks: session start
+        for hook in &self.lifecycle_hooks {
+            hook.on_session_start(&input.session_id);
+        }
+
         for iteration in 1..=self.config.max_iterations {
             // Check cancellation at each iteration boundary
             if let Some(flag) = cancel {
@@ -430,6 +455,11 @@ impl Orchestrator {
                 break;
             }
 
+            // Fire lifecycle hooks: pre LLM call
+            for hook in &self.lifecycle_hooks {
+                hook.pre_llm_call(&provider_request);
+            }
+
             let mut model_turn = match provider.complete(&provider_request) {
                 Ok(turn) => turn,
                 Err(err) => {
@@ -444,6 +474,11 @@ impl Orchestrator {
                     break;
                 }
             };
+
+            // Fire lifecycle hooks: post LLM call
+            for hook in &self.lifecycle_hooks {
+                hook.post_llm_call(&provider_request);
+            }
 
             if let Err(err) = self.run_after_model(&provider_request, &mut model_turn) {
                 stop_reason = RunStopReason::BlockedByPolicy;
@@ -540,6 +575,11 @@ impl Orchestrator {
                             break;
                         };
 
+                        // Fire lifecycle hooks: pre tool call
+                        for hook in &self.lifecycle_hooks {
+                            hook.pre_tool_call(&call.tool_name, &call.input);
+                        }
+
                         match tool.execute(&call, &context) {
                             Ok(mut result) => {
                                 if let Err(err) = self.run_post_tool(&context, &mut result) {
@@ -585,6 +625,13 @@ impl Orchestrator {
                                             break;
                                         }
                                     }
+                                }
+
+                                // Fire lifecycle hooks: post tool call
+                                let result_str = serde_json::to_string(&result.output)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                for hook in &self.lifecycle_hooks {
+                                    hook.post_tool_call(&call.tool_name, &result_str);
                                 }
 
                                 let completed_event = AgentEvent::ToolCallCompleted {
@@ -753,6 +800,11 @@ impl Orchestrator {
             .try_for_each(|m| m.on_run_finished(&mut output))
         {
             tracing::warn!(error = %e, "middleware on_run_finished failed (non-fatal)");
+        }
+
+        // Fire lifecycle hooks: session end
+        for hook in &self.lifecycle_hooks {
+            hook.on_session_end(&output.session_id, &output);
         }
 
         output
@@ -1536,5 +1588,120 @@ mod tests {
         assert_eq!(output.total_usage.input_tokens, 300);
         assert_eq!(output.total_usage.output_tokens, 80);
         assert_eq!(output.total_usage.total(), 380);
+    }
+
+    #[test]
+    fn lifecycle_hooks_fire_during_run() {
+        use crate::lifecycle::LifecycleHook;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct CountingHook {
+            pre_tool: AtomicU32,
+            post_tool: AtomicU32,
+            pre_llm: AtomicU32,
+            post_llm: AtomicU32,
+            session_start: AtomicU32,
+            session_end: AtomicU32,
+        }
+
+        impl CountingHook {
+            fn new() -> Self {
+                Self {
+                    pre_tool: AtomicU32::new(0),
+                    post_tool: AtomicU32::new(0),
+                    pre_llm: AtomicU32::new(0),
+                    post_llm: AtomicU32::new(0),
+                    session_start: AtomicU32::new(0),
+                    session_end: AtomicU32::new(0),
+                }
+            }
+        }
+
+        impl LifecycleHook for CountingHook {
+            fn pre_tool_call(&self, _tool_name: &str, _input: &serde_json::Value) {
+                self.pre_tool.fetch_add(1, Ordering::Relaxed);
+            }
+            fn post_tool_call(&self, _tool_name: &str, _result: &str) {
+                self.post_tool.fetch_add(1, Ordering::Relaxed);
+            }
+            fn pre_llm_call(&self, _request: &ProviderRequest) {
+                self.pre_llm.fetch_add(1, Ordering::Relaxed);
+            }
+            fn post_llm_call(&self, _request: &ProviderRequest) {
+                self.post_llm.fetch_add(1, Ordering::Relaxed);
+            }
+            fn on_session_start(&self, _session_id: &str) {
+                self.session_start.fetch_add(1, Ordering::Relaxed);
+            }
+            fn on_session_end(&self, _session_id: &str, _output: &RunOutput) {
+                self.session_end.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "call-1".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({ "value": "hello" }),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "done".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
+                },
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let hook = Arc::new(CountingHook::new());
+
+        let orchestrator = Orchestrator::new(
+            Arc::new(provider),
+            tools,
+            Vec::new(),
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+                context_compiler: None,
+            },
+        )
+        .with_lifecycle_hooks(vec![hook.clone()]);
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "session-1".to_string(),
+                branch_id: "main".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Completed);
+
+        // Session lifecycle: start and end should each fire once
+        assert_eq!(hook.session_start.load(Ordering::Relaxed), 1);
+        assert_eq!(hook.session_end.load(Ordering::Relaxed), 1);
+
+        // LLM calls: 2 iterations = 2 provider calls
+        assert_eq!(hook.pre_llm.load(Ordering::Relaxed), 2);
+        assert_eq!(hook.post_llm.load(Ordering::Relaxed), 2);
+
+        // Tool calls: 1 echo tool call
+        assert_eq!(hook.pre_tool.load(Ordering::Relaxed), 1);
+        assert_eq!(hook.post_tool.load(Ordering::Relaxed), 1);
     }
 }
