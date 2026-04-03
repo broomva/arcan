@@ -1,8 +1,8 @@
 use arcan_core::error::CoreError;
 use arcan_core::runtime::{Provider, ProviderFactory};
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
-use arcan_provider::ollama;
 use arcan_provider::openai::{OpenAiCompatibleProvider, OpenAiConfig};
+use arcan_provider::{apfel, ollama};
 use arcand::mock::MockProvider;
 use std::sync::Arc;
 
@@ -45,8 +45,16 @@ impl ProviderFactory for ArcanProviderFactory {
                 tracing::info!(model = %config.model, base_url = %config.base_url, "Provider switched to: ollama");
                 Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
             }
+            "apfel" | "apple" => {
+                let base_url = apfel::resolve_base_url();
+                apfel::ensure_apfel_running(&base_url)?;
+                let config = OpenAiConfig::apfel_from_resolved(Some(&base_url), None)
+                    .map_err(|e| CoreError::Provider(e.to_string()))?;
+                tracing::info!(base_url = %config.base_url, "Provider switched to: apfel (Apple on-device)");
+                Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
+            }
             _ => Err(CoreError::Provider(format!(
-                "unknown provider: \"{provider_name}\". Available: anthropic, openai, ollama, mock"
+                "unknown provider: \"{provider_name}\". Available: anthropic, openai, ollama, apfel, mock"
             ))),
         }
     }
@@ -57,6 +65,12 @@ impl ProviderFactory for ArcanProviderFactory {
             "openai".to_string(),
             "mock".to_string(),
         ];
+
+        // Check apfel (Apple on-device model)
+        let apfel_url = apfel::resolve_base_url();
+        if apfel::is_apfel_running(&apfel_url) {
+            providers.push("apfel".to_string());
+        }
 
         let base_url = ollama::resolve_base_url();
         if ollama::is_ollama_running(&base_url) {

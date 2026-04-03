@@ -34,6 +34,8 @@ pub struct DefaultsConfig {
     pub port: Option<u16>,
     pub autonomic_url: Option<String>,
     pub spaces_backend: Option<String>,
+    /// Bare mode: minimal prompt and core tools only (for small-context models).
+    pub bare: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +103,8 @@ pub struct ResolvedConfig {
     pub skills_write_registry: bool,
     /// Hook registry built from config.
     pub hook_registry: HookRegistry,
+    /// Bare mode: minimal prompt and core tools only (for small-context models).
+    pub bare: bool,
 }
 
 impl ArcanConfig {
@@ -124,6 +128,9 @@ impl ArcanConfig {
             self.defaults
                 .spaces_backend
                 .clone_from(&other.defaults.spaces_backend);
+        }
+        if other.defaults.bare.is_some() {
+            self.defaults.bare = other.defaults.bare;
         }
         if other.spaces.host.is_some() {
             self.spaces.host.clone_from(&other.spaces.host);
@@ -196,6 +203,12 @@ impl ArcanConfig {
             }
             "spaces_backend" | "defaults.spaces_backend" => {
                 self.defaults.spaces_backend = Some(value.to_owned());
+            }
+            "bare" | "defaults.bare" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid bare value: {e}"))?;
+                self.defaults.bare = Some(v);
             }
             "spaces.host" => {
                 self.spaces.host = Some(value.to_owned());
@@ -273,6 +286,7 @@ impl ArcanConfig {
             "port" | "defaults.port" => self.defaults.port.map(|p| p.to_string()),
             "autonomic_url" | "defaults.autonomic_url" => self.defaults.autonomic_url.clone(),
             "spaces_backend" | "defaults.spaces_backend" => self.defaults.spaces_backend.clone(),
+            "bare" | "defaults.bare" => self.defaults.bare.map(|v| v.to_string()),
             "spaces.host" => self.spaces.host.clone(),
             "spaces.database_id" => self.spaces.database_id.clone(),
             "spaces.token" => self.spaces.token.clone(),
@@ -369,6 +383,7 @@ pub fn resolve(
     cli_autonomic_url: Option<&str>,
     cli_spaces_backend: Option<&str>,
     cli_spaces_token: Option<&str>,
+    cli_bare: bool,
 ) -> ResolvedConfig {
     // Provider: CLI > env > config > ""
     let provider = cli_provider
@@ -440,6 +455,17 @@ pub fn resolve(
     // Hooks: build registry from config
     let hook_registry = HookRegistry::from_configs(config.hooks.clone());
 
+    // Bare mode: CLI > env > config > false
+    let bare = if cli_bare {
+        true
+    } else {
+        std::env::var("ARCAN_BARE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(config.defaults.bare)
+            .unwrap_or(false)
+    };
+
     ResolvedConfig {
         provider,
         model,
@@ -456,6 +482,7 @@ pub fn resolve(
         skills_enabled,
         skills_write_registry,
         hook_registry,
+        bare,
     }
 }
 
@@ -555,6 +582,7 @@ mod tests {
                 port: None,
                 autonomic_url: None,
                 spaces_backend: None,
+                bare: None,
             },
             ..Default::default()
         };
@@ -624,7 +652,9 @@ mod tests {
     #[test]
     fn resolve_defaults() {
         let config = ArcanConfig::default();
-        let resolved = resolve(&config, None, None, None, None, None, None, None, None);
+        let resolved = resolve(
+            &config, None, None, None, None, None, None, None, None, false,
+        );
         assert_eq!(resolved.provider, "anthropic");
         assert!(resolved.model.is_none());
         assert_eq!(resolved.port, 3000);
@@ -651,6 +681,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert_eq!(resolved.provider, "anthropic");
         assert_eq!(resolved.model.as_deref(), Some("claude-3"));
@@ -667,7 +698,9 @@ mod tests {
         };
         config.providers.insert("ollama".into(), pc);
 
-        let resolved = resolve(&config, None, None, None, None, None, None, None, None);
+        let resolved = resolve(
+            &config, None, None, None, None, None, None, None, None, false,
+        );
         assert_eq!(resolved.model.as_deref(), Some("special-model"));
     }
 

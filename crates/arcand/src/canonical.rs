@@ -221,6 +221,8 @@ struct CanonicalState {
     rate_limiter: Arc<crate::rate_limit::RateLimiter>,
     /// Frozen per-session prompt prefixes for provider cache preservation (BRO-424).
     frozen_prompt_prefixes: Arc<Mutex<HashMap<String, FrozenPromptPrefix>>>,
+    /// Bare mode: use minimal system prompt for small-context models (≤4K tokens).
+    bare: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -568,9 +570,10 @@ pub fn create_canonical_router(
         Vec::new(),
         None,
         std::env::temp_dir(),
-        None, // workspace_root
-        None, // session_selector (BRO-217)
-        None, // free_tier_journal (BRO-218)
+        None,  // workspace_root
+        None,  // session_selector (BRO-217)
+        None,  // free_tier_journal (BRO-218)
+        false, // bare
     )
 }
 
@@ -595,6 +598,7 @@ pub fn create_canonical_router_with_skills(
     workspace_root: Option<std::path::PathBuf>,
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
     free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
+    bare: bool,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -626,13 +630,20 @@ pub fn create_canonical_router_with_skills(
     let ws_root = workspace_root
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(std::env::temp_dir);
-    let cached_project_instructions = arcan_core::prompt::load_project_instructions(&ws_root);
-    if cached_project_instructions.is_some() {
-        tracing::info!(
-            workspace = %ws_root.display(),
-            "loaded project instructions for liquid prompt (BRO-375)"
-        );
-    }
+    // In bare mode, skip project instructions to save context window tokens.
+    let cached_project_instructions = if bare {
+        tracing::info!("Bare mode: skipping project instructions for minimal prompt");
+        None
+    } else {
+        let instructions = arcan_core::prompt::load_project_instructions(&ws_root);
+        if instructions.is_some() {
+            tracing::info!(
+                workspace = %ws_root.display(),
+                "loaded project instructions for liquid prompt (BRO-375)"
+            );
+        }
+        instructions
+    };
 
     let state = CanonicalState {
         runtime,
@@ -650,6 +661,7 @@ pub fn create_canonical_router_with_skills(
         anima_secret,
         rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
         frozen_prompt_prefixes: Arc::new(Mutex::new(HashMap::new())),
+        bare,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -1458,23 +1470,33 @@ async fn run_session(
     let model_name = std::env::var("ARCAN_MODEL")
         .or_else(|_| std::env::var("MODEL"))
         .unwrap_or_else(|_| "default".to_string());
-    let frozen_prompt_prefix = state.frozen_prompt_prefix(
-        session_id.as_str(),
-        build_system_prompt_prefix(
+    let system_prompt = if state.bare {
+        // Bare mode: minimal prompt for small-context models (≤4K tokens).
+        // No project instructions, no memory, no git context, no skills.
+        Some(arcan_core::prompt::build_bare_prompt(
             &state.workspace_root,
-            state.cached_project_instructions.as_deref(),
-            &state.data_dir.join("memory"),
             &provider_name,
             &model_name,
-            &skill_catalog,
-            &persona,
-            &sandbox_note,
-        ),
-    );
-    let system_prompt = Some(append_prompt_suffix(
-        &frozen_prompt_prefix.system_prompt_prefix,
-        skill_prompt.as_deref(),
-    ));
+        ))
+    } else {
+        let frozen_prompt_prefix = state.frozen_prompt_prefix(
+            session_id.as_str(),
+            build_system_prompt_prefix(
+                &state.workspace_root,
+                state.cached_project_instructions.as_deref(),
+                &state.data_dir.join("memory"),
+                &provider_name,
+                &model_name,
+                &skill_catalog,
+                &persona,
+                &sandbox_note,
+            ),
+        );
+        Some(append_prompt_suffix(
+            &frozen_prompt_prefix.system_prompt_prefix,
+            skill_prompt.as_deref(),
+        ))
+    };
 
     // Combine tier restriction with any active skill's allowed_tools.
     // When both restrict, use their intersection (more restrictive always wins).

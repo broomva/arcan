@@ -5,6 +5,7 @@ mod daemon;
 mod embedding;
 mod ephemeral_journal;
 mod factory;
+mod markdown;
 mod memory_tools;
 mod nous_observer;
 mod prompt;
@@ -91,6 +92,10 @@ struct Cli {
     /// SpacetimeDB auth token override (env: SPACETIMEDB_TOKEN)
     #[arg(long, global = true)]
     spaces_token: Option<String>,
+
+    /// Bare mode: minimal system prompt and core tools only, for small-context models (≤4K tokens)
+    #[arg(long, global = true)]
+    bare: bool,
 }
 
 #[derive(Subcommand)]
@@ -187,6 +192,10 @@ enum Command {
         /// Session budget in USD. Warns at 80%, stops new LLM calls at 100%.
         #[arg(short, long)]
         budget: Option<f64>,
+
+        /// Display model reasoning/thinking tokens in the output
+        #[arg(long)]
+        show_reasoning: bool,
     },
 }
 
@@ -348,6 +357,32 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
                 arcan_provider::openai::OpenAiCompatibleProvider::new(config),
             ))
         }
+        "apfel" | "apple" => {
+            let base_url = arcan_provider::apfel::resolve_base_url();
+            arcan_provider::apfel::ensure_apfel_running(&base_url)?;
+            let config = arcan_provider::openai::OpenAiConfig::apfel_from_resolved(
+                pc.and_then(|p| p.base_url.as_deref()),
+                pc.and_then(|p| p.max_tokens),
+            )?;
+            if let Ok(info) = arcan_provider::apfel::model_info(&config.base_url) {
+                tracing::info!(
+                    model = %info.model,
+                    context_window = info.context_window,
+                    version = %info.version,
+                    "Provider: apfel (Apple on-device)"
+                );
+            } else {
+                tracing::info!(base_url = %config.base_url, "Provider: apfel (Apple on-device)");
+            }
+            if !resolved.bare {
+                tracing::warn!(
+                    "Tip: apfel has a 4K context window. Consider using --bare for better results."
+                );
+            }
+            Ok(Arc::new(
+                arcan_provider::openai::OpenAiCompatibleProvider::new(config),
+            ))
+        }
         "anthropic" => {
             let config = AnthropicConfig::from_resolved(
                 resolved.model.as_deref(),
@@ -461,36 +496,46 @@ fn run_serve(
 
     // --- Tools (Praxis canonical implementations, bridged into Arcan) ---
     let mut registry = ToolRegistry::default();
+
+    // Core tools — always registered (also the only tools in bare mode)
     registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
     registry.register(PraxisToolBridge::new(WriteFileTool::new(
         tracked_fs.clone(),
     )));
-    registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs.clone())));
     registry.register(PraxisToolBridge::new(EditFileTool::new(tracked_fs.clone())));
     registry.register(PraxisToolBridge::new(GlobTool::new(tracked_fs.clone())));
-    registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs)));
+    registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs.clone())));
 
     let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
         arcan_praxis::SandboxCommandRunner::new(sandbox_provider.clone()),
     );
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
-    let memory_dir = data_dir.join("memory");
-    std::fs::create_dir_all(&memory_dir)?;
-    registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
-        memory_dir.clone(),
-    )));
-    registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+    if resolved.bare {
+        tracing::info!("Bare mode: 6 core tools, minimal prompt (for small-context models)");
+    }
 
-    // --- Governed memory tools (event-sourced via Lago) ---
-    let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
-    registry.register(MemoryQueryTool::new(memory_projection));
-    registry.register(MemoryProposeTool::new(memory_journal.clone()));
-    registry.register(MemoryCommitTool::new(memory_journal));
+    // Extended tools — skipped in bare mode to save context window tokens
+    if !resolved.bare {
+        registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs)));
+
+        let memory_dir = data_dir.join("memory");
+        std::fs::create_dir_all(&memory_dir)?;
+        registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
+            memory_dir.clone(),
+        )));
+        registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+
+        // --- Governed memory tools (event-sourced via Lago) ---
+        let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
+        registry.register(MemoryQueryTool::new(memory_projection));
+        registry.register(MemoryProposeTool::new(memory_journal.clone()));
+        registry.register(MemoryCommitTool::new(memory_journal));
+    }
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
     let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
-    if resolved.skills_enabled {
+    if resolved.skills_enabled && !resolved.bare {
         let skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&skills_dir).ok();
 
@@ -522,9 +567,9 @@ fn run_serve(
         }
     }
 
-    // --- Spaces distributed networking (opt-in) ---
+    // --- Spaces distributed networking (opt-in, skipped in bare mode) ---
     #[cfg(feature = "spaces")]
-    {
+    if !resolved.bare {
         let spaces_port: Arc<dyn arcan_spaces::SpacesPort> = match resolved.spaces_backend.as_str()
         {
             "spacetimedb" | "mainnet" => {
@@ -712,6 +757,7 @@ fn run_serve(
             Some(workspace_root),    // BRO-366: workspace root for liquid prompt
             Some(session_selector),  // BRO-217: ephemeral journal routing for anonymous tiers
             Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
+            resolved.bare,           // minimal prompt for small-context models
         );
 
         // --- Console UI ---
@@ -1162,6 +1208,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             run_serve(&data_dir, &resolved, cli.console_dir, &tokio_runtime)
@@ -1186,6 +1233,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1206,6 +1254,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1238,6 +1287,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1259,6 +1309,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
             run_skills(&data_dir, &resolved, &action)
         }
@@ -1267,6 +1318,7 @@ fn main() -> anyhow::Result<()> {
             yes,
             resume,
             budget,
+            show_reasoning,
         }) => {
             let resolved = config::resolve(
                 &file_config,
@@ -1278,6 +1330,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             // Build the Tokio runtime FIRST — same as `serve` mode.
@@ -1301,6 +1354,7 @@ fn main() -> anyhow::Result<()> {
                 yes,
                 resume,
                 budget,
+                show_reasoning,
             )
         }
         Some(Command::Status) => {
@@ -1314,6 +1368,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1332,6 +1387,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1359,6 +1415,7 @@ fn main() -> anyhow::Result<()> {
                 cli.autonomic_url.as_deref(),
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
+                cli.bare,
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()

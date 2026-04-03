@@ -652,6 +652,7 @@ async fn canonical_freezes_system_prompt_prefix_per_session() {
         None,
         None,
         None,
+        false,
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

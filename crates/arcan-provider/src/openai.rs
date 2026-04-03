@@ -160,6 +160,54 @@ impl OpenAiConfig {
         })
     }
 
+    /// Create config for Apple's on-device model via apfel.
+    /// Defaults to localhost:11435 with no API key, streaming disabled (small model).
+    pub fn apfel_from_env() -> Result<Self, CoreError> {
+        let base_url = std::env::var("APFEL_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11435".to_string());
+        let max_tokens = std::env::var("APFEL_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3584); // Reserve tokens for output within 4096 context
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model: "apple-foundationmodel".to_string(),
+            max_tokens,
+            base_url,
+            provider_name: "apfel".to_string(),
+            enable_streaming: false,
+        })
+    }
+
+    /// Create apfel config from resolved CLI settings.
+    pub fn apfel_from_resolved(
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<Self, CoreError> {
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("APFEL_BASE_URL").ok())
+            .unwrap_or_else(|| "http://localhost:11435".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("APFEL_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(3584);
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model: "apple-foundationmodel".to_string(),
+            max_tokens,
+            base_url,
+            provider_name: "apfel".to_string(),
+            enable_streaming: false,
+        })
+    }
+
     /// Create config with an OAuth credential.
     pub fn from_oauth(credential: Arc<dyn Credential>, model: String) -> Self {
         Self {

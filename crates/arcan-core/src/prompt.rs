@@ -523,6 +523,24 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// Build a minimal system prompt for small-context-window models.
+///
+/// Omits project instructions, memory, git context, and skills to stay
+/// under ~200 tokens. Designed for models with ≤4K context windows
+/// (e.g. Apple's on-device model via apfel).
+pub fn build_bare_prompt(workspace: &Path, provider: &str, model: &str) -> String {
+    let cwd = workspace.display();
+    let platform = std::env::consts::OS;
+    let date = chrono::Local::now().format("%Y-%m-%d");
+
+    format!(
+        "You are an AI coding assistant. Help with software engineering tasks: \
+         reading files, editing code, running commands, and answering questions. \
+         Be concise. Read files before editing. Follow existing code style.\n\n\
+         Workspace: {cwd} | Platform: {platform} | Date: {date} | Provider: {provider} | Model: {model}"
+    )
+}
+
 /// Behavioral guidelines that bound how the agent operates.
 pub fn build_guidelines_section() -> String {
     "# Guidelines\n\n\
@@ -850,6 +868,7 @@ mod tests {
         let _ = build_memory_section as fn(&Path) -> Option<String>;
         let _ = build_role_section as fn() -> String;
         let _ = build_guidelines_section as fn() -> String;
+        let _ = build_bare_prompt as fn(&Path, &str, &str) -> String;
         let _ = generate_memory_index as fn(&Path) -> String;
         let _ = write_memory_index as fn(&Path);
     }
@@ -1251,5 +1270,42 @@ mod tests {
         assert_eq!(capitalize("user"), "User");
         assert_eq!(capitalize(""), "");
         assert_eq!(capitalize("ALREADY"), "ALREADY");
+    }
+
+    #[test]
+    fn test_bare_prompt_is_compact() {
+        let tmp = TempDir::new().unwrap();
+        let prompt = build_bare_prompt(tmp.path(), "apfel", "apple-foundationmodel");
+
+        // Must contain key info
+        assert!(prompt.contains("AI coding assistant"), "missing role");
+        assert!(prompt.contains("Platform:"), "missing platform");
+        assert!(prompt.contains("Date:"), "missing date");
+        assert!(prompt.contains("Provider: apfel"), "missing provider");
+        assert!(
+            prompt.contains("Model: apple-foundationmodel"),
+            "missing model"
+        );
+
+        // Must NOT contain heavy sections
+        assert!(
+            !prompt.contains("# Project Instructions"),
+            "bare prompt should not have project instructions"
+        );
+        assert!(
+            !prompt.contains("# Agent Memory"),
+            "bare prompt should not have memory"
+        );
+        assert!(
+            !prompt.contains("# Git Context"),
+            "bare prompt should not have git context"
+        );
+
+        // Should be compact — well under 200 tokens (~4 chars/token heuristic)
+        assert!(
+            prompt.len() < 800,
+            "bare prompt too long: {} chars (target <800)",
+            prompt.len()
+        );
     }
 }
