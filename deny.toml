@@ -10,7 +10,9 @@ no-default-features = false
 [advisories]
 version = 2
 ignore = [
-    "RUSTSEC-2026-0049",  # rustls-webpki CRL issue — low impact, patched upstream
+    "RUSTSEC-2024-0384",  # instant unmaintained — transitive dep via mock_instant, no replacement yet
+    "RUSTSEC-2024-0436",  # paste unmaintained — widely used, no security issue
+    "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained — transitive, migration to rustls-pki-types planned
 ]
 
 [licenses]
@@ -28,6 +30,7 @@ allow = [
     "OpenSSL",
     "MPL-2.0",
     "CC0-1.0",
+    "0BSD",
 ]
 confidence-threshold = 0.8
 
