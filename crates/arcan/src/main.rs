@@ -1280,14 +1280,19 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
             );
 
-            // Shell mode uses file-based logging to avoid clobbering the terminal.
+            // Build the Tokio runtime FIRST — same as `serve` mode.
+            // Vigil's OTLP exporter uses tonic which needs `Handle::current()`.
+            let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build tokio runtime");
+            let _rt_guard = tokio_runtime.enter();
+
+            // Shell mode: file-based fmt layer (avoids clobbering the terminal)
+            // combined with an optional OTel layer for OTLP span export (BRO-372).
             let log_dir = data_dir.join("logs");
             std::fs::create_dir_all(&log_dir)?;
-            let file_appender = tracing_appender::rolling::never(&log_dir, "shell.log");
-            tracing_subscriber::fmt()
-                .with_writer(file_appender)
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
+            let _vigil_guard = shell::init_shell_telemetry(&log_dir, "arcan-shell");
 
             shell::run_shell(
                 &data_dir,

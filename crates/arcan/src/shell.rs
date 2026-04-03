@@ -49,6 +49,10 @@ use std::sync::RwLock;
 // Phase 2: Governed memory tools (BRO-360, BRO-361)
 use arcan_lago::{MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool};
 
+use life_vigil::VigConfig;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
+
 use crate::config::ResolvedConfig;
 
 // ---------------------------------------------------------------------------
@@ -657,6 +661,154 @@ fn is_memory_signal(line: &str) -> bool {
     }
 
     false
+}
+
+/// Guard that keeps the OTel telemetry pipeline alive for the shell session.
+///
+/// When dropped, flushes and shuts down the tracer and meter providers.
+/// If no OTLP endpoint was configured, this is a no-op wrapper.
+pub struct ShellTelemetryGuard {
+    tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+    meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
+}
+
+impl Drop for ShellTelemetryGuard {
+    fn drop(&mut self) {
+        if let Some(ref tp) = self.tracer_provider {
+            let _ = tp.shutdown();
+        }
+        if let Some(ref mp) = self.meter_provider {
+            let _ = mp.shutdown();
+        }
+    }
+}
+
+/// Initialise the telemetry pipeline for shell mode (BRO-372).
+///
+/// Shell mode needs two capabilities simultaneously:
+/// 1. **File-based structured logging** — tracing fmt output goes to
+///    `<log_dir>/shell.log` so it never clobbers the interactive terminal.
+/// 2. **OTLP export** — when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, all
+///    `tracing` spans are forwarded to an OTel collector for distributed
+///    tracing (Langfuse, LangSmith, Jaeger, etc.).
+///
+/// When no OTLP endpoint is configured, Vigil degrades gracefully to
+/// structured logging only (identical to the previous behaviour).
+///
+/// **Requires**: A Tokio runtime must be entered (but not blocked-on) before
+/// calling this function, because tonic's OTLP exporter calls
+/// `Handle::current()` during construction.
+#[allow(clippy::print_stderr)]
+pub fn init_shell_telemetry(log_dir: &Path, service_name: &str) -> ShellTelemetryGuard {
+    let file_appender = tracing_appender::rolling::never(log_dir, "shell.log");
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let vig_config = VigConfig::for_service(service_name).with_env_overrides();
+
+    if vig_config.otlp_endpoint.is_some() {
+        // Full pipeline: file-appender fmt + OTel tracing layer.
+        match build_shell_otel_subscriber(file_appender, env_filter, &vig_config) {
+            Ok(guard) => return guard,
+            Err(e) => {
+                // Fall back to file-only logging if OTel setup fails.
+                eprintln!("[vigil] OTel init failed ({e}), falling back to file logging");
+                // Re-create the file appender and filter since they were moved.
+                let file_appender = tracing_appender::rolling::never(log_dir, "shell.log");
+                let env_filter =
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+                tracing_subscriber::fmt()
+                    .with_writer(file_appender)
+                    .with_env_filter(env_filter)
+                    .init();
+                return ShellTelemetryGuard {
+                    tracer_provider: None,
+                    meter_provider: None,
+                };
+            }
+        }
+    }
+
+    // Logging-only: file appender with env filter, no OTel export.
+    tracing_subscriber::fmt()
+        .with_writer(file_appender)
+        .with_env_filter(env_filter)
+        .init();
+
+    ShellTelemetryGuard {
+        tracer_provider: None,
+        meter_provider: None,
+    }
+}
+
+/// Build a combined subscriber: file-appender fmt + OTel tracing layer.
+///
+/// Sets up the OTel tracer and meter providers (for OTLP export) and
+/// composes them with a file-appender fmt layer (for shell.log output).
+fn build_shell_otel_subscriber(
+    file_appender: tracing_appender::rolling::RollingFileAppender,
+    env_filter: EnvFilter,
+    vig_config: &VigConfig,
+) -> Result<ShellTelemetryGuard, String> {
+    use opentelemetry::global;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig as _;
+
+    let endpoint = vig_config
+        .otlp_endpoint
+        .as_deref()
+        .unwrap_or("http://localhost:4317");
+
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(vig_config.service_name.clone())
+        .build();
+
+    // Build OTLP span exporter (gRPC)
+    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .map_err(|e| format!("span exporter: {e}"))?;
+
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(span_exporter)
+        .with_resource(resource.clone())
+        .build();
+
+    global::set_tracer_provider(tracer_provider.clone());
+
+    // Build OTLP metric exporter
+    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .map_err(|e| format!("metric exporter: {e}"))?;
+
+    let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_periodic_exporter(metric_exporter)
+        .with_resource(resource)
+        .build();
+
+    global::set_meter_provider(meter_provider.clone());
+
+    // Build OTel tracing layer bridged to the tracer provider
+    let tracer = tracer_provider.tracer(vig_config.service_name.clone());
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Compose: file-appender fmt layer + OTel layer
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(file_appender)
+        .with_filter(env_filter);
+
+    tracing_subscriber::registry()
+        .with(otel_layer)
+        .with(fmt_layer)
+        .try_init()
+        .map_err(|e| format!("subscriber init: {e}"))?;
+
+    Ok(ShellTelemetryGuard {
+        tracer_provider: Some(tracer_provider),
+        meter_provider: Some(meter_provider),
+    })
 }
 
 /// Run the interactive shell REPL.
