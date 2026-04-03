@@ -1,4 +1,10 @@
-use std::{convert::Infallible, sync::Arc, time::Duration, time::Instant};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    sync::{Arc, Mutex},
+    time::Duration,
+    time::Instant,
+};
 
 use arcan_aios_adapters::tools::ToolHarnessObserver;
 
@@ -213,6 +219,13 @@ struct CanonicalState {
     /// In-memory token-bucket rate limiter (BRO-223).
     /// Shared across all request handlers via `Arc`.
     rate_limiter: Arc<crate::rate_limit::RateLimiter>,
+    /// Frozen per-session prompt prefixes for provider cache preservation (BRO-424).
+    frozen_prompt_prefixes: Arc<Mutex<HashMap<String, FrozenPromptPrefix>>>,
+}
+
+#[derive(Debug, Clone)]
+struct FrozenPromptPrefix {
+    system_prompt_prefix: String,
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -636,6 +649,7 @@ pub fn create_canonical_router_with_skills(
         free_tier_journal,
         anima_secret,
         rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
+        frozen_prompt_prefixes: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -1420,10 +1434,10 @@ async fn run_session(
         .map(|registry| build_tiered_skill_catalog(registry, tier_allowed_tools.as_deref()))
         .unwrap_or_default();
 
-    // BRO-366/374/375: Build unified liquid prompt — git context, project instructions,
-    // environment, memory, persona, skill catalog, and guidelines.
+    // Build the stable system-prompt prefix once per session so mid-session
+    // memory, git context, or skill-registry changes do not invalidate provider
+    // prompt caches. Dynamic active-skill prompts remain appended per turn.
     let persona = state.identity.persona_block();
-    // Append sandbox workspace note to persona so the LLM knows where to write files.
     let sandbox_note = sandbox_path
         .as_ref()
         .map(|p| {
@@ -1435,60 +1449,32 @@ async fn run_session(
             )
         })
         .unwrap_or_default();
-
-    let system_prompt = Some({
-        let mut sections = Vec::new();
-
-        // 1. Persona (agent identity)
-        sections.push(format!("{persona}{sandbox_note}"));
-
-        // 2. Environment info (BRO-366)
-        let provider_name = state
-            .provider_handle
-            .read()
-            .ok()
-            .map(|p| p.name().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let model_name = std::env::var("ARCAN_MODEL")
-            .or_else(|_| std::env::var("MODEL"))
-            .unwrap_or_else(|_| "default".to_string());
-        sections.push(arcan_core::prompt::build_environment_section(
+    let provider_name = state
+        .provider_handle
+        .read()
+        .ok()
+        .map(|p| p.name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let model_name = std::env::var("ARCAN_MODEL")
+        .or_else(|_| std::env::var("MODEL"))
+        .unwrap_or_else(|_| "default".to_string());
+    let frozen_prompt_prefix = state.frozen_prompt_prefix(
+        session_id.as_str(),
+        build_system_prompt_prefix(
             &state.workspace_root,
+            state.cached_project_instructions.as_deref(),
+            &state.data_dir.join("memory"),
             &provider_name,
             &model_name,
-        ));
-
-        // 3. Git context (BRO-374) — computed per-request for freshness
-        if let Some(git) = arcan_core::prompt::build_git_section(&state.workspace_root) {
-            sections.push(git);
-        }
-
-        // 4. Project instructions (BRO-375) — cached at startup
-        if let Some(ref instructions) = state.cached_project_instructions {
-            sections.push(format!("# Project Instructions\n\n{instructions}"));
-        }
-
-        // 5. Memory (from data_dir)
-        let memory_dir = state.data_dir.join("memory");
-        if let Some(memory) = arcan_core::prompt::build_memory_section(&memory_dir) {
-            sections.push(memory);
-        }
-
-        // 6. Tier-filtered skill catalog
-        if !skill_catalog.is_empty() {
-            sections.push(skill_catalog);
-        }
-
-        // 7. Active skill prompt
-        if let Some(skill) = skill_prompt {
-            sections.push(skill);
-        }
-
-        // 8. Guidelines
-        sections.push(arcan_core::prompt::build_guidelines_section());
-
-        sections.join("\n\n---\n\n")
-    });
+            &skill_catalog,
+            &persona,
+            &sandbox_note,
+        ),
+    );
+    let system_prompt = Some(append_prompt_suffix(
+        &frozen_prompt_prefix.system_prompt_prefix,
+        skill_prompt.as_deref(),
+    ));
 
     // Combine tier restriction with any active skill's allowed_tools.
     // When both restrict, use their intersection (more restrictive always wins).
@@ -1657,6 +1643,71 @@ async fn extract_run_context(
     };
 
     (final_answer, messages)
+}
+
+fn build_system_prompt_prefix(
+    workspace_root: &std::path::Path,
+    cached_project_instructions: Option<&str>,
+    memory_dir: &std::path::Path,
+    provider_name: &str,
+    model_name: &str,
+    skill_catalog: &str,
+    persona: &str,
+    sandbox_note: &str,
+) -> String {
+    let mut sections = Vec::new();
+
+    sections.push(format!("{persona}{sandbox_note}"));
+    sections.push(arcan_core::prompt::build_environment_section(
+        workspace_root,
+        provider_name,
+        model_name,
+    ));
+
+    if let Some(git) = arcan_core::prompt::build_git_section(workspace_root) {
+        sections.push(git);
+    }
+
+    if let Some(instructions) = cached_project_instructions {
+        sections.push(format!("# Project Instructions\n\n{instructions}"));
+    }
+
+    if let Some(memory) = arcan_core::prompt::build_memory_section(memory_dir) {
+        sections.push(memory);
+    }
+
+    if !skill_catalog.is_empty() {
+        sections.push(skill_catalog.to_owned());
+    }
+
+    sections.push(arcan_core::prompt::build_guidelines_section());
+    sections.join("\n\n---\n\n")
+}
+
+fn append_prompt_suffix(prefix: &str, suffix: Option<&str>) -> String {
+    match suffix {
+        Some(suffix) => format!("{prefix}\n\n---\n\n{suffix}"),
+        None => prefix.to_owned(),
+    }
+}
+
+impl CanonicalState {
+    fn frozen_prompt_prefix(
+        &self,
+        session_id: &str,
+        computed_prefix: String,
+    ) -> FrozenPromptPrefix {
+        let mut prefixes = self
+            .frozen_prompt_prefixes
+            .lock()
+            .expect("frozen prompt prefix cache poisoned");
+        prefixes
+            .entry(session_id.to_owned())
+            .or_insert_with(|| FrozenPromptPrefix {
+                system_prompt_prefix: computed_prefix,
+            })
+            .clone()
+    }
 }
 
 #[utoipa::path(

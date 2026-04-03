@@ -68,8 +68,9 @@ Streaming notes:
 - Role: canonical API router crate.
 - Status: active.
 - Exports: `canonical`, `mock`.
-- Integration tests: canonical API lifecycle, named session auto-create on run, canonical v6 stream replay path.
+- Integration tests: canonical API lifecycle, named session auto-create on run, canonical v6 stream replay path, frozen system-prompt prefix reuse within a session.
 - Session continuity: canonical `POST /sessions` and `POST /sessions/{session_id}/runs` persist `${runtime_root}/last_session` for CLI/TUI resume behavior.
+- Prompt caching: canonical runs freeze the base system-prompt prefix on first session use so mid-session persona/skill-catalog changes do not invalidate provider prompt caches; new sessions recompute the prefix.
 
 ### `arcan-aios-adapters`
 
@@ -192,9 +193,10 @@ Canonical host behavior validated by passing tests including:
 1. Canonical session API round-trip.
 2. Named-session run auto-creation behavior.
 3. Canonical stream replay framing and Vercel v6 envelope/header path.
-4. Arcan-Lago replay/bridge integration tests.
-5. Sandbox provider lifecycle (create/run/snapshot/destroy) across all backends.
-6. Session store tier-aware TTL expiration (anonymous/free/pro/enterprise).
+4. Frozen system-prompt prefix stays stable within a session and refreshes on new sessions.
+5. Arcan-Lago replay/bridge integration tests.
+6. Sandbox provider lifecycle (create/run/snapshot/destroy) across all backends.
+7. Session store tier-aware TTL expiration (anonymous/free/pro/enterprise).
 
 ---
 
