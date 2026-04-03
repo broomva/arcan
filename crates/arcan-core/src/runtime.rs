@@ -747,10 +747,13 @@ impl Orchestrator {
             total_usage,
         };
 
-        let _ = self
+        if let Err(e) = self
             .turn_middlewares
             .iter()
-            .try_for_each(|middleware| middleware.on_run_finished(&mut output));
+            .try_for_each(|m| m.on_run_finished(&mut output))
+        {
+            tracing::warn!(error = %e, "middleware on_run_finished failed (non-fatal)");
+        }
 
         output
     }

@@ -17,7 +17,7 @@ async fn is_daemon_healthy(base_url: &str) -> bool {
 async fn daemon_health(base_url: &str) -> Option<String> {
     let url = format!("{base_url}/health");
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
         .build()
         .ok()?;
     let resp = client.get(&url).send().await.ok()?;
@@ -194,12 +194,18 @@ pub async fn ensure_daemon(
         .stdin(std::process::Stdio::null())
         .spawn()?;
 
-    // Write PID immediately — if this fails, kill the child to prevent orphan.
+    // Write PID atomically (write tmp → rename) to avoid readers seeing partial content.
     let child_pid = child.id();
-    if let Err(e) = fs::write(data_dir.join("daemon.pid"), child_pid.to_string()) {
+    let pid_path = data_dir.join("daemon.pid");
+    let tmp_path = data_dir.join("daemon.pid.tmp");
+    if let Err(e) =
+        fs::write(&tmp_path, child_pid.to_string()).and_then(|()| fs::rename(&tmp_path, &pid_path))
+    {
         tracing::error!(child_pid, "Failed to write PID file, killing orphan: {e}");
         #[cfg(unix)]
         let _ = signal::kill(Pid::from_raw(child_pid as i32), Signal::SIGKILL);
+        // Clean up temp file if rename failed but write succeeded.
+        let _ = fs::remove_file(&tmp_path);
         anyhow::bail!("Failed to write daemon PID file: {e}");
     }
     // Child handle is intentionally dropped — the daemon runs detached.
