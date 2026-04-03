@@ -1,18 +1,22 @@
 //! Agent-driven memory retrieval tools (BRO-417).
 //!
-//! Five tools the agent calls proactively to manage its own memory:
+//! Six tools the agent calls proactively to manage its own memory:
 //! - `memory_search` — keyword search across memory files
 //! - `memory_browse` — list memories by tier/type
 //! - `memory_recent` — last N memories by modification time
 //! - `memory_offload` — save content to episodic memory
 //! - `memory_forget` — mark a memory as low importance
+//! - `memory_similar` — semantic retrieval over Lance embeddings
 
 use aios_protocol::tool::{
     Tool, ToolAnnotations, ToolCall, ToolContext, ToolDefinition, ToolError, ToolResult,
 };
+use lago_core::event::{EventEnvelope, EventPayload};
+use lago_lance::{EMBEDDING_META_KEY, LanceJournal};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ── MemorySearchTool ────────────────────────────────────────────────
 
@@ -26,6 +30,129 @@ impl MemorySearchTool {
         Self {
             memory_dir: memory_dir.to_path_buf(),
         }
+    }
+}
+
+fn parse_query_keywords(query: &str) -> Result<Vec<String>, ToolError> {
+    let keywords: Vec<String> = query
+        .split_whitespace()
+        .map(|kw| kw.trim().to_lowercase())
+        .filter(|kw| !kw.is_empty())
+        .collect();
+
+    if keywords.is_empty() {
+        Err(ToolError::InvalidInput {
+            message: "Query cannot be empty".into(),
+        })
+    } else {
+        Ok(keywords)
+    }
+}
+
+fn keyword_search_results(memory_dir: &Path, keywords: &[String]) -> Vec<serde_json::Value> {
+    let keyword_refs: Vec<&str> = keywords.iter().map(String::as_str).collect();
+    let mut matches = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(memory_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "md") {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let content_lower = content.to_lowercase();
+                    let hit_count = keyword_refs
+                        .iter()
+                        .filter(|kw| content_lower.contains(*kw))
+                        .count();
+
+                    if hit_count > 0 {
+                        let file_name = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+
+                        matches.push(json!({
+                            "file": file_name,
+                            "relevance": hit_count,
+                            "excerpt": extract_excerpt(&content, &keyword_refs, 3),
+                            "backend": "keyword",
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    matches.sort_by(|a, b| {
+        b.get("relevance")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+            .cmp(
+                &a.get("relevance")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            )
+    });
+
+    matches
+}
+
+fn run_async<T, F>(future: F) -> Result<T, ToolError>
+where
+    F: std::future::Future<Output = Result<T, lago_core::LagoError>>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle
+            .block_on(future)
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool_name: "memory_similar".into(),
+                message: format!("Semantic search failed: {e}"),
+            }),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(future).map_err(|e| ToolError::ExecutionFailed {
+                tool_name: "memory_similar".into(),
+                message: format!("Semantic search failed: {e}"),
+            }),
+            Err(e) => Err(ToolError::ExecutionFailed {
+                tool_name: "memory_similar".into(),
+                message: format!("Failed to create async runtime: {e}"),
+            }),
+        },
+    }
+}
+
+fn event_memory_content(event: &EventEnvelope) -> Option<&str> {
+    match &event.payload {
+        EventPayload::Message { content, .. } => Some(content.as_str()),
+        _ => None,
+    }
+}
+
+fn event_embedding(event: &EventEnvelope) -> Option<Vec<f32>> {
+    event
+        .metadata
+        .get(EMBEDDING_META_KEY)
+        .and_then(|json| serde_json::from_str(json).ok())
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        None
+    } else {
+        Some(dot / (norm_a.sqrt() * norm_b.sqrt()))
     }
 }
 
@@ -66,60 +193,8 @@ impl Tool for MemorySearchTool {
                 message: "Missing or invalid 'query' argument".into(),
             })?;
 
-        let query_lower = query.to_lowercase();
-        let keywords: Vec<&str> = query_lower.split_whitespace().collect();
-
-        if keywords.is_empty() {
-            return Err(ToolError::InvalidInput {
-                message: "Query cannot be empty".into(),
-            });
-        }
-
-        let mut matches = Vec::new();
-
-        if let Ok(entries) = fs::read_dir(&self.memory_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "md") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        let content_lower = content.to_lowercase();
-                        let hit_count = keywords
-                            .iter()
-                            .filter(|kw| content_lower.contains(*kw))
-                            .count();
-
-                        if hit_count > 0 {
-                            let file_name = path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-
-                            // Extract relevant excerpt (first matching line + context)
-                            let excerpt = extract_excerpt(&content, &keywords, 3);
-
-                            matches.push(json!({
-                                "file": file_name,
-                                "relevance": hit_count,
-                                "excerpt": excerpt,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort by relevance (most keyword hits first)
-        matches.sort_by(|a, b| {
-            b.get("relevance")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0)
-                .cmp(
-                    &a.get("relevance")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0),
-                )
-        });
+        let keywords = parse_query_keywords(query)?;
+        let matches = keyword_search_results(&self.memory_dir, &keywords);
 
         Ok(ToolResult::json(
             &call.call_id,
@@ -128,6 +203,162 @@ impl Tool for MemorySearchTool {
                 "query": query,
                 "matches": matches,
                 "total": matches.len(),
+            }),
+        ))
+    }
+}
+
+// ── MemorySimilarTool ───────────────────────────────────────────────
+
+/// Semantic retrieval over the shared workspace Lance journal.
+///
+/// Falls back to keyword search when embeddings or the workspace journal are
+/// unavailable, preserving a useful search experience in lower capability modes.
+pub struct MemorySimilarTool {
+    memory_dir: PathBuf,
+    embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>>,
+    workspace_journal: Option<Arc<LanceJournal>>,
+}
+
+impl MemorySimilarTool {
+    pub fn new(
+        memory_dir: &Path,
+        embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>>,
+        workspace_journal: Option<Arc<LanceJournal>>,
+    ) -> Self {
+        Self {
+            memory_dir: memory_dir.to_path_buf(),
+            embedding_provider,
+            workspace_journal,
+        }
+    }
+}
+
+impl Tool for MemorySimilarTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "memory_similar".into(),
+            description: "Find semantically similar memories using workspace embeddings. Falls back to keyword search when vector retrieval is unavailable.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing the memory you want to retrieve"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of memories to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+            title: Some("Memory Similar".into()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("memory".into()),
+            tags: vec!["memory".into(), "semantic".into(), "search".into()],
+            timeout_secs: Some(20),
+        }
+    }
+
+    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        let query = call
+            .input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidInput {
+                message: "Missing or invalid 'query' argument".into(),
+            })?;
+        let limit = call
+            .input
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(5) as usize;
+
+        let keywords = parse_query_keywords(query)?;
+
+        let semantic_results = self
+            .embedding_provider
+            .as_ref()
+            .zip(self.workspace_journal.as_ref())
+            .and_then(|(provider, journal)| {
+                let query_embedding = match provider.embed(query) {
+                    Ok(embedding) => embedding,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "memory_similar embedding failed, falling back");
+                        return None;
+                    }
+                };
+
+                let events = match run_async(journal.vector_search(&query_embedding, limit)) {
+                    Ok(events) => events,
+                    Err(err) => {
+                        tracing::warn!(message = %err, "memory_similar vector search failed, falling back");
+                        return None;
+                    }
+                };
+
+                let keyword_refs: Vec<&str> = keywords.iter().map(String::as_str).collect();
+                let mut results = Vec::new();
+                for event in events {
+                    let Some(content) = event_memory_content(&event) else {
+                        continue;
+                    };
+                    let similarity = event_embedding(&event)
+                        .as_deref()
+                        .and_then(|embedding| cosine_similarity(&query_embedding, embedding))
+                        .unwrap_or(0.0);
+                    let title = event
+                        .metadata
+                        .get("title")
+                        .cloned()
+                        .unwrap_or_else(|| "memory".to_string());
+
+                    results.push(json!({
+                        "title": title,
+                        "session_id": event.session_id.as_str(),
+                        "relevance": similarity,
+                        "excerpt": extract_excerpt(content, &keyword_refs, 2),
+                        "backend": "vector",
+                    }));
+                }
+
+                results.sort_by(|a, b| {
+                    b.get("relevance")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0)
+                        .partial_cmp(
+                            &a.get("relevance")
+                                .and_then(serde_json::Value::as_f64)
+                                .unwrap_or(0.0),
+                        )
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                Some(results)
+            });
+
+        let matches =
+            semantic_results.unwrap_or_else(|| keyword_search_results(&self.memory_dir, &keywords));
+        let backend = matches
+            .first()
+            .and_then(|m| m.get("backend"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("keyword");
+
+        Ok(ToolResult::json(
+            &call.call_id,
+            &call.tool_name,
+            json!({
+                "query": query,
+                "matches": matches,
+                "total": matches.len(),
+                "backend": backend,
             }),
         ))
     }
@@ -720,7 +951,19 @@ fn set_frontmatter_importance(content: &str, importance: f64) -> String {
 mod tests {
     use super::*;
     use aios_protocol::tool::{ToolCall, ToolContext};
+    use lago_core::event::EventPayload;
+    use lago_core::id::{BranchId, EventId, SessionId};
     use tempfile::TempDir;
+
+    struct TestEmbeddingProvider {
+        vector: Vec<f32>,
+    }
+
+    impl crate::embedding::EmbeddingProvider for TestEmbeddingProvider {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, anyhow::Error> {
+            Ok(self.vector.clone())
+        }
+    }
 
     fn make_ctx() -> ToolContext {
         ToolContext {
@@ -741,6 +984,30 @@ mod tests {
 
     fn create_memory_file(dir: &std::path::Path, name: &str, content: &str) {
         fs::write(dir.join(format!("{name}.md")), content).unwrap();
+    }
+
+    fn make_memory_event(content: &str, title: &str) -> EventEnvelope {
+        EventEnvelope {
+            event_id: EventId::new(),
+            session_id: SessionId::from_string("workspace"),
+            branch_id: BranchId::from_string("main"),
+            run_id: None,
+            seq: 0,
+            timestamp: EventEnvelope::now_micros(),
+            parent_id: None,
+            payload: EventPayload::Message {
+                role: "memory".to_string(),
+                content: content.to_string(),
+                model: None,
+                token_usage: None,
+            },
+            metadata: {
+                let mut map = std::collections::HashMap::new();
+                map.insert("title".to_string(), title.to_string());
+                map
+            },
+            schema_version: 1,
+        }
     }
 
     // ── MemorySearchTool tests ──
@@ -788,6 +1055,72 @@ mod tests {
         let call = make_call("memory_search", json!({"query": "   "}));
         let err = tool.execute(&call, &make_ctx()).unwrap_err();
         assert!(matches!(err, ToolError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn similar_uses_vector_search_when_available() {
+        let dir = TempDir::new().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let journal = rt.block_on(async {
+            let journal = Arc::new(
+                LanceJournal::open(dir.path().join("workspace.lance"))
+                    .await
+                    .unwrap(),
+            );
+            journal
+                .append_with_embedding(
+                    make_memory_event(
+                        "Vector memory about auth middleware ordering",
+                        "auth-vector",
+                    ),
+                    vec![1.0; 1536],
+                )
+                .await
+                .unwrap();
+            journal
+                .append_with_embedding(
+                    make_memory_event("Unrelated deployment note", "deploy-vector"),
+                    vec![0.0; 1536],
+                )
+                .await
+                .unwrap();
+            journal
+        });
+
+        let tool = MemorySimilarTool::new(
+            dir.path(),
+            Some(Arc::new(TestEmbeddingProvider {
+                vector: vec![1.0; 1536],
+            })),
+            Some(journal),
+        );
+
+        let call = make_call(
+            "memory_similar",
+            json!({"query": "auth middleware", "limit": 2}),
+        );
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert_eq!(result.output["backend"], "vector");
+        assert_eq!(result.output["matches"][0]["title"], "auth-vector");
+        assert!(result.output["matches"][0]["relevance"].as_f64().unwrap() > 0.9);
+    }
+
+    #[test]
+    fn similar_falls_back_to_keyword_search_without_semantic_backend() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(
+            dir.path(),
+            "auth-notes",
+            "---\ntitle: Auth Notes\ntype: finding\n---\n\nThe auth middleware ordering caused the bug.",
+        );
+
+        let tool = MemorySimilarTool::new(dir.path(), None, None);
+        let call = make_call("memory_similar", json!({"query": "auth middleware"}));
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert_eq!(result.output["backend"], "keyword");
+        assert_eq!(result.output["matches"][0]["file"], "auth-notes");
     }
 
     // ── MemoryBrowseTool tests ──
@@ -1053,6 +1386,7 @@ mod tests {
 
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(MemorySearchTool::new(&path)),
+            Box::new(MemorySimilarTool::new(&path, None, None)),
             Box::new(MemoryBrowseTool::new(&path)),
             Box::new(MemoryRecentTool::new(&path)),
             Box::new(MemoryOffloadTool::new(&path)),
@@ -1061,6 +1395,7 @@ mod tests {
 
         let expected_names = [
             "memory_search",
+            "memory_similar",
             "memory_browse",
             "memory_recent",
             "memory_offload",

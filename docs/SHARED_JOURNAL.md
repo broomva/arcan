@@ -80,23 +80,24 @@ redb supports one writer + multiple readers. The shared journal uses:
 
 ### Integration with Liquid Prompt
 
-The shared journal feeds into the liquid prompt as a new section:
+The current implementation feeds the shared journal into the liquid prompt as a
+compact `# Workspace Context` section sourced from `workspace.lance`.
+
+What ships now:
+
+- `arcan shell` reads the most recent shared-journal summaries on startup
+- only recent `system` summary messages from the fixed `workspace` session are used
+- the current session is excluded so the section reflects peer activity
+- the prompt stays small by capping the section to a short bullet list
+
+Example:
 
 ```
-# Workspace Context (from shared journal)
+# Workspace Context
 
-## Recent Decisions
-- [2h ago] Chose arcan shell over noesis for CLI (session 01KN58...)
-- [4h ago] Merged PR #43 with governed memory + Spaces (session 01KN52...)
-
-## Active Knowledge
-- Project is arcan v0.2.1, Rust 2024 edition
-- 12 tools registered, 307 skills discovered
-- Last test run: 101 passing, 0 failures
-
-## Peer Sessions
-- Session 01KN58... (shell, active, 5 turns, $0.12)
-- Session 01KN52... (shell, ended, 20 turns, $0.45)
+- Session 01KN58... turn 5: finished memory_similar tool with Lance fallback
+- Session 01KN52... turn 11: moved stale Delta tickets into the lakehouse project
+- Session 01KN41... turn 3: refreshed MEMORY.md index after consolidation
 ```
 
 ### Integration with Governed Memory

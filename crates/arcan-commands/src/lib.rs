@@ -96,6 +96,8 @@ pub struct CommandContext {
     pub git_context_tokens: usize,
     /// Estimated tokens for MEMORY.md index.
     pub memory_index_tokens: usize,
+    /// Estimated tokens for shared workspace journal context.
+    pub workspace_context_tokens: usize,
     /// Estimated tokens for skills catalog.
     pub skills_catalog_tokens: usize,
 }
@@ -124,6 +126,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "memory_search",
     "memory_browse",
     "memory_recent",
+    "memory_similar",
     "read_memory",
 ];
 

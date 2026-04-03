@@ -359,20 +359,12 @@ fn replay_session_messages(
     session_id: &LagoSessionId,
     branch_id: &BranchId,
 ) -> (Vec<ChatMessage>, u64) {
-    use lago_core::EventQuery;
-
-    let query = EventQuery::new()
-        .session(session_id.clone())
-        .branch(branch_id.clone());
-
-    let fut = journal.read(query);
-    let events = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(fut).unwrap_or_default(),
-        Err(_) => match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt.block_on(fut).unwrap_or_default(),
-            Err(_) => Vec::new(),
-        },
-    };
+    let events = read_events_sync(
+        journal,
+        lago_core::EventQuery::new()
+            .session(session_id.clone())
+            .branch(branch_id.clone()),
+    );
 
     let mut messages = Vec::new();
     let mut max_seq: u64 = 0;
@@ -394,6 +386,64 @@ fn replay_session_messages(
     }
 
     (messages, max_seq)
+}
+
+/// Read events from a journal synchronously.
+fn read_events_sync(journal: &dyn Journal, query: lago_core::EventQuery) -> Vec<EventEnvelope> {
+    let fut = journal.read(query);
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut).unwrap_or_default(),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(fut).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
+    }
+}
+
+/// Build a small workspace-context section from recent shared journal summaries.
+fn load_workspace_context(
+    journal: &dyn Journal,
+    workspace_session_id: &LagoSessionId,
+    branch_id: &BranchId,
+    current_session_id: &LagoSessionId,
+) -> Option<String> {
+    let events = read_events_sync(
+        journal,
+        lago_core::EventQuery::new()
+            .session(workspace_session_id.clone())
+            .branch(branch_id.clone()),
+    );
+
+    let current_session_marker = format!("Session {}", current_session_id);
+    let mut summaries = Vec::new();
+    for env in events.iter().rev() {
+        let EventPayload::Message { role, content, .. } = &env.payload else {
+            continue;
+        };
+        if role != "system" || content.is_empty() {
+            continue;
+        }
+        if content.contains(&current_session_marker) {
+            continue;
+        }
+        summaries.push(content.trim().to_string());
+        if summaries.len() >= 5 {
+            break;
+        }
+    }
+
+    if summaries.is_empty() {
+        None
+    } else {
+        summaries.reverse();
+        Some(
+            summaries
+                .into_iter()
+                .map(|summary| format!("- {summary}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
 }
 
 /// Load memory context from `.arcan/memory/*.md` files.
@@ -441,6 +491,37 @@ fn load_memory_context(memory_dir: &Path) -> Option<String> {
     ))
 }
 
+/// Check whether a message body is a structured content-block array
+/// (the JSON encoding used for tool_use/tool_result exchanges).
+fn is_structured_content(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with('[') {
+        return false;
+    }
+    // Quick parse: check if first element has a "type" field.
+    serde_json::from_str::<Vec<serde_json::Value>>(content)
+        .map(|arr| arr.first().is_some_and(|v| v.get("type").is_some()))
+        .unwrap_or(false)
+}
+
+/// Extract the text content from structured content blocks, skipping tool_use/tool_result.
+fn extract_text_from_structured(content: &str) -> String {
+    let Ok(blocks) = serde_json::from_str::<Vec<serde_json::Value>>(content) else {
+        return String::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|b| {
+            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                b.get("text").and_then(|t| t.as_str()).map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Extract key facts from the latest agent turn and save to `.arcan/memory/session_summary.md`.
 ///
 /// Uses a heuristic approach (no API calls): scans the conversation for patterns
@@ -459,10 +540,20 @@ fn extract_and_save_memories(messages: &[ChatMessage], memory_dir: &Path) {
             continue;
         }
 
-        let content = if msg.content.len() > EXTRACT_MAX_CHARS {
-            &msg.content[..EXTRACT_MAX_CHARS]
+        // Skip structured content blocks (tool_use / tool_result JSON arrays).
+        // These are encoded as JSON arrays with {"type":"tool_use",...} elements
+        // by the agent loop — not natural language worth extracting.
+        let content = if is_structured_content(&msg.content) {
+            // Extract only the "text" blocks from structured content.
+            extract_text_from_structured(&msg.content)
         } else {
-            &msg.content
+            msg.content.clone()
+        };
+
+        let content = if content.len() > EXTRACT_MAX_CHARS {
+            &content[..EXTRACT_MAX_CHARS]
+        } else {
+            &content
         };
 
         for line in content.lines() {
@@ -611,7 +702,7 @@ pub fn run_shell(
     // Shared Lance-backed journal for cross-session knowledge.
     // Governed memory tools target this so insights persist across sessions.
     let workspace_path = data_dir.join("workspace.lance");
-    let workspace_journal: Option<Arc<dyn Journal>> = {
+    let workspace_lance: Option<Arc<LanceJournal>> = {
         let open_fut = LanceJournal::open(&workspace_path);
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => Some(handle.block_on(open_fut)),
@@ -638,6 +729,9 @@ pub fn run_shell(
             None => None,
         }
     };
+    let workspace_journal: Option<Arc<dyn Journal>> = workspace_lance
+        .as_ref()
+        .map(|journal| journal.clone() as Arc<dyn Journal>);
     // Sequence counter for workspace journal events (separate from session seq)
     let workspace_seq = SeqCounter::new(0);
     // Fixed session ID for workspace-level events
@@ -715,6 +809,13 @@ pub fn run_shell(
         Box::new(arcan_praxis::SandboxCommandRunner::new(sandbox_provider));
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
+    // --- Embedding provider (BRO-388) ---
+    let embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>> =
+        crate::embedding::HttpEmbeddingProvider::from_env().map(|p| Arc::new(p) as _);
+    if embedding_provider.is_some() {
+        eprintln!("[embedding] Provider configured (embed-on-write active)");
+    }
+
     let memory_dir = data_dir.join("memory");
     std::fs::create_dir_all(&memory_dir)?;
     registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
@@ -727,6 +828,13 @@ pub fn run_shell(
     // --- BRO-417: Agent-driven memory retrieval tools ---
     registry.register(PraxisToolBridge::new(
         crate::memory_tools::MemorySearchTool::new(&memory_dir),
+    ));
+    registry.register(PraxisToolBridge::new(
+        crate::memory_tools::MemorySimilarTool::new(
+            &memory_dir,
+            embedding_provider.clone(),
+            workspace_lance.clone(),
+        ),
     ));
     registry.register(PraxisToolBridge::new(
         crate::memory_tools::MemoryBrowseTool::new(&memory_dir),
@@ -847,13 +955,6 @@ pub fn run_shell(
         }
     };
 
-    // --- Embedding provider (BRO-388) ---
-    let embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>> =
-        crate::embedding::HttpEmbeddingProvider::from_env().map(|p| Arc::new(p) as _);
-    if embedding_provider.is_some() {
-        eprintln!("[embedding] Provider configured (embed-on-write active)");
-    }
-
     // --- Hook registry ---
     let hook_registry = &resolved.hook_registry;
     let session_id_str = lago_session_id.to_string();
@@ -912,12 +1013,21 @@ pub fn run_shell(
     let skill_catalog_text = skill_registry
         .as_ref()
         .map(crate::skills::build_system_prompt);
+    let workspace_context = workspace_journal.as_ref().and_then(|journal| {
+        load_workspace_context(
+            journal.as_ref(),
+            &workspace_session_id,
+            &branch_id,
+            &lago_session_id,
+        )
+    });
 
     let system_prompt_struct = crate::prompt::build_system_prompt(
         &cmd_ctx.workspace,
         &provider_name,
         &model_name,
         &memory_dir,
+        workspace_context.as_deref(),
         skill_catalog_text.as_deref(),
         claude_md.as_deref(),
     );
@@ -928,6 +1038,7 @@ pub fn run_shell(
         crate::prompt::build_git_section(&cmd_ctx.workspace).map_or(0, |s| s.len() / 4);
     cmd_ctx.memory_index_tokens =
         crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
+    cmd_ctx.workspace_context_tokens = workspace_context.as_deref().map_or(0, |s| s.len() / 4);
 
     // Combine for backward-compatible single system message
     let system_prompt = system_prompt_struct.combined();
@@ -1019,21 +1130,36 @@ pub fn run_shell(
     )
     .entered();
 
+    // --- Message queue: stdin reader thread ---
+    let (input_tx, input_rx) = std::sync::mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        loop {
+            let mut line = String::new();
+            match stdin.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = input_tx.send(None); // EOF
+                    break;
+                }
+                Ok(_) => {
+                    let _ = input_tx.send(Some(line));
+                }
+                Err(_) => {
+                    let _ = input_tx.send(None);
+                    break;
+                }
+            }
+        }
+    });
+
     // --- REPL loop ---
-    let stdin = std::io::stdin();
     loop {
         eprint!("arcan> ");
         std::io::stderr().flush().ok();
 
-        let mut line = String::new();
-        match stdin.read_line(&mut line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("read error: {e}");
-                break;
-            }
-        }
+        let Ok(Some(line)) = input_rx.recv() else {
+            break; // EOF or channel closed
+        };
 
         let input = line.trim();
         if input.is_empty() {
@@ -1389,13 +1515,42 @@ fn run_agent_loop(
         )
         .entered();
 
+        let spinner = crate::spinner::ShellSpinner::start();
+        let spinner_state = Arc::clone(&spinner.state);
+        let first_delta = std::sync::atomic::AtomicBool::new(true);
+
         let turn = provider.complete_streaming(&request, &|delta| {
+            // On first delta, clear the spinner line and switch to streaming mode.
+            if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                spinner_state
+                    .phase
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
+                let mut ft = spinner_state.first_token_at.lock().unwrap();
+                if ft.is_none() {
+                    *ft = Some(std::time::Instant::now());
+                }
+                // Clear spinner line before first output
+                eprint!("\r\x1b[2K");
+            }
+            // Estimate tokens: ~4 chars per token
+            let estimated = (delta.len() as u64).div_ceil(4);
+            spinner_state
+                .tokens
+                .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
             let mut out = std::io::stdout().lock();
             let _ = write!(out, "{delta}");
             let _ = out.flush();
         })?;
 
         drop(_provider_span);
+
+        // Finish spinner with cost info
+        let turn_cost = if let Some(usage) = &turn.usage {
+            estimate_cost(usage.input_tokens, usage.output_tokens, &cmd_ctx.model_name)
+        } else {
+            0.0
+        };
+        spinner.finish(turn_cost);
 
         // Track token usage with per-model cost estimation (BRO-364)
         if let Some(usage) = &turn.usage {
@@ -1574,7 +1729,9 @@ fn run_agent_loop(
                 .iter()
                 .map(|&i| {
                     let call = &tool_calls[i];
+                    let tool_spinner = crate::spinner::ShellSpinner::start_tool(&call.tool_name);
                     let (content, is_error) = execute_tool(registry, call, &ctx);
+                    tool_spinner.finish_tool(!is_error);
                     (i, content, is_error)
                 })
                 .collect()
@@ -1586,7 +1743,10 @@ fn run_agent_loop(
                         let call = &tool_calls[i];
                         let ctx_ref = &ctx;
                         s.spawn(move || {
+                            let tool_spinner =
+                                crate::spinner::ShellSpinner::start_tool(&call.tool_name);
                             let (content, is_error) = execute_tool(registry, call, ctx_ref);
+                            tool_spinner.finish_tool(!is_error);
                             (i, content, is_error)
                         })
                     })

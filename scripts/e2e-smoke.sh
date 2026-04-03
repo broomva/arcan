@@ -9,6 +9,7 @@ echo ""
 
 PASS=0
 FAIL=0
+ARCAN_BIN=""
 
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -42,6 +43,13 @@ if ! cargo build --bin arcan >/dev/null 2>&1; then
 fi
 pass "cargo build --bin arcan"
 
+ARCAN_BIN="$(cd .. && pwd)/.target/debug/arcan"
+if [ ! -x "$ARCAN_BIN" ]; then
+  fail "built arcan binary not found at $ARCAN_BIN"
+  echo "Build succeeded but binary path is missing — cannot continue."
+  exit 1
+fi
+
 if cargo test --workspace --quiet 2>&1 | tail -1 | grep -q "^$"; then
   # --quiet only outputs on failure; check exit code directly
   true
@@ -57,9 +65,9 @@ echo ""
 echo "--- Level 1: Shell Boot (mock provider) ---"
 DATA_L1="/tmp/arcan-e2e-L1-$$"
 OUTPUT_L1=$(printf '/help\n/status\n/context\n/cost\n/history\n/config\n/memory\n/skill\n/model\n/diff\n/commit\n/sessions\n/consolidate\n/search\n' \
-  | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_L1" --budget 10.0 -y 2>&1)
+  | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L1" --budget 10.0 -y 2>&1)
 
-has "banner: Tools: 17"            "$OUTPUT_L1" "Tools: 17"
+has "banner: Tools: 18"            "$OUTPUT_L1" "Tools: 18"
 has "banner: Hooks: 2"             "$OUTPUT_L1" "Hooks: 2"
 has "banner: [nous] evaluators"    "$OUTPUT_L1" "evaluators active"
 has "banner: Journal path"         "$OUTPUT_L1" "Journal:"
@@ -90,7 +98,7 @@ echo ""
 echo "--- Level 2: Tool Execution + Nous Safety (mock provider) ---"
 DATA_L2="/tmp/arcan-e2e-L2-$$"
 OUTPUT_L2=$(printf 'ping\nfile\n/cost\n/history\n/status\n' \
-  | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_L2" --budget 10.0 -y 2>&1)
+  | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L2" --budget 10.0 -y 2>&1)
 
 has "echo response works"          "$OUTPUT_L2" "Echo: ping"
 has "write_file tool called"       "$OUTPUT_L2" "\[tool: write_file\]"
@@ -106,14 +114,14 @@ echo "--- Level 3: Session Persistence + Resume (mock provider) ---"
 DATA_L3="/tmp/arcan-e2e-L3-$$"
 
 # Session 1: create a conversation with events
-printf 'ping\nfile\n' | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_L3" -y >/dev/null 2>&1
+printf 'ping\nfile\n' | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L3" -y >/dev/null 2>&1
 rm -f test.txt
 
 SESSION_ID=$(ls "$DATA_L3/shell-journals/" 2>/dev/null | head -1 | sed 's/\.redb$//')
 if [ -n "$SESSION_ID" ]; then
   # Session 2: resume and verify
   OUTPUT_L3=$(printf '/sessions\n/history\n' \
-    | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_L3" --session "$SESSION_ID" --resume -y 2>&1)
+    | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L3" --session "$SESSION_ID" --resume -y 2>&1)
 
   has "resume restores messages"   "$OUTPUT_L3" "Restored.*messages"
   has "/sessions shows session"    "$OUTPUT_L3" "$SESSION_ID"
@@ -122,13 +130,30 @@ else
   fail "no session journal file found"
 fi
 
+# ── Level 3b: Workspace Context Injection (mock) ───────────────────
+echo ""
+echo "--- Level 3b: Workspace Context Injection (mock provider) ---"
+DATA_L3B="/tmp/arcan-e2e-L3b-$$"
+
+# Session 1 seeds the shared workspace journal with an assistant summary.
+printf 'ping\n' \
+  | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L3B" -y >/dev/null 2>&1
+
+# Session 2 should load that shared summary into the liquid prompt.
+OUTPUT_L3B=$(printf '/context\n/status\n' \
+  | "$ARCAN_BIN" shell --provider mock --data-dir "$DATA_L3B" -y 2>&1)
+
+has "workspace context line shown" "$OUTPUT_L3B" "Workspace context:"
+has "workspace context tokens > 0" "$OUTPUT_L3B" "Workspace context:.*[1-9][0-9]* tokens"
+has "workspace banner still shown" "$OUTPUT_L3B" "Workspace:.*shared"
+
 # ── Level 4: Real LLM (optional) ───────────────────────────────────
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo ""
   echo "--- Level 4: Real Anthropic Provider ---"
   DATA_L4="/tmp/arcan-e2e-L4-$$"
   OUTPUT_L4=$(printf 'What is 2+2? Answer in one word.\n/cost\n/status\n' \
-    | cargo run --bin arcan -- shell --provider anthropic --data-dir "$DATA_L4" --budget 1.0 -y 2>&1)
+    | "$ARCAN_BIN" shell --provider anthropic --data-dir "$DATA_L4" --budget 1.0 -y 2>&1)
 
   has "real provider connects"       "$OUTPUT_L4" "Provider: claude"
   has "LLM returns response"         "$OUTPUT_L4" "[Ff]our"
@@ -139,7 +164,7 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "--- Level 5: Memory Tools (real provider) ---"
   DATA_L5="/tmp/arcan-e2e-L5-$$"
   OUTPUT_L5=$(printf 'Save this to memory using memory_offload with title "smoke-result" and tier "episodic": "smoke test passed on today"\nSearch memory for "smoke" using the memory_search tool.\n/memory\n' \
-    | cargo run --bin arcan -- shell --provider anthropic --data-dir "$DATA_L5" --budget 2.0 -y 2>&1)
+    | "$ARCAN_BIN" shell --provider anthropic --data-dir "$DATA_L5" --budget 2.0 -y 2>&1)
 
   has "memory_offload called"        "$OUTPUT_L5" "\[tool: memory_offload\]"
   ok  "memory file created"          test -f "$DATA_L5/memory/smoke-result.md"

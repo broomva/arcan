@@ -271,7 +271,9 @@ dependencies = [
  "axum 0.8.8",
  "chrono",
  "clap",
+ "crossterm",
  "dirs 6.0.0",
+ "fastrand",
  "filetime",
  "futures-util",
  "lago-aios-eventstore-adapter",
@@ -389,6 +391,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
  "wait-timeout",
 ]
 
@@ -993,7 +996,6 @@ name = "autonomic-controller"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
- "anima-core",
  "autonomic-core",
  "chrono",
  "serde",
@@ -1006,7 +1008,6 @@ name = "autonomic-core"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
- "anima-core",
  "chrono",
  "serde",
  "serde_json",

@@ -11,6 +11,7 @@ mod prompt;
 mod sandbox_router;
 mod shell;
 mod skills;
+mod spinner;
 
 use aios_protocol::sandbox::NetworkPolicy;
 use aios_protocol::{

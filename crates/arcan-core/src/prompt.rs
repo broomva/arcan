@@ -11,7 +11,8 @@
 //! **Dynamic** (changes per turn — appended after cacheable prefix):
 //! 5. Git context (branch, status, recent commits)
 //! 6. Memory context (MEMORY.md index from `.arcan/memory/*.md`)
-//! 7. Skill catalog
+//! 7. Workspace context (shared cross-session journal summaries)
+//! 8. Skill catalog
 //!
 //! This module lives in `arcan-core` so both the shell REPL (`arcan` binary)
 //! and the daemon HTTP server (`arcand`) can share the same prompt builder.
@@ -52,6 +53,7 @@ pub fn build_system_prompt(
     provider_name: &str,
     model_name: &str,
     memory_dir: &Path,
+    workspace_context: Option<&str>,
     skill_catalog: Option<&str>,
     claude_md_content: Option<&str>,
 ) -> SystemPrompt {
@@ -93,7 +95,14 @@ pub fn build_system_prompt(
         dynamic_sections.push(memory);
     }
 
-    // 7. Skills catalog
+    // 7. Workspace context
+    if let Some(context) = workspace_context {
+        if !context.is_empty() {
+            dynamic_sections.push(format!("# Workspace Context\n\n{context}"));
+        }
+    }
+
+    // 8. Skills catalog
     if let Some(catalog) = skill_catalog {
         if !catalog.is_empty() {
             dynamic_sections.push(format!("# Available Skills\n\n{catalog}"));
@@ -545,6 +554,7 @@ mod tests {
             "anthropic",
             "claude-sonnet-4-5-20250929",
             &memory_dir,
+            Some("- Peer session: explored workspace journal"),
             Some("- skill_a: Does A\n- skill_b: Does B"),
             Some("# My Project\n\nBuild fast."),
         );
@@ -561,6 +571,10 @@ mod tests {
             "missing claude.md section"
         );
         assert!(prompt.contains("# Agent Memory"), "missing memory section");
+        assert!(
+            prompt.contains("# Workspace Context"),
+            "missing workspace context section"
+        );
         assert!(
             prompt.contains("# Available Skills"),
             "missing skills section"
@@ -580,7 +594,15 @@ mod tests {
         let memory_dir = workspace.join(".arcan/memory");
         // Don't create memory dir — should be omitted
 
-        let sp = build_system_prompt(workspace, "mock", "mock-model", &memory_dir, None, None);
+        let sp = build_system_prompt(
+            workspace,
+            "mock",
+            "mock-model",
+            &memory_dir,
+            None,
+            None,
+            None,
+        );
         let prompt = sp.combined();
 
         assert!(prompt.contains("# System"));
@@ -813,7 +835,15 @@ mod tests {
     fn test_prompt_available_from_core() {
         // Key public functions that both shell and daemon need.
         let _ = build_system_prompt
-            as fn(&Path, &str, &str, &Path, Option<&str>, Option<&str>) -> SystemPrompt;
+            as fn(
+                &Path,
+                &str,
+                &str,
+                &Path,
+                Option<&str>,
+                Option<&str>,
+                Option<&str>,
+            ) -> SystemPrompt;
         let _ = build_git_section as fn(&Path) -> Option<String>;
         let _ = load_project_instructions as fn(&Path) -> Option<String>;
         let _ = build_environment_section as fn(&Path, &str, &str) -> String;
@@ -989,6 +1019,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            None,
             Some("- skill_a: Does A"),
             Some("Build fast."),
         );
@@ -1010,6 +1041,7 @@ mod tests {
             "claude-sonnet",
             &memory_dir,
             None,
+            None,
             Some("Project rules."),
         );
         let sp2 = build_system_prompt(
@@ -1017,6 +1049,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            None,
             None,
             Some("Project rules."),
         );
@@ -1042,6 +1075,7 @@ mod tests {
             &memory_dir,
             None,
             None,
+            None,
         );
 
         // Add a memory file
@@ -1052,6 +1086,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            None,
             None,
             None,
         );
@@ -1078,6 +1113,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            None,
             None,
             None,
         );
@@ -1109,6 +1145,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            Some("- Session abc turn 3: Added memory_similar"),
             Some("- skill_a"),
             None,
         );
@@ -1116,6 +1153,10 @@ mod tests {
         assert!(
             sp.dynamic.contains("# Agent Memory"),
             "dynamic should contain memory"
+        );
+        assert!(
+            sp.dynamic.contains("# Workspace Context"),
+            "dynamic should contain workspace context"
         );
         assert!(
             sp.dynamic.contains("# Available Skills"),
@@ -1136,6 +1177,7 @@ mod tests {
             "anthropic",
             "claude-sonnet",
             &memory_dir,
+            None,
             Some("- skill_a"),
             Some("Project instructions."),
         );
@@ -1154,7 +1196,7 @@ mod tests {
         let workspace = tmp.path();
         let memory_dir = workspace.join("nonexistent");
 
-        let sp = build_system_prompt(workspace, "mock", "mock", &memory_dir, None, None);
+        let sp = build_system_prompt(workspace, "mock", "mock", &memory_dir, None, None, None);
 
         // With no git, no memory, no skills — dynamic should be empty
         let combined = sp.combined();

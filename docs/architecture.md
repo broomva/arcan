@@ -150,11 +150,16 @@ Recovery:
 
 ## 9. Extension and Control Plane
 
-`Middleware` hooks:
+`TurnMiddleware` chain:
 
 - before/after model call
 - before/after tool call
 - on run finished
+
+Legacy `Middleware` implementations still work through an adapter, but the
+runtime now executes a mutable turn pipeline so middleware can rewrite provider
+requests, model responses, tool calls, and tool results instead of only
+observing or vetoing them.
 
 Expected uses:
 
@@ -162,6 +167,7 @@ Expected uses:
 - telemetry
 - guardrail insertion
 - dynamic context injection
+- loop detection and response rewriting
 
 ## 10. Dependency-Ordered Build Strategy
 
@@ -170,4 +176,3 @@ Phase 2: harness policies + hashline edits (`arcan-harness`)
 Phase 3: append-only store and session tree (`arcan-store`)  
 Phase 4: daemon SSE surface (`arcand`)  
 Phase 5: provider adapters + real tool implementations + approvals
-

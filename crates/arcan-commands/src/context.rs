@@ -76,6 +76,13 @@ impl Command for ContextCommand {
         ));
         total += memory_tokens;
 
+        let workspace_tokens = ctx.workspace_context_tokens;
+        lines.push(format!(
+            "    Workspace context:      ~{:>6} tokens  (shared journal summaries)",
+            workspace_tokens
+        ));
+        total += workspace_tokens;
+
         let skills_tokens = ctx.skills_catalog_tokens;
         lines.push(format!(
             "    Skills catalog:         ~{:>6} tokens  ({} skills)",
@@ -84,7 +91,7 @@ impl Command for ContextCommand {
         ));
         total += skills_tokens;
 
-        let dynamic_total = git_tokens + memory_tokens + skills_tokens;
+        let dynamic_total = git_tokens + memory_tokens + workspace_tokens + skills_tokens;
         lines.push(format!(
             "    Dynamic subtotal:       ~{:>6} tokens",
             dynamic_total
@@ -147,6 +154,7 @@ mod tests {
             project_instructions_tokens: 5000,
             git_context_tokens: 200,
             memory_index_tokens: 100,
+            workspace_context_tokens: 300,
             skills_catalog_tokens: 80000,
             session_input_tokens: 100000,
             message_count: 10,
@@ -158,6 +166,7 @@ mod tests {
             CommandResult::Output(text) => {
                 assert!(text.contains("CACHEABLE"));
                 assert!(text.contains("DYNAMIC"));
+                assert!(text.contains("Workspace context"));
                 assert!(text.contains("Skills catalog"));
                 assert!(text.contains("⚠")); // should warn about 80K skills
             }

@@ -49,7 +49,7 @@ printf '/help\n/status\n/context\n/cost\n/history\n/config\n/memory\n/skill\n/mo
 | Check | Expected |
 |-------|----------|
 | Banner: `Provider:` | `mock-provider` |
-| Banner: `Tools:` | `17` |
+| Banner: `Tools:` | `18` |
 | Banner: `Hooks:` | `2` |
 | Banner: `Skills:` | `307` (may vary as skills are added) |
 | Banner: `[nous] N evaluators active` | `6` |
@@ -118,6 +118,30 @@ printf '/status\nWhat is 2+2? Answer in one word.\nPlease read the file Cargo.to
 | Tool call | `[tool: read_file]` + `OK:` with Cargo.toml content |
 | `/cost` | `Turns: 2`, non-zero tokens and cost |
 | `/history` | `Tool calls: 1`, non-zero token counts |
+
+### Level 3b: Workspace Context Injection (mock provider)
+
+Tests the specific BRO-389 behavior: a prior session should seed the shared
+workspace journal, and a fresh session should load that summary into the liquid
+prompt, which shows up as non-zero `Workspace context` tokens in `/context`.
+
+```bash
+DATA_DIR="/tmp/arcan-e2e-L3b-$(date +%s)"
+
+printf 'ping\n' \
+  | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_DIR" -y >/dev/null 2>&1
+
+printf '/context\n/status\n' \
+  | cargo run --bin arcan -- shell --provider mock --data-dir "$DATA_DIR" -y 2>&1
+```
+
+**What to verify:**
+
+| Check | Expected |
+|-------|----------|
+| `/context` | Includes `Workspace context:` line |
+| `/context` | Workspace context token estimate is non-zero |
+| Banner | `Workspace: <path> (shared)` still shown |
 | `/status` Safety | `safety_compliance: 1.00` |
 | `/status` Economic | Cost < $1.00 budget |
 
