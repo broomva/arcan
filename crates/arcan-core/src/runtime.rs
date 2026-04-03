@@ -78,6 +78,14 @@ pub trait Provider: Send + Sync {
     ) -> Result<ModelTurn, CoreError> {
         self.complete(request)
     }
+
+    /// Context window size in tokens, if known.
+    ///
+    /// Used by the shell for auto-compaction thresholds. Returns `None` when
+    /// the provider doesn't know its context window (conservative defaults apply).
+    fn context_window(&self) -> Option<u32> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]

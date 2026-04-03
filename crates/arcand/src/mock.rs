@@ -9,6 +9,10 @@ impl Provider for MockProvider {
         "mock-provider"
     }
 
+    fn context_window(&self) -> Option<u32> {
+        Some(128_000)
+    }
+
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
         // Simple echo or fixed response
         // For verification, let's just return a text response.

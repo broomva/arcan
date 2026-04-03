@@ -136,11 +136,14 @@ const SUMMARY_MAX_LINES: usize = 50;
 /// Maximum number of characters from a single message to consider for extraction.
 const EXTRACT_MAX_CHARS: usize = 2000;
 
-/// Token threshold above which auto-compaction triggers after each agent turn.
-const COMPACT_THRESHOLD: usize = 100_000;
+/// Fallback context window (tokens) when the provider doesn't report one.
+const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
 
-/// Target token count after compaction.
-const COMPACT_TARGET: usize = 50_000;
+/// Compact at 60% of context window.
+const COMPACT_THRESHOLD_PCT: usize = 60;
+
+/// Target 35% of context window after compaction.
+const COMPACT_TARGET_PCT: usize = 35;
 
 /// Estimate cost in USD for a model call based on token usage and model name.
 ///
@@ -820,6 +823,7 @@ pub fn run_shell(
     yes: bool,
     resume: bool,
     budget: Option<f64>,
+    show_reasoning: bool,
 ) -> anyhow::Result<()> {
     let workspace_root = std::env::current_dir()?;
 
@@ -936,6 +940,11 @@ pub fn run_shell(
     // --- Tools (same set as run_serve) ---
     let mut registry = ToolRegistry::default();
 
+    if resolved.bare {
+        // Bare mode: NO tool schemas sent to model (described in system prompt instead).
+        // Small models (≤4K context) hallucinate function calls when tools are present.
+        eprintln!("[bare] No tools registered — capabilities described in system prompt");
+    } else {
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = Arc::new(LocalFs::new(fs_policy));
 
@@ -960,6 +969,7 @@ pub fn run_shell(
     let runner: Box<dyn praxis_core::sandbox::CommandRunner> =
         Box::new(arcan_praxis::SandboxCommandRunner::new(sandbox_provider));
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
+    } // else (not bare) — tool registration
 
     // --- Embedding provider (BRO-388) ---
     let embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>> =
@@ -970,6 +980,9 @@ pub fn run_shell(
 
     let memory_dir = data_dir.join("memory");
     std::fs::create_dir_all(&memory_dir)?;
+
+    // Extended tools — skipped in bare mode
+    if !resolved.bare {
     registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
         memory_dir.clone(),
     )));
@@ -1002,26 +1015,19 @@ pub fn run_shell(
     ));
 
     // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
-    // Register Lago-backed governed memory tools alongside the filesystem ones.
-    // The governed tools (memory_query, memory_propose, memory_commit) provide
-    // event-sourced memory with scopes, while the filesystem tools remain as
-    // a fallback/export mechanism for cross-session persistence.
-    //
-    // BRO-385: When the shared workspace Lance journal is available, governed
-    // memory targets it so knowledge persists across sessions.  Falls back to
-    // the per-session journal otherwise.
     let memory_journal: Arc<dyn Journal> =
         workspace_journal.clone().unwrap_or_else(|| journal.clone());
     let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
     registry.register(MemoryQueryTool::new(memory_projection));
     registry.register(MemoryProposeTool::new(memory_journal.clone()));
     registry.register(MemoryCommitTool::new(memory_journal));
+    } // if !resolved.bare — extended tools
 
     // --- Phase 6: Spaces networking (BRO-368, BRO-369) ---
     #[cfg(feature = "spaces")]
     let spaces_connected = {
         let mut connected = false;
-        if resolved.spaces_backend != "none" {
+        if !resolved.bare && resolved.spaces_backend != "none" {
             match resolved.spaces_backend.as_str() {
                 "spacetimedb" | "mainnet" => {
                     match arcan_spaces::SpacetimeDbConfig::resolve(
@@ -1151,6 +1157,7 @@ pub fn run_shell(
         skill_names: skill_names.clone(),
         budget_usd: budget,
         economic_mode,
+        show_reasoning,
         workspace_journal_status: workspace_journal
             .as_ref()
             .map(|_| format!("{} (shared)", workspace_path.display())),
@@ -1161,39 +1168,46 @@ pub fn run_shell(
     crate::prompt::write_memory_index(&memory_dir);
 
     // --- Build unified system prompt (liquid prompt, BRO-420 cache split) ---
-    let claude_md = crate::prompt::load_claude_md(&cmd_ctx.workspace);
-    let skill_catalog_text = skill_registry
-        .as_ref()
-        .map(crate::skills::build_system_prompt);
-    let workspace_context = workspace_journal.as_ref().and_then(|journal| {
-        load_workspace_context(
-            journal.as_ref(),
-            &workspace_session_id,
-            &branch_id,
-            &lago_session_id,
-        )
-    });
+    let system_prompt = if resolved.bare {
+        // Bare mode: minimal prompt for small-context models (≤4K tokens).
+        eprintln!("[bare] Using minimal system prompt");
+        crate::prompt::build_bare_prompt(&cmd_ctx.workspace, &provider_name, &model_name)
+    } else {
+        let claude_md = crate::prompt::load_claude_md(&cmd_ctx.workspace);
+        let skill_catalog_text = skill_registry
+            .as_ref()
+            .map(crate::skills::build_system_prompt);
+        let workspace_context = workspace_journal.as_ref().and_then(|journal| {
+            load_workspace_context(
+                journal.as_ref(),
+                &workspace_session_id,
+                &branch_id,
+                &lago_session_id,
+            )
+        });
 
-    let system_prompt_struct = crate::prompt::build_system_prompt(
-        &cmd_ctx.workspace,
-        &provider_name,
-        &model_name,
-        &memory_dir,
-        workspace_context.as_deref(),
-        skill_catalog_text.as_deref(),
-        claude_md.as_deref(),
-    );
-    // Populate context token estimates for /context command
-    cmd_ctx.project_instructions_tokens = claude_md.as_deref().map_or(0, |s| s.len() / 4);
-    cmd_ctx.skills_catalog_tokens = skill_catalog_text.as_deref().map_or(0, |s| s.len() / 4);
-    cmd_ctx.git_context_tokens =
-        crate::prompt::build_git_section(&cmd_ctx.workspace).map_or(0, |s| s.len() / 4);
-    cmd_ctx.memory_index_tokens =
-        crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
-    cmd_ctx.workspace_context_tokens = workspace_context.as_deref().map_or(0, |s| s.len() / 4);
+        let system_prompt_struct = crate::prompt::build_system_prompt(
+            &cmd_ctx.workspace,
+            &provider_name,
+            &model_name,
+            &memory_dir,
+            workspace_context.as_deref(),
+            skill_catalog_text.as_deref(),
+            claude_md.as_deref(),
+        );
+        // Populate context token estimates for /context command
+        cmd_ctx.project_instructions_tokens = claude_md.as_deref().map_or(0, |s| s.len() / 4);
+        cmd_ctx.skills_catalog_tokens =
+            skill_catalog_text.as_deref().map_or(0, |s| s.len() / 4);
+        cmd_ctx.git_context_tokens =
+            crate::prompt::build_git_section(&cmd_ctx.workspace).map_or(0, |s| s.len() / 4);
+        cmd_ctx.memory_index_tokens =
+            crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
+        cmd_ctx.workspace_context_tokens =
+            workspace_context.as_deref().map_or(0, |s| s.len() / 4);
 
-    // Combine for backward-compatible single system message
-    let system_prompt = system_prompt_struct.combined();
+        system_prompt_struct.combined()
+    };
 
     // --- Replay or initialize message history (BRO-358) ---
     let mut messages: Vec<ChatMessage> = Vec::new();
@@ -1418,9 +1432,11 @@ pub fn run_shell(
                 }
                 Some(CommandResult::CompactRequested) => {
                     let before = estimate_tokens(&messages);
-                    compact_with_extraction(&mut messages, &memory_dir, COMPACT_TARGET);
+                    let ctx_win = provider.context_window().map(|w| w as usize).unwrap_or(DEFAULT_CONTEXT_WINDOW);
+                    let target = ctx_win * COMPACT_TARGET_PCT / 100;
+                    compact_with_extraction(&mut messages, &memory_dir, target);
                     let after = estimate_tokens(&messages);
-                    eprintln!("[compact] {before} tokens -> {after} tokens");
+                    eprintln!("[compact] {before} tokens -> {after} tokens (target: {target})");
                 }
                 Some(CommandResult::ConsolidateRequested) => {
                     eprintln!("[consolidate] Running memory consolidation...");
@@ -1524,12 +1540,11 @@ pub fn run_shell(
 
                 // --- BRO-385: Write session turn summary to workspace journal ---
                 if let Some(ref wj) = workspace_journal {
-                    let summary_content = if text.len() > 200 {
+                    let truncated: String = text.chars().take(200).collect();
+                    let summary_content = if truncated.len() < text.len() {
                         format!(
-                            "Session {} turn {}: {}...",
-                            lago_session_id,
-                            cmd_ctx.session_turns,
-                            &text[..200]
+                            "Session {} turn {}: {truncated}...",
+                            lago_session_id, cmd_ctx.session_turns,
                         )
                     } else {
                         format!(
@@ -1564,11 +1579,19 @@ pub fn run_shell(
         }
 
         // --- Auto-compact if conversation exceeds threshold ---
+        // Thresholds scale with the model's context window:
+        //   apfel (4K):   compact at ~2457, target ~1433
+        //   GPT-4o (128K): compact at ~76800, target ~44800
+        //   Claude (200K): compact at ~120000, target ~70000
         let tokens = estimate_tokens(&messages);
-        if tokens > COMPACT_THRESHOLD {
-            eprintln!("[compact] {tokens} tokens -> compacting to ~{COMPACT_TARGET}");
-            compact_conversation(&mut messages, COMPACT_TARGET);
-            eprintln!("[compact] now ~{} tokens", estimate_tokens(&messages));
+        let ctx_win = provider.context_window().map(|w| w as usize).unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let threshold = ctx_win * COMPACT_THRESHOLD_PCT / 100;
+        let target = ctx_win * COMPACT_TARGET_PCT / 100;
+        if tokens > threshold {
+            eprintln!("[compact] {tokens} tokens -> compacting to ~{target} (context window: {ctx_win})");
+            compact_with_extraction(&mut messages, &memory_dir, target);
+            let after = estimate_tokens(&messages);
+            eprintln!("[compact] now ~{after} tokens (memories extracted)");
         }
     }
 
@@ -1670,43 +1693,77 @@ fn run_agent_loop(
         let spinner = crate::spinner::ShellSpinner::start();
         let spinner_state = Arc::clone(&spinner.state);
         let first_delta = std::sync::atomic::AtomicBool::new(true);
+        let display_reasoning = cmd_ctx.show_reasoning;
+        let md_renderer = std::cell::RefCell::new(crate::markdown::StreamingMarkdown::new());
 
         let turn = provider.complete_streaming(&request, &|delta| {
             match delta {
                 StreamEvent::Reasoning(text) => {
-                    // On first reasoning delta, switch spinner to reasoning phase.
+                    // Switch spinner to reasoning phase so it shows token progress.
                     if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        let mut ft = spinner_state.first_token_at.lock().unwrap();
+                        if ft.is_none() {
+                            *ft = Some(std::time::Instant::now());
+                        }
+                        if display_reasoning {
+                            // Stop spinner and start printing reasoning tokens.
+                            spinner_state
+                                .stop
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            std::thread::sleep(std::time::Duration::from_millis(60));
+                            eprint!("\r\x1b[2K");
+                            // Print header in dim style.
+                            let mut out = std::io::stdout().lock();
+                            let _ = write!(out, "\x1b[2m");
+                            let _ = out.flush();
+                        }
+                    }
+                    spinner_state.phase.store(
+                        crate::spinner::PHASE_REASONING,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    // Count reasoning tokens.
+                    let estimated = (text.len() as u64).div_ceil(4);
+                    spinner_state
+                        .tokens
+                        .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
+                    // Optionally display reasoning tokens in dimmed style.
+                    if display_reasoning {
+                        let mut out = std::io::stdout().lock();
+                        let _ = write!(out, "{text}");
+                        let _ = out.flush();
+                    }
+                }
+                StreamEvent::Text(text) => {
+                    // On first text delta, stop the spinner render loop to prevent
+                    // stderr spinner lines from interleaving with stdout text.
+                    if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed)
+                        || spinner_state
+                            .phase
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            != crate::spinner::PHASE_STREAMING
+                    {
+                        // Reset dim style if reasoning was displayed.
+                        if display_reasoning {
+                            let mut out = std::io::stdout().lock();
+                            let _ = write!(out, "\x1b[0m\n\n");
+                            let _ = out.flush();
+                        }
+                        // Stop the render thread — flowing text is its own feedback.
+                        spinner_state
+                            .stop
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Brief pause to let the render thread exit and clear its line.
+                        std::thread::sleep(std::time::Duration::from_millis(60));
                         spinner_state.phase.store(
-                            crate::spinner::PHASE_REASONING,
+                            crate::spinner::PHASE_STREAMING,
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         let mut ft = spinner_state.first_token_at.lock().unwrap();
                         if ft.is_none() {
                             *ft = Some(std::time::Instant::now());
                         }
-                    }
-                    // Count reasoning tokens for progress but don't print them.
-                    let estimated = (text.len() as u64).div_ceil(4);
-                    spinner_state
-                        .tokens
-                        .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
-                }
-                StreamEvent::Text(text) => {
-                    // On first text delta (or transition from reasoning), clear spinner
-                    // and switch to streaming mode.
-                    if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed)
-                        || spinner_state
-                            .phase
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                            != 1
-                    {
-                        spinner_state
-                            .phase
-                            .store(1, std::sync::atomic::Ordering::Relaxed);
-                        let mut ft = spinner_state.first_token_at.lock().unwrap();
-                        if ft.is_none() {
-                            *ft = Some(std::time::Instant::now());
-                        }
+                        // Clear any residual spinner line.
                         eprint!("\r\x1b[2K");
                     }
                     // Estimate tokens: ~4 chars per token
@@ -1714,12 +1771,14 @@ fn run_agent_loop(
                     spinner_state
                         .tokens
                         .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
-                    let mut out = std::io::stdout().lock();
-                    let _ = write!(out, "{text}");
-                    let _ = out.flush();
+                    // Stream through markdown renderer for ANSI-styled output.
+                    md_renderer.borrow_mut().push(text);
                 }
             }
         })?;
+
+        // Flush any remaining buffered markdown (partial final line).
+        md_renderer.borrow_mut().flush();
 
         drop(_provider_span);
 
@@ -1740,22 +1799,22 @@ fn run_agent_loop(
         }
 
         // Process directives — accumulate text and collect tool calls.
-        // Text is already printed by the streaming callback if the provider
-        // supports streaming; only print here for non-streaming providers.
-        let is_streaming = provider.supports_streaming();
+        // Text is already printed by the streaming callback if any deltas
+        // were received; only print here if nothing was streamed.
+        let did_stream = !first_delta.load(std::sync::atomic::Ordering::Relaxed);
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         for directive in &turn.directives {
             match directive {
                 ModelDirective::Text { delta } => {
                     accumulated_text.push_str(delta);
-                    if !is_streaming {
+                    if !did_stream {
                         print!("{delta}");
                         let _ = std::io::stdout().flush();
                     }
                 }
                 ModelDirective::FinalAnswer { text } => {
                     accumulated_text.push_str(text);
-                    if !is_streaming {
+                    if !did_stream {
                         print!("{text}");
                         let _ = std::io::stdout().flush();
                     }
@@ -1773,6 +1832,9 @@ fn run_agent_loop(
         if tool_calls.is_empty() || turn.stop_reason != ModelStopReason::ToolUse {
             if !accumulated_text.is_empty() {
                 println!();
+            } else if tool_calls.is_empty() {
+                // Model returned nothing — likely context overflow or guardrail block
+                eprintln!("(no response — model may have hit context limit or content filter)");
             }
             break;
         }

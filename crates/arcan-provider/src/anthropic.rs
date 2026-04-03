@@ -241,6 +241,11 @@ impl Provider for AnthropicProvider {
         &self.config.model
     }
 
+    fn context_window(&self) -> Option<u32> {
+        // All current Claude models support 200K context.
+        Some(200_000)
+    }
+
     fn supports_streaming(&self) -> bool {
         true
     }

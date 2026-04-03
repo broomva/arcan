@@ -27,6 +27,11 @@ pub struct OpenAiConfig {
     pub provider_name: String,
     /// Enable streaming mode (`"stream": true`). Avoids timeouts for slow models.
     pub enable_streaming: bool,
+    /// Extra body parameters merged into every request (e.g., `x_context_strategy`).
+    pub extra_body: Option<serde_json::Value>,
+    /// Context window size in tokens. Used for auto-compaction thresholds.
+    /// `None` means unknown (conservative defaults apply).
+    pub context_window: Option<u32>,
 }
 
 impl std::fmt::Debug for OpenAiConfig {
@@ -63,6 +68,8 @@ impl OpenAiConfig {
             base_url,
             provider_name: "openai".to_string(),
             enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
         })
     }
 
@@ -84,6 +91,8 @@ impl OpenAiConfig {
             base_url,
             provider_name: "ollama".to_string(),
             enable_streaming: true,
+            extra_body: None,
+            context_window: None,
         })
     }
 
@@ -122,6 +131,8 @@ impl OpenAiConfig {
             base_url,
             provider_name: "openai".to_string(),
             enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
         })
     }
 
@@ -157,6 +168,8 @@ impl OpenAiConfig {
             base_url,
             provider_name: "ollama".to_string(),
             enable_streaming: enable_streaming_override.unwrap_or(true),
+            extra_body: None,
+            context_window: None,
         })
     }
 
@@ -177,6 +190,11 @@ impl OpenAiConfig {
             base_url,
             provider_name: "apfel".to_string(),
             enable_streaming: false,
+            // Tell apfel to trim old messages if context overflows (safety net).
+            extra_body: Some(serde_json::json!({
+                "x_context_strategy": "newest-first"
+            })),
+            context_window: Some(4096),
         })
     }
 
@@ -205,6 +223,11 @@ impl OpenAiConfig {
             base_url,
             provider_name: "apfel".to_string(),
             enable_streaming: false,
+            // Tell apfel to trim old messages if context overflows (safety net).
+            extra_body: Some(serde_json::json!({
+                "x_context_strategy": "newest-first"
+            })),
+            context_window: Some(4096),
         })
     }
 
@@ -217,6 +240,8 @@ impl OpenAiConfig {
             base_url: "https://api.openai.com".to_string(),
             provider_name: "openai".to_string(),
             enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
         }
     }
 }
@@ -424,6 +449,15 @@ impl OpenAiCompatibleProvider {
             "stream": true,
         });
 
+        // Merge extra body parameters (e.g., x_context_strategy for apfel).
+        if let Some(extra) = &self.config.extra_body {
+            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)
                 .map_err(|e| CoreError::Provider(format!("failed to serialize tools: {e}")))?;
@@ -577,6 +611,10 @@ impl Provider for OpenAiCompatibleProvider {
         &self.config.model
     }
 
+    fn context_window(&self) -> Option<u32> {
+        self.config.context_window
+    }
+
     fn supports_streaming(&self) -> bool {
         self.config.enable_streaming
     }
@@ -598,6 +636,15 @@ impl Provider for OpenAiCompatibleProvider {
             "messages": api_messages,
             "max_tokens": self.config.max_tokens,
         });
+
+        // Merge extra body parameters (e.g., x_context_strategy for apfel).
+        if let Some(extra) = &self.config.extra_body {
+            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
 
         if !api_tools.is_empty() {
             body["tools"] = serde_json::to_value(&api_tools)
@@ -745,6 +792,8 @@ mod tests {
             base_url: "http://localhost:8080".to_string(),
             provider_name: "test".to_string(),
             enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
         }
     }
 
@@ -912,6 +961,8 @@ mod tests {
             base_url: "http://localhost:11434".to_string(),
             provider_name: "ollama".to_string(),
             enable_streaming: true,
+            extra_body: None,
+            context_window: None,
         };
         // Empty credential returns error on auth_header (expected for local servers)
         assert!(config.credential.auth_header().is_err());
