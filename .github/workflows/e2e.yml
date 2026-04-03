@@ -54,6 +54,8 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run E2E smoke (Levels 0-3, no API key)
@@ -77,6 +79,8 @@ jobs:
           git clone --depth 1 https://github.com/broomva/haima.git ../haima
           git clone --depth 1 https://github.com/broomva/nous.git ../nous
           git clone --depth 1 https://github.com/broomva/anima.git ../anima
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run E2E smoke (all levels)

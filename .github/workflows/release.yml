@@ -32,11 +32,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
+          git clone --depth 1 https://github.com/broomva/nous.git ../nous
+          git clone --depth 1 https://github.com/broomva/anima.git ../anima
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -66,31 +85,76 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout sibling dependencies
+        run: |
+          git clone --depth 1 https://github.com/broomva/aiOS.git ../aiOS
+          git clone --depth 1 https://github.com/broomva/lago.git ../lago
+          git clone --depth 1 https://github.com/broomva/praxis.git ../praxis
+          git clone --depth 1 https://github.com/broomva/autonomic.git ../autonomic
+          git clone --depth 1 https://github.com/broomva/vigil.git ../vigil
+          git clone --depth 1 https://github.com/broomva/haima.git ../haima
+          git clone --depth 1 https://github.com/broomva/nous.git ../nous
+          git clone --depth 1 https://github.com/broomva/anima.git ../anima
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Publish crates (dependency order)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # Tier 1: no internal deps
-          cargo publish -p arcan-core || true
-          sleep 30
+          publish_crate() {
+            crate="$1"
+            attempts="${2:-10}"
+            delay="${3:-20}"
 
-          # Tier 2: depends on arcan-core
-          cargo publish -p arcan-harness || true
-          cargo publish -p arcan-store || true
-          cargo publish -p arcan-provider || true
-          sleep 30
+            for attempt in $(seq 1 "$attempts"); do
+              echo "Publishing $crate (attempt $attempt/$attempts)"
+              if cargo publish -p "$crate" --locked; then
+                return 0
+              fi
 
-          # Tier 3: depends on tier-2
-          cargo publish -p arcand || true
-          cargo publish -p arcan-lago || true
-          sleep 30
+              if [ "$attempt" -eq "$attempts" ]; then
+                echo "Failed to publish $crate after $attempts attempts"
+                return 1
+              fi
 
-          # Tier 4: the installable binary
-          cargo publish -p arcan || true
+              sleep "$delay"
+            done
+          }
+
+          # Tier 1: leaf crates with no Arcan-internal deps
+          publish_crate arcan-core
+          publish_crate arcan-commands
+          publish_crate arcan-console
+          publish_crate arcan-sandbox
+          publish_crate arcan-provider-bubblewrap
+          publish_crate arcan-provider-local
+          publish_crate arcan-provider-vercel
+
+          # Tier 2: crates depending on tier-1
+          publish_crate arcan-aios-adapters
+          publish_crate arcan-anima
+          publish_crate arcan-fleet
+          publish_crate arcan-harness
+          publish_crate arcan-provider
+          publish_crate arcan-spaces
+          publish_crate arcan-store
+
+          # Tier 3: crates depending on tier-2
+          publish_crate arcan-praxis
+          publish_crate arcan-tui
+          publish_crate arcan-lago
+
+          # Tier 4: daemon library
+          publish_crate arcand
+
+          # Tier 5: installable binary
+          publish_crate arcan
 
   release:
     name: Create Release

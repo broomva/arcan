@@ -36,12 +36,17 @@ ok() {
 
 # ── Level 0: Build + Tests ─────────────────────────────────────────
 echo "--- Level 0: Build + Tests ---"
-if ! cargo build --bin arcan >/dev/null 2>&1; then
+BUILD_LOG="$(mktemp /tmp/arcan-e2e-build.XXXXXX.log)"
+if ! cargo build --bin arcan >"$BUILD_LOG" 2>&1; then
   fail "cargo build --bin arcan"
+  echo "Cargo build output:"
+  sed -n '1,200p' "$BUILD_LOG"
   echo "Build failed — cannot continue."
+  rm -f "$BUILD_LOG"
   exit 1
 fi
 pass "cargo build --bin arcan"
+rm -f "$BUILD_LOG"
 
 ARCAN_BIN="$(cd .. && pwd)/.target/debug/arcan"
 if [ ! -x "$ARCAN_BIN" ]; then
