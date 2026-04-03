@@ -328,6 +328,7 @@ fn format_tokens(tokens: u64) -> String {
 
 const PHASE_THINKING: u8 = 0;
 const PHASE_STREAMING: u8 = 1;
+pub(crate) const PHASE_REASONING: u8 = 2;
 
 // ---------------------------------------------------------------------------
 // SpinnerState — shared between main thread and render thread
@@ -523,6 +524,11 @@ fn render_loop(state: &Arc<SpinnerState>, is_tool: bool) {
             if phase == PHASE_STREAMING && tokens > 0 {
                 status.push_str(&format!(
                     " \u{00b7} \u{2193} {} tokens",
+                    format_tokens(tokens)
+                ));
+            } else if phase == PHASE_REASONING {
+                status.push_str(&format!(
+                    " \u{00b7} reasoning {} tokens",
                     format_tokens(tokens)
                 ));
             }

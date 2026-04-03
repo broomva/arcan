@@ -3,7 +3,7 @@ use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
     ToolDefinition,
 };
-use arcan_core::runtime::{Provider, ProviderRequest};
+use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -248,7 +248,7 @@ impl Provider for AnthropicProvider {
     fn complete_streaming(
         &self,
         request: &ProviderRequest,
-        on_text: &dyn Fn(&str),
+        on_delta: &dyn Fn(StreamEvent<'_>),
     ) -> Result<ModelTurn, CoreError> {
         let (system_prompt, api_messages) = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
@@ -355,10 +355,15 @@ impl Provider for AnthropicProvider {
                         match delta["type"].as_str() {
                             Some("text_delta") => {
                                 if let Some(text) = delta["text"].as_str() {
-                                    on_text(text);
+                                    on_delta(StreamEvent::Text(text));
                                     directives.push(ModelDirective::Text {
                                         delta: text.to_string(),
                                     });
+                                }
+                            }
+                            Some("thinking_delta") => {
+                                if let Some(thinking) = delta["thinking"].as_str() {
+                                    on_delta(StreamEvent::Reasoning(thinking));
                                 }
                             }
                             Some("input_json_delta") => {

@@ -28,7 +28,7 @@ use arcan_core::hooks::{HookContext, HookEvent, HookRegistry};
 use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ToolCall, ToolDefinition,
 };
-use arcan_core::runtime::{Provider, ProviderRequest, ToolContext, ToolRegistry};
+use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent, ToolContext, ToolRegistry};
 use arcan_core::state::AppState;
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, LocalFs, SandboxPolicy};
@@ -1672,26 +1672,53 @@ fn run_agent_loop(
         let first_delta = std::sync::atomic::AtomicBool::new(true);
 
         let turn = provider.complete_streaming(&request, &|delta| {
-            // On first delta, clear the spinner line and switch to streaming mode.
-            if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                spinner_state
-                    .phase
-                    .store(1, std::sync::atomic::Ordering::Relaxed);
-                let mut ft = spinner_state.first_token_at.lock().unwrap();
-                if ft.is_none() {
-                    *ft = Some(std::time::Instant::now());
+            match delta {
+                StreamEvent::Reasoning(text) => {
+                    // On first reasoning delta, switch spinner to reasoning phase.
+                    if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        spinner_state.phase.store(
+                            crate::spinner::PHASE_REASONING,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        let mut ft = spinner_state.first_token_at.lock().unwrap();
+                        if ft.is_none() {
+                            *ft = Some(std::time::Instant::now());
+                        }
+                    }
+                    // Count reasoning tokens for progress but don't print them.
+                    let estimated = (text.len() as u64).div_ceil(4);
+                    spinner_state
+                        .tokens
+                        .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
                 }
-                // Clear spinner line before first output
-                eprint!("\r\x1b[2K");
+                StreamEvent::Text(text) => {
+                    // On first text delta (or transition from reasoning), clear spinner
+                    // and switch to streaming mode.
+                    if first_delta.swap(false, std::sync::atomic::Ordering::Relaxed)
+                        || spinner_state
+                            .phase
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                            != 1
+                    {
+                        spinner_state
+                            .phase
+                            .store(1, std::sync::atomic::Ordering::Relaxed);
+                        let mut ft = spinner_state.first_token_at.lock().unwrap();
+                        if ft.is_none() {
+                            *ft = Some(std::time::Instant::now());
+                        }
+                        eprint!("\r\x1b[2K");
+                    }
+                    // Estimate tokens: ~4 chars per token
+                    let estimated = (text.len() as u64).div_ceil(4);
+                    spinner_state
+                        .tokens
+                        .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
+                    let mut out = std::io::stdout().lock();
+                    let _ = write!(out, "{text}");
+                    let _ = out.flush();
+                }
             }
-            // Estimate tokens: ~4 chars per token
-            let estimated = (delta.len() as u64).div_ceil(4);
-            spinner_state
-                .tokens
-                .fetch_add(estimated, std::sync::atomic::Ordering::Relaxed);
-            let mut out = std::io::stdout().lock();
-            let _ = write!(out, "{delta}");
-            let _ = out.flush();
         })?;
 
         drop(_provider_span);

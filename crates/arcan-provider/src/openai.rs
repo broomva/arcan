@@ -3,7 +3,7 @@ use arcan_core::protocol::{
     ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
     ToolDefinition,
 };
-use arcan_core::runtime::{Provider, ProviderRequest};
+use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -359,12 +359,12 @@ impl OpenAiCompatibleProvider {
 }
 
 impl OpenAiCompatibleProvider {
-    /// Execute a streaming request, calling `on_text` for each text delta.
+    /// Execute a streaming request, calling `on_delta` for each content delta.
     /// Accumulates the full response and returns the assembled `ModelTurn`.
     fn execute_streaming(
         &self,
         request: &ProviderRequest,
-        on_text: &dyn Fn(&str),
+        on_delta: &dyn Fn(StreamEvent<'_>),
     ) -> Result<ModelTurn, CoreError> {
         let api_messages = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
@@ -446,8 +446,15 @@ impl OpenAiCompatibleProvider {
 
                 if let Some(content) = &choice.delta.content {
                     if !content.is_empty() {
-                        on_text(content);
+                        on_delta(StreamEvent::Text(content));
                         accumulated_text.push_str(content);
+                    }
+                }
+
+                // Handle reasoning/thinking tokens from models like gemma4
+                if let Some(reasoning) = &choice.delta.reasoning {
+                    if !reasoning.is_empty() {
+                        on_delta(StreamEvent::Reasoning(reasoning));
                     }
                 }
 
@@ -529,9 +536,9 @@ impl Provider for OpenAiCompatibleProvider {
     fn complete_streaming(
         &self,
         request: &ProviderRequest,
-        on_text: &dyn Fn(&str),
+        on_delta: &dyn Fn(StreamEvent<'_>),
     ) -> Result<ModelTurn, CoreError> {
-        self.execute_streaming(request, on_text)
+        self.execute_streaming(request, on_delta)
     }
 
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
@@ -653,6 +660,9 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
+    /// Reasoning/thinking tokens (Ollama sends `reasoning`, some providers use `reasoning_content`).
+    #[serde(default, alias = "reasoning_content")]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<StreamToolCall>>,
 }

@@ -10,6 +10,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Events emitted during streaming completions.
+#[derive(Debug, Clone)]
+pub enum StreamEvent<'a> {
+    /// Regular text content delta.
+    Text(&'a str),
+    /// Reasoning/thinking content delta (model's chain-of-thought).
+    Reasoning(&'a str),
+}
+
 /// A shared, swappable provider handle.
 ///
 /// Uses `std::sync::RwLock` (not tokio) because providers use blocking I/O
@@ -60,12 +69,12 @@ pub trait Provider: Send + Sync {
         false
     }
 
-    /// Stream a completion, calling `on_text` for each text delta as it arrives.
+    /// Stream a completion, calling `on_delta` for each content delta as it arrives.
     /// Returns the final assembled `ModelTurn`. Default falls back to `complete()`.
     fn complete_streaming(
         &self,
         request: &ProviderRequest,
-        _on_text: &dyn Fn(&str),
+        _on_delta: &dyn Fn(StreamEvent<'_>),
     ) -> Result<ModelTurn, CoreError> {
         self.complete(request)
     }

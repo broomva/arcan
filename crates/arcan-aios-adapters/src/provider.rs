@@ -10,7 +10,7 @@ use crate::capability_map::capabilities_for_tool;
 use arcan_core::protocol::{
     ChatMessage, ModelDirective as ArcanDirective, ModelStopReason as ArcanStopReason,
 };
-use arcan_core::runtime::{Provider, ProviderRequest, SwappableProviderHandle};
+use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent, SwappableProviderHandle};
 use arcan_core::state::AppState;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -234,17 +234,19 @@ impl ModelProviderPort for ArcanProviderAdapter {
                 if let Some(sender) = sender {
                     let sess = session_id;
                     let branch = branch_id;
-                    return provider.complete_streaming(&provider_request, &|text| {
-                        let event = EventRecord::new(
-                            sess.clone(),
-                            branch.clone(),
-                            0, // sequence 0 = ephemeral, not persisted
-                            EventKind::AssistantTextDelta {
-                                delta: text.to_owned(),
-                                index: None,
-                            },
-                        );
-                        let _ = sender.send(event);
+                    return provider.complete_streaming(&provider_request, &|delta| {
+                        if let StreamEvent::Text(text) = delta {
+                            let event = EventRecord::new(
+                                sess.clone(),
+                                branch.clone(),
+                                0, // sequence 0 = ephemeral, not persisted
+                                EventKind::AssistantTextDelta {
+                                    delta: text.to_owned(),
+                                    index: None,
+                                },
+                            );
+                            let _ = sender.send(event);
+                        }
                     });
                 }
             }
