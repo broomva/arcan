@@ -72,7 +72,7 @@ pub enum SteeringAction {
 pub trait PreemptionCheck: Send + Sync {
     /// Called after each tool execution completes.
     /// Returns a `SteeringAction` indicating what should happen next.
-    fn check_preemption(&self) -> SteeringAction;
+    fn check_preemption(&self) -> Result<SteeringAction, QueueError>;
 }
 
 // ─── Queue status ────────────────────────────────────────────────
@@ -95,6 +95,8 @@ pub enum QueueError {
     QueueFull { depth: usize, max: usize },
     #[error("message not found: {id}")]
     NotFound { id: String },
+    #[error("internal lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 // ─── Message queue ───────────────────────────────────────────────
@@ -128,7 +130,7 @@ impl MessageQueue {
 
     /// Enqueue a message. Returns error if queue is full.
     pub fn enqueue(&self, message: QueuedMessage) -> Result<(), QueueError> {
-        let mut inner = self.inner.lock().expect("queue lock poisoned");
+        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         if inner.pending.len() >= self.config.max_queue_depth {
             return Err(QueueError::QueueFull {
                 depth: inner.pending.len(),
@@ -143,7 +145,7 @@ impl MessageQueue {
 
     /// Remove a specific queued message by ID.
     pub fn remove(&self, id: &str) -> Result<QueuedMessage, QueueError> {
-        let mut inner = self.inner.lock().expect("queue lock poisoned");
+        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let pos = inner
             .pending
             .iter()
@@ -153,38 +155,39 @@ impl MessageQueue {
     }
 
     /// Get a snapshot of the current queue state.
-    pub fn status(&self) -> QueueStatus {
-        let inner = self.inner.lock().expect("queue lock poisoned");
+    pub fn status(&self) -> Result<QueueStatus, QueueError> {
+        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let oldest_age = inner
             .pending
             .front()
             .and_then(|m| m.queued_at.map(|t| t.elapsed().as_millis() as u64));
-        QueueStatus {
+        Ok(QueueStatus {
             depth: inner.pending.len(),
             pending: inner.pending.iter().cloned().collect(),
             has_active_run: inner.has_active_run,
             oldest_message_age_ms: oldest_age,
-        }
+        })
     }
 
     /// Mark that an active run has started.
-    pub fn set_active_run(&self, active: bool) {
-        let mut inner = self.inner.lock().expect("queue lock poisoned");
+    pub fn set_active_run(&self, active: bool) -> Result<(), QueueError> {
+        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         inner.has_active_run = active;
+        Ok(())
     }
 
     /// Whether there is an active run.
-    pub fn has_active_run(&self) -> bool {
-        let inner = self.inner.lock().expect("queue lock poisoned");
-        inner.has_active_run
+    pub fn has_active_run(&self) -> Result<bool, QueueError> {
+        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        Ok(inner.has_active_run)
     }
 
     /// Check for preemption at a tool boundary.
     ///
     /// Inspects the queue for `Interrupt` or `Steer` messages and returns
     /// the appropriate `SteeringAction`. Priority: interrupt > steer.
-    pub fn check_preemption(&self) -> SteeringAction {
-        let mut inner = self.inner.lock().expect("queue lock poisoned");
+    pub fn check_preemption(&self) -> Result<SteeringAction, QueueError> {
+        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
 
         // Priority 1: Interrupt messages — abort immediately
         if let Some(pos) = inner
@@ -193,9 +196,9 @@ impl MessageQueue {
             .position(|m| m.mode == SteeringMode::Interrupt)
         {
             let msg = inner.pending.remove(pos).expect("position valid");
-            return SteeringAction::Abort {
+            return Ok(SteeringAction::Abort {
                 reason: format!("interrupted by queue message: {}", msg.id),
-            };
+            });
         }
 
         // Priority 2: Steer messages — complete and switch
@@ -205,18 +208,18 @@ impl MessageQueue {
             .position(|m| m.mode == SteeringMode::Steer)
         {
             let msg = inner.pending.remove(pos).expect("position valid");
-            return SteeringAction::CompleteAndSwitch(msg);
+            return Ok(SteeringAction::CompleteAndSwitch(msg));
         }
 
-        SteeringAction::Continue
+        Ok(SteeringAction::Continue)
     }
 
     /// Drain messages after a run completes, in priority order.
     ///
     /// Returns messages ordered: followup first (same context), then collect (fresh runs).
     /// Collect messages within the coalesce window are batched together.
-    pub fn drain_after_run(&self) -> Vec<QueuedMessage> {
-        let mut inner = self.inner.lock().expect("queue lock poisoned");
+    pub fn drain_after_run(&self) -> Result<Vec<QueuedMessage>, QueueError> {
+        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         inner.has_active_run = false;
 
         if inner.pending.is_empty() {
@@ -256,14 +259,14 @@ impl MessageQueue {
         // Return in priority order: followups first, then collects
         let mut result = followups;
         result.extend(collects);
-        result
+        Ok(result)
     }
 
     /// Check queue health for heartbeat integration (Phase 2.4).
     ///
     /// Returns warnings if queue depth exceeds threshold or messages are stale.
-    pub fn health_check(&self) -> Vec<String> {
-        let inner = self.inner.lock().expect("queue lock poisoned");
+    pub fn health_check(&self) -> Result<Vec<String>, QueueError> {
+        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let mut warnings = Vec::new();
 
         let depth = inner.pending.len();
@@ -287,13 +290,13 @@ impl MessageQueue {
             }
         }
 
-        warnings
+        Ok(warnings)
     }
 
     /// Current queue depth.
-    pub fn depth(&self) -> usize {
-        let inner = self.inner.lock().expect("queue lock poisoned");
-        inner.pending.len()
+    pub fn depth(&self) -> Result<usize, QueueError> {
+        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        Ok(inner.pending.len())
     }
 
     /// Get a reference to the queue config.

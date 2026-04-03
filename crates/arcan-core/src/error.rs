@@ -14,4 +14,6 @@ pub enum CoreError {
     State(String),
     #[error("auth error: {0}")]
     Auth(String),
+    #[error("internal lock poisoned: {0}")]
+    LockPoisoned(String),
 }

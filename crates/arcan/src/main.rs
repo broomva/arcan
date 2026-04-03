@@ -230,18 +230,22 @@ async fn shutdown_signal() {
     {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to install SIGTERM handler");
+        let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("failed to install SIGHUP handler");
         tokio::select! {
-            _ = ctrl_c => {},
-            _ = sigterm.recv() => {},
+            _ = ctrl_c => { tracing::info!("Received SIGINT (Ctrl-C)"); },
+            _ = sigterm.recv() => { tracing::info!("Received SIGTERM"); },
+            _ = sighup.recv() => { tracing::info!("Received SIGHUP (terminal closed or config reload)"); },
         }
     }
 
     #[cfg(not(unix))]
     {
         ctrl_c.await.ok();
+        tracing::info!("Received Ctrl-C");
     }
 
-    tracing::info!("Received shutdown signal, draining connections...");
+    tracing::info!("Shutting down gracefully, draining connections...");
 }
 
 fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {

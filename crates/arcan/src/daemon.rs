@@ -2,6 +2,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
+
 /// Check whether a daemon is already healthy at the given URL.
 async fn is_daemon_healthy(base_url: &str) -> bool {
     daemon_health(base_url).await.is_some()
@@ -42,15 +47,11 @@ pub fn check_existing_pid(data_dir: &Path) -> Option<u32> {
     }
 }
 
-/// Check if a process with the given PID is alive using `kill -0`.
+/// Check if a process with the given PID is alive using kill(pid, 0).
 #[cfg(unix)]
 pub fn is_process_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    // Signal 0 doesn't deliver a signal, just checks if the process exists.
+    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
 #[cfg(not(unix))]
@@ -83,17 +84,11 @@ pub async fn stop_daemon(data_dir: &Path, port: u16) -> anyhow::Result<()> {
         anyhow::bail!("No running daemon found.");
     };
 
-    // Send SIGTERM.
+    // Send SIGTERM — uses nix for safe signal delivery, no subprocess spawn.
     #[cfg(unix)]
     {
-        let status = std::process::Command::new("kill")
-            .args([&pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if status.is_err() || !status.unwrap().success() {
-            anyhow::bail!("Failed to send SIGTERM to PID {pid}");
-        }
+        signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
+            .map_err(|e| anyhow::anyhow!("Failed to send SIGTERM to PID {pid}: {e}"))?;
     }
 
     #[cfg(not(unix))]
@@ -199,8 +194,16 @@ pub async fn ensure_daemon(
         .stdin(std::process::Stdio::null())
         .spawn()?;
 
-    // Write PID for later inspection / cleanup.
-    fs::write(data_dir.join("daemon.pid"), child.id().to_string())?;
+    // Write PID immediately — if this fails, kill the child to prevent orphan.
+    let child_pid = child.id();
+    if let Err(e) = fs::write(data_dir.join("daemon.pid"), child_pid.to_string()) {
+        tracing::error!(child_pid, "Failed to write PID file, killing orphan: {e}");
+        #[cfg(unix)]
+        let _ = signal::kill(Pid::from_raw(child_pid as i32), Signal::SIGKILL);
+        anyhow::bail!("Failed to write daemon PID file: {e}");
+    }
+    // Child handle is intentionally dropped — the daemon runs detached.
+    drop(child);
 
     // Poll health endpoint.
     let max_retries = 60;

@@ -112,6 +112,81 @@ pub trait Middleware: Send + Sync {
     }
 }
 
+/// Middleware for a single agent turn.
+///
+/// Unlike the legacy [`Middleware`] trait, turn middleware receives mutable
+/// access to requests, tool calls, tool results, and the final run output so
+/// the chain can both veto and transform a turn.
+pub trait TurnMiddleware: Send + Sync {
+    fn before_model_call(&self, _request: &mut ProviderRequest) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn after_model_call(
+        &self,
+        _request: &ProviderRequest,
+        _response: &mut ModelTurn,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn pre_tool_call(&self, _context: &ToolContext, _call: &mut ToolCall) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn post_tool_call(
+        &self,
+        _context: &ToolContext,
+        _result: &mut ToolResult,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn on_run_finished(&self, _output: &mut RunOutput) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+struct LegacyMiddlewareAdapter {
+    inner: Arc<dyn Middleware>,
+}
+
+impl LegacyMiddlewareAdapter {
+    fn new(inner: Arc<dyn Middleware>) -> Self {
+        Self { inner }
+    }
+}
+
+impl TurnMiddleware for LegacyMiddlewareAdapter {
+    fn before_model_call(&self, request: &mut ProviderRequest) -> Result<(), CoreError> {
+        self.inner.before_model_call(request)
+    }
+
+    fn after_model_call(
+        &self,
+        request: &ProviderRequest,
+        response: &mut ModelTurn,
+    ) -> Result<(), CoreError> {
+        self.inner.after_model_call(request, response)
+    }
+
+    fn pre_tool_call(&self, context: &ToolContext, call: &mut ToolCall) -> Result<(), CoreError> {
+        self.inner.pre_tool_call(context, call)
+    }
+
+    fn post_tool_call(
+        &self,
+        context: &ToolContext,
+        result: &mut ToolResult,
+    ) -> Result<(), CoreError> {
+        self.inner.post_tool_call(context, result)
+    }
+
+    fn on_run_finished(&self, output: &mut RunOutput) -> Result<(), CoreError> {
+        self.inner.on_run_finished(output)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
@@ -179,7 +254,7 @@ pub struct RunOutput {
 pub struct Orchestrator {
     provider: Arc<std::sync::RwLock<Arc<dyn Provider>>>,
     tools: ToolRegistry,
-    middlewares: Vec<Arc<dyn Middleware>>,
+    turn_middlewares: Vec<Arc<dyn TurnMiddleware>>,
     config: OrchestratorConfig,
 }
 
@@ -193,23 +268,48 @@ impl Orchestrator {
         Self {
             provider: Arc::new(std::sync::RwLock::new(provider)),
             tools,
-            middlewares,
+            turn_middlewares: middlewares
+                .into_iter()
+                .map(|middleware| {
+                    Arc::new(LegacyMiddlewareAdapter::new(middleware)) as Arc<dyn TurnMiddleware>
+                })
+                .collect(),
+            config,
+        }
+    }
+
+    pub fn with_turn_middlewares(
+        provider: Arc<dyn Provider>,
+        tools: ToolRegistry,
+        turn_middlewares: Vec<Arc<dyn TurnMiddleware>>,
+        config: OrchestratorConfig,
+    ) -> Self {
+        Self {
+            provider: Arc::new(std::sync::RwLock::new(provider)),
+            tools,
+            turn_middlewares,
             config,
         }
     }
 
     /// Swap the active provider at runtime. Returns the name of the new provider.
-    pub fn swap_provider(&self, new_provider: Arc<dyn Provider>) -> String {
+    pub fn swap_provider(&self, new_provider: Arc<dyn Provider>) -> Result<String, CoreError> {
         let name = new_provider.name().to_string();
-        let mut guard = self.provider.write().expect("provider lock poisoned");
+        let mut guard = self
+            .provider
+            .write()
+            .map_err(|e| CoreError::LockPoisoned(format!("provider write lock: {e}")))?;
         *guard = new_provider;
-        name
+        Ok(name)
     }
 
     /// Get the current provider name.
-    pub fn provider_name(&self) -> String {
-        let guard = self.provider.read().expect("provider lock poisoned");
-        guard.name().to_string()
+    pub fn provider_name(&self) -> Result<String, CoreError> {
+        let guard = self
+            .provider
+            .read()
+            .map_err(|e| CoreError::LockPoisoned(format!("provider read lock: {e}")))?;
+        Ok(guard.name().to_string())
     }
 
     pub fn run(&self, input: RunInput, event_handler: impl FnMut(AgentEvent)) -> RunOutput {
@@ -235,11 +335,28 @@ impl Orchestrator {
         let mut total_usage = TokenUsage::default();
 
         // Acquire provider reference for this run
-        let provider = self
-            .provider
-            .read()
-            .expect("provider lock poisoned")
-            .clone();
+        let provider = match self.provider.read() {
+            Ok(guard) => guard.clone(),
+            Err(e) => {
+                let err_event = AgentEvent::RunErrored {
+                    run_id: input.run_id.clone(),
+                    session_id: input.session_id.clone(),
+                    error: format!("provider lock poisoned: {e}"),
+                };
+                event_handler(err_event.clone());
+                return RunOutput {
+                    run_id: input.run_id,
+                    session_id: input.session_id,
+                    branch_id: input.branch_id,
+                    events: vec![err_event],
+                    final_answer: None,
+                    messages,
+                    state,
+                    reason: RunStopReason::Error,
+                    total_usage: TokenUsage::default(),
+                };
+            }
+        };
 
         let start_event = AgentEvent::RunStarted {
             run_id: input.run_id.clone(),
@@ -292,7 +409,7 @@ impl Orchestrator {
                 }
             }
 
-            let provider_request = ProviderRequest {
+            let mut provider_request = ProviderRequest {
                 run_id: input.run_id.clone(),
                 session_id: input.session_id.clone(),
                 iteration,
@@ -301,7 +418,7 @@ impl Orchestrator {
                 state: state.clone(),
             };
 
-            if let Err(err) = self.run_before_model(&provider_request) {
+            if let Err(err) = self.run_before_model(&mut provider_request) {
                 stop_reason = RunStopReason::BlockedByPolicy;
                 let err_event = AgentEvent::RunErrored {
                     run_id: input.run_id.clone(),
@@ -313,7 +430,7 @@ impl Orchestrator {
                 break;
             }
 
-            let model_turn = match provider.complete(&provider_request) {
+            let mut model_turn = match provider.complete(&provider_request) {
                 Ok(turn) => turn,
                 Err(err) => {
                     stop_reason = RunStopReason::Error;
@@ -328,7 +445,7 @@ impl Orchestrator {
                 }
             };
 
-            if let Err(err) = self.run_after_model(&provider_request, &model_turn) {
+            if let Err(err) = self.run_after_model(&provider_request, &mut model_turn) {
                 stop_reason = RunStopReason::BlockedByPolicy;
                 let err_event = AgentEvent::RunErrored {
                     run_id: input.run_id.clone(),
@@ -371,7 +488,7 @@ impl Orchestrator {
                         events.push(delta_event);
                         messages.push(ChatMessage::assistant(delta));
                     }
-                    ModelDirective::ToolCall { call } => {
+                    ModelDirective::ToolCall { mut call } => {
                         requested_tool = true;
                         let tc_event = AgentEvent::ToolCallRequested {
                             run_id: input.run_id.clone(),
@@ -388,7 +505,7 @@ impl Orchestrator {
                             iteration,
                         };
 
-                        if let Err(err) = self.run_pre_tool(&context, &call) {
+                        if let Err(err) = self.run_pre_tool(&context, &mut call) {
                             stop_reason = RunStopReason::BlockedByPolicy;
                             let err_event = AgentEvent::ToolCallFailed {
                                 run_id: input.run_id.clone(),
@@ -424,7 +541,22 @@ impl Orchestrator {
                         };
 
                         match tool.execute(&call, &context) {
-                            Ok(result) => {
+                            Ok(mut result) => {
+                                if let Err(err) = self.run_post_tool(&context, &mut result) {
+                                    stop_reason = RunStopReason::BlockedByPolicy;
+                                    let err_event = AgentEvent::ToolCallFailed {
+                                        run_id: input.run_id.clone(),
+                                        session_id: input.session_id.clone(),
+                                        iteration,
+                                        call_id: call.call_id.clone(),
+                                        tool_name: call.tool_name.clone(),
+                                        error: err.to_string(),
+                                    };
+                                    event_handler(err_event.clone());
+                                    events.push(err_event);
+                                    break;
+                                }
+
                                 if let Some(patch) = &result.state_patch {
                                     match state.apply_patch(patch) {
                                         Ok(()) => {
@@ -453,21 +585,6 @@ impl Orchestrator {
                                             break;
                                         }
                                     }
-                                }
-
-                                if let Err(err) = self.run_post_tool(&context, &result) {
-                                    stop_reason = RunStopReason::BlockedByPolicy;
-                                    let err_event = AgentEvent::ToolCallFailed {
-                                        run_id: input.run_id.clone(),
-                                        session_id: input.session_id.clone(),
-                                        iteration,
-                                        call_id: call.call_id.clone(),
-                                        tool_name: call.tool_name.clone(),
-                                        error: err.to_string(),
-                                    };
-                                    event_handler(err_event.clone());
-                                    events.push(err_event);
-                                    break;
                                 }
 
                                 let completed_event = AgentEvent::ToolCallCompleted {
@@ -618,7 +735,7 @@ impl Orchestrator {
         event_handler(finished_event.clone());
         events.push(finished_event);
 
-        let output = RunOutput {
+        let mut output = RunOutput {
             run_id: input.run_id,
             session_id: input.session_id,
             branch_id: input.branch_id,
@@ -631,15 +748,15 @@ impl Orchestrator {
         };
 
         let _ = self
-            .middlewares
+            .turn_middlewares
             .iter()
-            .try_for_each(|middleware| middleware.on_run_finished(&output));
+            .try_for_each(|middleware| middleware.on_run_finished(&mut output));
 
         output
     }
 
-    fn run_before_model(&self, request: &ProviderRequest) -> Result<(), CoreError> {
-        self.middlewares
+    fn run_before_model(&self, request: &mut ProviderRequest) -> Result<(), CoreError> {
+        self.turn_middlewares
             .iter()
             .try_for_each(|middleware| middleware.before_model_call(request))
     }
@@ -647,21 +764,25 @@ impl Orchestrator {
     fn run_after_model(
         &self,
         request: &ProviderRequest,
-        response: &ModelTurn,
+        response: &mut ModelTurn,
     ) -> Result<(), CoreError> {
-        self.middlewares
+        self.turn_middlewares
             .iter()
             .try_for_each(|middleware| middleware.after_model_call(request, response))
     }
 
-    fn run_pre_tool(&self, context: &ToolContext, call: &ToolCall) -> Result<(), CoreError> {
-        self.middlewares
+    fn run_pre_tool(&self, context: &ToolContext, call: &mut ToolCall) -> Result<(), CoreError> {
+        self.turn_middlewares
             .iter()
             .try_for_each(|middleware| middleware.pre_tool_call(context, call))
     }
 
-    fn run_post_tool(&self, context: &ToolContext, result: &ToolResult) -> Result<(), CoreError> {
-        self.middlewares
+    fn run_post_tool(
+        &self,
+        context: &ToolContext,
+        result: &mut ToolResult,
+    ) -> Result<(), CoreError> {
+        self.turn_middlewares
             .iter()
             .try_for_each(|middleware| middleware.post_tool_call(context, result))
     }
@@ -943,6 +1064,88 @@ mod tests {
         );
 
         assert_eq!(output.reason, RunStopReason::BlockedByPolicy);
+    }
+
+    #[test]
+    fn turn_middleware_can_rewrite_calls_and_responses() {
+        struct RewriteMiddleware;
+
+        impl TurnMiddleware for RewriteMiddleware {
+            fn after_model_call(
+                &self,
+                _request: &ProviderRequest,
+                response: &mut ModelTurn,
+            ) -> Result<(), CoreError> {
+                for directive in &mut response.directives {
+                    if let ModelDirective::FinalAnswer { text } = directive {
+                        *text = "rewritten answer".to_string();
+                    }
+                }
+                Ok(())
+            }
+
+            fn pre_tool_call(
+                &self,
+                _context: &ToolContext,
+                call: &mut ToolCall,
+            ) -> Result<(), CoreError> {
+                call.input = json!({ "value": "rewritten input" });
+                Ok(())
+            }
+        }
+
+        let provider = ScriptedProvider {
+            turns: vec![
+                ModelTurn {
+                    directives: vec![ModelDirective::ToolCall {
+                        call: ToolCall {
+                            call_id: "call-1".to_string(),
+                            tool_name: "echo".to_string(),
+                            input: json!({ "value": "original input" }),
+                        },
+                    }],
+                    stop_reason: ModelStopReason::ToolUse,
+                    usage: None,
+                },
+                ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "original answer".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
+                },
+            ],
+            cursor: Mutex::new(0),
+        };
+
+        let mut tools = ToolRegistry::default();
+        tools.register(EchoTool);
+
+        let orchestrator = Orchestrator::with_turn_middlewares(
+            Arc::new(provider),
+            tools,
+            vec![Arc::new(RewriteMiddleware)],
+            OrchestratorConfig {
+                max_iterations: 4,
+                context: None,
+                context_compiler: None,
+            },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "session-1".to_string(),
+                branch_id: "main".to_string(),
+                messages: vec![ChatMessage::user("test")],
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Completed);
+        assert_eq!(output.final_answer.as_deref(), Some("rewritten answer"));
+        assert_eq!(output.state.data["last_echo"], "rewritten input");
     }
 
     #[test]
