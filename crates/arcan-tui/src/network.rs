@@ -405,6 +405,36 @@ impl AgentClientPort for HttpAgentClient {
         self.base_url.clone()
     }
 
+    async fn get_autonomic(&self) -> anyhow::Result<crate::client::AutonomicInfo> {
+        let url = format!("{}/autonomic", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to get autonomic: {}", error_text);
+        }
+        Ok(res.json().await?)
+    }
+
+    async fn get_context(&self) -> anyhow::Result<crate::client::ContextInfo> {
+        let url = format!("{}/context", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to get context: {}", error_text);
+        }
+        Ok(res.json().await?)
+    }
+
+    async fn get_cost(&self) -> anyhow::Result<crate::client::CostInfo> {
+        let url = format!("{}/cost", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        if !res.status().is_success() {
+            let error_text = res.text().await?;
+            anyhow::bail!("Failed to get cost: {}", error_text);
+        }
+        Ok(res.json().await?)
+    }
+
     async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
         // Update the session ID
         {

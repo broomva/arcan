@@ -395,6 +395,9 @@ impl App {
         }
 
         match parsed {
+            Ok(Command::Autonomic) => {
+                self.show_autonomic().await;
+            }
             Ok(Command::Clear) => {
                 self.state.blocks.clear();
                 self.state.streaming_text = None;
@@ -406,6 +409,12 @@ impl App {
                     .map(|c| format!("  {:<12} {}", c.name, c.description))
                     .collect();
                 self.push_system_alert(format!("Available commands:\n{}", lines.join("\n")));
+            }
+            Ok(Command::Context) => {
+                self.show_context().await;
+            }
+            Ok(Command::Cost) => {
+                self.show_cost().await;
             }
             Ok(Command::Model(subcmd)) => {
                 self.execute_model_command(subcmd).await;
@@ -590,6 +599,57 @@ impl App {
             Err(e) => {
                 self.provider_picker.dismiss();
                 self.push_system_alert(format!("Failed to query provider from daemon: {e}"));
+            }
+        }
+    }
+
+    async fn show_autonomic(&mut self) {
+        match self.client.get_autonomic().await {
+            Ok(info) => {
+                self.push_system_alert(format!(
+                    "Autonomic: {} — pressure {:.0}%, quality {:.2}\n  \
+                     Context window: {}  |  Rationale: {}{}",
+                    info.ruling,
+                    info.pressure * 100.0,
+                    info.quality_score,
+                    info.context_window,
+                    info.rationale,
+                    info.target_tokens
+                        .map(|t| format!("\n  Target tokens: {t}"))
+                        .unwrap_or_default(),
+                ));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Failed to query autonomic: {e}"));
+            }
+        }
+    }
+
+    async fn show_context(&mut self) {
+        match self.client.get_context().await {
+            Ok(info) => {
+                self.push_system_alert(format!(
+                    "Context: {:.1}% used ({} / {} tokens) — ruling: {}",
+                    info.pressure_percent, info.tokens_used, info.context_window, info.ruling,
+                ));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Failed to query context: {e}"));
+            }
+        }
+    }
+
+    async fn show_cost(&mut self) {
+        match self.client.get_cost().await {
+            Ok(info) => {
+                let uptime_min = info.uptime_seconds / 60;
+                self.push_system_alert(format!(
+                    "Cost: ${:.4} remaining  |  {} tokens remaining  |  uptime: {}m",
+                    info.cost_remaining_usd, info.tokens_remaining, uptime_min,
+                ));
+            }
+            Err(e) => {
+                self.push_system_alert(format!("Failed to query cost: {e}"));
             }
         }
     }

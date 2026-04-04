@@ -1,5 +1,6 @@
 use crate::client::{
-    AgentClientPort, AgentStateFields, AgentStateResponse, ProviderInfo, SessionSummary,
+    AgentClientPort, AgentStateFields, AgentStateResponse, AutonomicInfo, ContextInfo, CostInfo,
+    ProviderInfo, SessionSummary,
 };
 use arcan_core::protocol::AgentEvent;
 use async_trait::async_trait;
@@ -149,5 +150,33 @@ impl AgentClientPort for MockAgentClient {
     async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
         let _ = new_id;
         Ok(self.subscribe_events())
+    }
+
+    async fn get_autonomic(&self) -> anyhow::Result<AutonomicInfo> {
+        Ok(AutonomicInfo {
+            ruling: "Breathe".to_string(),
+            pressure: 0.1,
+            rationale: "mock: low pressure".to_string(),
+            target_tokens: None,
+            quality_score: 0.9,
+            context_window: 200_000,
+        })
+    }
+
+    async fn get_context(&self) -> anyhow::Result<ContextInfo> {
+        Ok(ContextInfo {
+            context_window: 200_000,
+            tokens_used: 20_000,
+            pressure_percent: 10.0,
+            ruling: "Breathe".to_string(),
+        })
+    }
+
+    async fn get_cost(&self) -> anyhow::Result<CostInfo> {
+        Ok(CostInfo {
+            cost_remaining_usd: 4.5,
+            tokens_remaining: 180_000,
+            uptime_seconds: 120,
+        })
     }
 }

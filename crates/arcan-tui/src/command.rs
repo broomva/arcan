@@ -14,9 +14,24 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/approve <id> <yes|no> [reason]",
     },
     CommandInfo {
+        name: "/autonomic",
+        description: "Show Autonomic regulation state",
+        usage: "/autonomic",
+    },
+    CommandInfo {
         name: "/clear",
         description: "Clear conversation",
         usage: "/clear",
+    },
+    CommandInfo {
+        name: "/context",
+        description: "Show context window usage",
+        usage: "/context",
+    },
+    CommandInfo {
+        name: "/cost",
+        description: "Show session cost and budget",
+        usage: "/cost",
     },
     CommandInfo {
         name: "/help",
@@ -66,8 +81,14 @@ pub fn filter_commands(prefix: &str) -> Vec<&'static CommandInfo> {
 /// Parsed TUI command from user input.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Show Autonomic regulation state.
+    Autonomic,
     /// Clear the conversation log.
     Clear,
+    /// Show context window usage.
+    Context,
+    /// Show session cost and budget.
+    Cost,
     /// Show available commands.
     Help,
     /// Model inspection or switching.
@@ -123,7 +144,10 @@ pub fn parse(input: &str) -> Result<Command, String> {
         .unwrap_or((trimmed, ""));
 
     match cmd {
+        "/autonomic" => Ok(Command::Autonomic),
         "/clear" => Ok(Command::Clear),
+        "/context" => Ok(Command::Context),
+        "/cost" => Ok(Command::Cost),
         "/help" => Ok(Command::Help),
         "/model" => parse_model(args),
         "/approve" => parse_approve(args),

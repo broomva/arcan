@@ -146,6 +146,43 @@ pub trait AgentClientPort: Send + Sync + 'static {
     /// Switch to a different session. Returns a new event receiver wired to
     /// the new session's event stream.
     async fn switch_session(&self, new_id: &str) -> anyhow::Result<mpsc::Receiver<AgentEvent>>;
+
+    /// Get Autonomic context regulation state.
+    async fn get_autonomic(&self) -> anyhow::Result<AutonomicInfo>;
+
+    /// Get context window usage and pressure.
+    async fn get_context(&self) -> anyhow::Result<ContextInfo>;
+
+    /// Get session cost and budget info.
+    async fn get_cost(&self) -> anyhow::Result<CostInfo>;
+}
+
+/// Autonomic regulation info from `GET /autonomic`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutonomicInfo {
+    pub ruling: String,
+    pub pressure: f64,
+    pub rationale: String,
+    pub target_tokens: Option<usize>,
+    pub quality_score: f64,
+    pub context_window: usize,
+}
+
+/// Context usage info from `GET /context`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextInfo {
+    pub context_window: usize,
+    pub tokens_used: u64,
+    pub pressure_percent: f64,
+    pub ruling: String,
+}
+
+/// Cost info from `GET /cost`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CostInfo {
+    pub cost_remaining_usd: f64,
+    pub tokens_remaining: u64,
+    pub uptime_seconds: u64,
 }
 
 // ── Shared event conversion ─────────────────────────────────────────────────

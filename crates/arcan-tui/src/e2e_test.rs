@@ -1043,4 +1043,42 @@ mod tests {
             "rendered frame should show agent response: {frame}"
         );
     }
+
+    // ── New daemon-proxy commands ───���───────────────────────────────────────
+
+    #[tokio::test]
+    async fn autonomic_command_shows_ruling() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/autonomic").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Autonomic") || frame.contains("Breathe"),
+            "should show autonomic ruling: {frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_command_shows_usage() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/context").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Context") || frame.contains("tokens"),
+            "should show context info: {frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cost_command_shows_budget() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/cost").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Cost") || frame.contains("remaining"),
+            "should show cost info: {frame}"
+        );
+    }
 }
