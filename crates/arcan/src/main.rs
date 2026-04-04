@@ -321,6 +321,22 @@ fn try_openai_oauth_provider() -> Option<Arc<dyn Provider>> {
     ))
 }
 
+/// Try to create an Anthropic provider from stored OAuth credentials.
+fn try_anthropic_oauth_provider() -> Option<Arc<dyn Provider>> {
+    let tokens = arcan_provider::oauth::load_tokens("anthropic").ok()?;
+    let credential = Arc::new(arcan_provider::oauth::OAuthCredential::anthropic(tokens));
+    let model =
+        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
+    let config = AnthropicConfig {
+        credential,
+        model: model.clone(),
+        max_tokens: 4096,
+        base_url: "https://api.anthropic.com".to_string(),
+    };
+    tracing::info!(%model, "Provider: Anthropic (OAuth)");
+    Some(Arc::new(AnthropicProvider::new(config)))
+}
+
 /// Build provider from resolved configuration.
 fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>> {
     let pc = resolved.provider_config.as_ref();
@@ -383,7 +399,11 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
                 arcan_provider::openai::OpenAiCompatibleProvider::new(config),
             ))
         }
-        "anthropic" => {
+        "anthropic" | "claude" => {
+            // Try OAuth credential first, then fall back to env var.
+            if let Some(p) = try_anthropic_oauth_provider() {
+                return Ok(p);
+            }
             let config = AnthropicConfig::from_resolved(
                 resolved.model.as_deref(),
                 pc.and_then(|p| p.base_url.as_deref()),
@@ -397,6 +417,8 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
             if let Ok(config) = AnthropicConfig::from_env() {
                 tracing::info!(model = %config.model, "Provider: Anthropic (auto-detected)");
                 Ok(Arc::new(AnthropicProvider::new(config)))
+            } else if let Some(p) = try_anthropic_oauth_provider() {
+                Ok(p)
             } else if let Some(p) = try_openai_oauth_provider() {
                 Ok(p)
             } else if let Ok(config) = arcan_provider::openai::OpenAiConfig::openai_from_env() {
@@ -1010,9 +1032,12 @@ fn run_login(provider: &str, device: bool, data_dir: &Path) -> anyhow::Result<()
                 arcan_provider::oauth::pkce_login_openai().map_err(|e| anyhow::anyhow!("{e}"))?;
             }
         }
+        "anthropic" | "claude" => {
+            arcan_provider::oauth::pkce_login_anthropic().map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
         _ => {
             return Err(anyhow::anyhow!(
-                "Unknown provider '{provider}'. Supported: openai"
+                "Unknown provider '{provider}'. Supported: anthropic, openai"
             ));
         }
     }

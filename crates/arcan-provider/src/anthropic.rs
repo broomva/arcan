@@ -94,23 +94,32 @@ impl AnthropicConfig {
     }
 }
 
-/// Check if a key is an OAuth access token (vs. regular API key).
+/// Check if a key/header value is an OAuth access token (vs. regular API key).
+///
+/// Handles both raw tokens (`sk-ant-oat01-...`) and pre-formatted Bearer headers
+/// (`Bearer sk-ant-oat01-...`) from `OAuthCredential::auth_header()`.
 fn is_oauth_token(key: &str) -> bool {
-    key.starts_with("sk-ant-oat")
+    key.starts_with("sk-ant-oat") || key.starts_with("Bearer sk-ant-oat")
 }
 
 /// Apply auth headers to a request builder.
 ///
-/// OAuth tokens (`sk-ant-oat01-*`) use `Authorization: Bearer` + the
-/// `anthropic-beta: oauth-2025-04-20` header. Regular API keys use `x-api-key`.
+/// OAuth tokens use `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
+/// header. Regular API keys use `x-api-key`.
 fn apply_auth(
     builder: reqwest::blocking::RequestBuilder,
     key: &str,
 ) -> reqwest::blocking::RequestBuilder {
     if is_oauth_token(key) {
+        // If already prefixed with "Bearer ", use as-is; otherwise add prefix.
+        let bearer = if key.starts_with("Bearer ") {
+            key.to_string()
+        } else {
+            format!("Bearer {key}")
+        };
         builder
-            .header("authorization", format!("Bearer {key}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("authorization", bearer)
+            .header("anthropic-beta", crate::oauth::ANTHROPIC_OAUTH_BETA)
     } else {
         builder.header("x-api-key", key)
     }

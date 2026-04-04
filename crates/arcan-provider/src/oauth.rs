@@ -24,6 +24,19 @@ const OPENAI_REDIRECT_URI: &str = "http://127.0.0.1:8769/callback";
 const OPENAI_SCOPE: &str = "openai.public";
 const USER_AGENT: &str = concat!("arcan/", env!("CARGO_PKG_VERSION"));
 
+// ─── Anthropic Claude OAuth constants ─────────────────────────────
+// Matches Noesis/Claude Code OAuth flow (oauth-2025-04-20 beta).
+
+const ANTHROPIC_AUTH_URL: &str = "https://claude.com/cai/oauth/authorize";
+const ANTHROPIC_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const ANTHROPIC_MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
+/// Scopes matching Noesis/Claude Code: inference + profile + sessions + MCP + uploads.
+const ANTHROPIC_SCOPES: &str =
+    "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+/// Beta header required for OAuth access tokens.
+pub const ANTHROPIC_OAUTH_BETA: &str = "oauth-2025-04-20";
+
 // ─── Token types ──────────────────────────────────────────────────
 
 /// Persisted OAuth token set.
@@ -78,6 +91,15 @@ impl OAuthCredential {
             tokens,
             OPENAI_CLIENT_ID.to_string(),
             OPENAI_TOKEN_URL.to_string(),
+        )
+    }
+
+    /// Create from a stored token set using Anthropic defaults.
+    pub fn anthropic(tokens: OAuthTokenSet) -> Self {
+        Self::new(
+            tokens,
+            ANTHROPIC_CLIENT_ID.to_string(),
+            ANTHROPIC_TOKEN_URL.to_string(),
         )
     }
 
@@ -244,14 +266,24 @@ fn refresh_token_grant(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<OAuthTokenSet, CoreError> {
+    // Detect provider from token URL for correct response parsing + scope inclusion.
+    let is_anthropic = token_url.contains("claude.com") || token_url.contains("anthropic.com");
+    let provider = if is_anthropic { "anthropic" } else { "openai" };
+
     let client = http_client()?;
+    let mut params = vec![
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_token),
+    ];
+    // Anthropic requires scopes in refresh requests.
+    if is_anthropic {
+        params.push(("scope", ANTHROPIC_SCOPES));
+    }
+
     let resp = client
         .post(token_url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id),
-            ("refresh_token", refresh_token),
-        ])
+        .form(&params)
         .send()
         .map_err(|e| CoreError::Auth(format!("refresh request failed: {e}")))?;
 
@@ -266,7 +298,7 @@ fn refresh_token_grant(
         )));
     }
 
-    parse_token_response(&body, "openai")
+    parse_token_response(&body, provider)
 }
 
 // ─── PKCE helpers ─────────────────────────────────────────────────
@@ -351,6 +383,82 @@ pub fn pkce_login_openai() -> Result<OAuthTokenSet, CoreError> {
     store_tokens(&tokens)?;
 
     eprintln!("Successfully authenticated with OpenAI!");
+    Ok(tokens)
+}
+
+/// Run the PKCE Authorization Code flow for Anthropic (Claude subscription).
+///
+/// 1. Generate PKCE verifier/challenge + state
+/// 2. Start local callback server on a random port
+/// 3. Open browser to Claude.ai OAuth authorization URL
+/// 4. Exchange authorization code for tokens
+/// 5. Store tokens to disk
+#[allow(clippy::print_stderr)]
+pub fn pkce_login_anthropic() -> Result<OAuthTokenSet, CoreError> {
+    let code_verifier = generate_code_verifier();
+    let code_challenge = compute_code_challenge(&code_verifier);
+    let state = generate_code_verifier(); // reuse same random generator for state
+
+    // Bind to port 0 — OS assigns a free port.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| CoreError::Auth(format!("failed to bind callback server: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| CoreError::Auth(format!("failed to get local addr: {e}")))?
+        .port();
+    let redirect_uri = format!("http://localhost:{port}/callback");
+
+    // Build authorization URL (via claude.com for Claude AI subscriber attribution).
+    let auth_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        ANTHROPIC_AUTH_URL,
+        urlencoding::encode(ANTHROPIC_CLIENT_ID),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(ANTHROPIC_SCOPES),
+        urlencoding::encode(&code_challenge),
+        urlencoding::encode(&state),
+    );
+
+    eprintln!("Opening browser for Anthropic authentication...");
+    eprintln!("If the browser doesn't open, visit:\n{auth_url}\n");
+
+    // Try to open browser (best-effort).
+    let _ = open::that(&auth_url);
+
+    eprintln!("Waiting for authorization callback on http://localhost:{port}/callback ...");
+
+    let code = wait_for_callback_with_state(&listener, &state)?;
+
+    // Exchange code for tokens.
+    let client = http_client()?;
+    let resp = client
+        .post(ANTHROPIC_TOKEN_URL)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", ANTHROPIC_CLIENT_ID),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("code_verifier", code_verifier.as_str()),
+            ("state", state.as_str()),
+        ])
+        .send()
+        .map_err(|e| CoreError::Auth(format!("token exchange failed: {e}")))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .map_err(|e| CoreError::Auth(format!("failed to read token response: {e}")))?;
+
+    if !status.is_success() {
+        return Err(CoreError::Auth(format!(
+            "token exchange failed ({status}): {body}"
+        )));
+    }
+
+    let tokens = parse_token_response(&body, "anthropic")?;
+    store_tokens(&tokens)?;
+
+    eprintln!("Successfully authenticated with Anthropic!");
     Ok(tokens)
 }
 
@@ -529,6 +637,76 @@ fn wait_for_callback(listener: &std::net::TcpListener) -> Result<String, CoreErr
 
     // Send success response to browser.
     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Authenticated!</h1><p>You can close this window and return to the terminal.</p></body></html>";
+    let _ = stream.write_all(response.as_bytes());
+
+    Ok(code)
+}
+
+/// Wait for callback with CSRF state validation (used by Anthropic flow).
+fn wait_for_callback_with_state(
+    listener: &std::net::TcpListener,
+    expected_state: &str,
+) -> Result<String, CoreError> {
+    use std::io::{Read, Write};
+
+    let (mut stream, _) = listener
+        .accept()
+        .map_err(|e| CoreError::Auth(format!("failed to accept callback: {e}")))?;
+
+    let mut buf = [0u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .map_err(|e| CoreError::Auth(format!("failed to read callback request: {e}")))?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    let path = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| CoreError::Auth("malformed callback request".to_string()))?;
+
+    let port = listener
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(0);
+    let full_url = format!("http://127.0.0.1:{port}{path}");
+    let parsed = url::Url::parse(&full_url)
+        .map_err(|e| CoreError::Auth(format!("failed to parse callback URL: {e}")))?;
+
+    // Check for error.
+    if let Some(error) = parsed.query_pairs().find(|(k, _)| k == "error") {
+        let desc = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "error_description")
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default();
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Authentication Failed</h1><p>You can close this window.</p></body></html>";
+        let _ = stream.write_all(response.as_bytes());
+        return Err(CoreError::Auth(format!(
+            "OAuth error: {} — {desc}",
+            error.1
+        )));
+    }
+
+    // Validate CSRF state.
+    let state = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_default();
+    if state != expected_state {
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Authentication Failed</h1><p>State mismatch — possible CSRF attack.</p></body></html>";
+        let _ = stream.write_all(response.as_bytes());
+        return Err(CoreError::Auth("OAuth state mismatch".to_string()));
+    }
+
+    let code = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| CoreError::Auth("no authorization code in callback".to_string()))?;
+
+    let response = "HTTP/1.1 302 Found\r\nLocation: https://platform.claude.com/oauth/code/success?app=arcan\r\n\r\n";
     let _ = stream.write_all(response.as_bytes());
 
     Ok(code)
