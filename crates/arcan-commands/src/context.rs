@@ -109,11 +109,21 @@ impl Command for ContextCommand {
 
         lines.push(String::new());
         lines.push(format!("  TOTAL:                    ~{:>6} tokens", total));
-        lines.push("  Window:                    200,000 tokens".to_string());
+
+        let window = ctx.context_window.unwrap_or(200_000);
+        lines.push(format!(
+            "  Window:                    {:>7} tokens",
+            format_tokens(window)
+        ));
         lines.push(format!(
             "  Utilization:               {:.1}%",
-            (total as f64 / 200_000.0) * 100.0
+            (total as f64 / window as f64) * 100.0
         ));
+
+        // Autonomic context regulation ruling
+        if let Some(ref ruling) = ctx.context_ruling {
+            lines.push(format!("  Autonomic ruling:          {ruling}"));
+        }
 
         if skills_tokens > 10_000 {
             lines.push(String::new());
@@ -141,6 +151,16 @@ impl Command for ContextCommand {
 
 fn estimate(text: &str) -> usize {
     text.len().div_ceil(4)
+}
+
+fn format_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{},{}", n / 1_000, format!("{:03}", n % 1_000))
+    } else {
+        n.to_string()
+    }
 }
 
 #[cfg(test)]

@@ -1167,6 +1167,7 @@ pub fn run_shell(
         workspace_journal_status: workspace_journal
             .as_ref()
             .map(|_| format!("{} (shared)", workspace_path.display())),
+        context_window: Some(context_window),
         ..Default::default()
     };
 
@@ -1619,6 +1620,16 @@ pub fn run_shell(
             };
 
         let advice = context_rule.evaluate_compression(&homeostatic_state);
+
+        // Store ruling for /context command display
+        cmd_ctx.context_ruling = Some(format!(
+            "{:?} \u{2014} pressure {:.0}%, quality {:.2}, tool_density {:.1}, turns_since_compact {}",
+            advice.ruling,
+            advice.pressure * 100.0,
+            homeostatic_state.eval.aggregate_quality_score,
+            homeostatic_state.cognitive.tool_density,
+            homeostatic_state.cognitive.turns_since_compact,
+        ));
 
         match advice.ruling {
             ContextRuling::Breathe => {}

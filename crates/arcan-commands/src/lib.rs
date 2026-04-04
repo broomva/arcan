@@ -103,6 +103,10 @@ pub struct CommandContext {
     pub skills_catalog_tokens: usize,
     /// Whether to display reasoning/thinking tokens in the output.
     pub show_reasoning: bool,
+    /// Current Autonomic context ruling (e.g. "Breathe — pressure 42%, quality 0.85, ...").
+    pub context_ruling: Option<String>,
+    /// Context window size in tokens (from provider).
+    pub context_window: Option<usize>,
 }
 
 /// Permission mode governing tool approval in the shell.
