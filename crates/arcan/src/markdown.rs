@@ -173,7 +173,7 @@ fn render_inline(text: &str) -> String {
     while i < len {
         // Bold: **text**
         if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            if let Some(end) = find_closing(&chars, i + 2, &['*', '*']) {
+            if let Some(end) = find_closing(&chars, i + 2, ['*', '*']) {
                 result.push_str(ansi::BOLD);
                 let inner: String = chars[i + 2..end].iter().collect();
                 result.push_str(&inner);
@@ -215,25 +215,21 @@ fn render_inline(text: &str) -> String {
 }
 
 /// Find closing double-char delimiter (e.g., `**`).
-fn find_closing(chars: &[char], start: usize, delim: &[char; 2]) -> Option<usize> {
-    let mut i = start;
-    while i + 1 < chars.len() {
-        if chars[i] == delim[0] && chars[i + 1] == delim[1] {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
+fn find_closing(chars: &[char], start: usize, delim: [char; 2]) -> Option<usize> {
+    chars
+        .windows(2)
+        .enumerate()
+        .skip(start)
+        .find(|(_, w)| w[0] == delim[0] && w[1] == delim[1])
+        .map(|(i, _)| i)
 }
 
 /// Find closing single-char delimiter (e.g., `*` or `` ` ``).
 fn find_single_closing(chars: &[char], start: usize, delim: char) -> Option<usize> {
-    for i in start..chars.len() {
-        if chars[i] == delim {
-            return Some(i);
-        }
-    }
-    None
+    chars
+        .iter()
+        .position(|&c| c == delim)
+        .filter(|&p| p >= start)
 }
 
 #[cfg(test)]

@@ -157,7 +157,7 @@ fn format_tokens(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
-        format!("{},{}", n / 1_000, format!("{:03}", n % 1_000))
+        format!("{},{:03}", n / 1_000, n % 1_000)
     } else {
         n.to_string()
     }
