@@ -223,6 +223,23 @@ struct CanonicalState {
     frozen_prompt_prefixes: Arc<Mutex<HashMap<String, FrozenPromptPrefix>>>,
     /// Bare mode: use minimal system prompt for small-context models (≤4K tokens).
     bare: bool,
+    /// Autonomic context regulation state — shared across all sessions.
+    /// Protected by Mutex for interior mutability in the axum handler.
+    autonomic: Arc<Mutex<AutonomicDaemonState>>,
+}
+
+/// Daemon-level Autonomic context regulation state.
+///
+/// Wraps the `HomeostaticState` and `ContextPressureRule` from the autonomic
+/// crates. Evaluated after each agent run to determine if context compaction
+/// is needed.
+struct AutonomicDaemonState {
+    homeostatic: autonomic_core::gating::HomeostaticState,
+    rule: autonomic_controller::ContextPressureRule,
+    /// Last evaluated ruling (cached for the /autonomic endpoint).
+    last_ruling: Option<autonomic_core::context::ContextCompressionAdvice>,
+    /// Context window size from the current provider.
+    context_window: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +440,9 @@ struct ErrorResponse {
         resolve_approval,
         get_provider,
         set_provider,
+        get_autonomic,
+        get_context,
+        get_cost,
         list_mcp_servers,
     ),
     components(schemas(
@@ -446,6 +466,9 @@ struct ErrorResponse {
         SetProviderRequest,
         ProviderResponse,
         ErrorResponse,
+        AutonomicResponse,
+        ContextResponse,
+        CostResponse,
         // Mirror schemas for external aios-protocol types
         OperatingModeSchema,
         AgentStateVectorSchema,
@@ -466,6 +489,7 @@ struct ErrorResponse {
         (name = "branches", description = "Branch management"),
         (name = "approvals", description = "Approval workflow"),
         (name = "provider", description = "Live provider switching"),
+        (name = "autonomic", description = "Autonomic context regulation and homeostatic state"),
         (name = "mcp", description = "MCP server registry"),
     )
 )]
@@ -662,6 +686,7 @@ pub fn create_canonical_router_with_skills(
         rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
         frozen_prompt_prefixes: Arc::new(Mutex::new(HashMap::new())),
         bare,
+        autonomic: Arc::new(Mutex::new(AutonomicDaemonState::new(bare))),
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -699,6 +724,9 @@ pub fn create_canonical_router_with_skills(
             post(resolve_approval),
         )
         .route("/provider", get(get_provider).put(set_provider))
+        .route("/autonomic", get(get_autonomic))
+        .route("/context", get(get_context))
+        .route("/cost", get(get_cost))
         // BRO-219: Memory export and migration endpoints.
         .route("/user/memory/export", get(export_memory_jsonl))
         .route("/user/memory/migrate-to-pro", post(migrate_memory_to_pro))
@@ -1583,6 +1611,24 @@ async fn run_session(
 
     let tick = tick_result.map_err(internal_error)?;
 
+    // Evaluate Autonomic context regulation after each run.
+    {
+        let mut autonomic = state
+            .autonomic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        autonomic.evaluate_after_run(&tick.state);
+
+        if let Some(ref advice) = autonomic.last_ruling {
+            tracing::debug!(
+                ruling = ?advice.ruling,
+                pressure = advice.pressure,
+                rationale = %advice.rationale,
+                "Autonomic evaluation after run"
+            );
+        }
+    }
+
     persist_last_session_hint(state.runtime.as_ref(), &tick.session_id).await;
 
     // Fire-and-forget: notify run observers (async judge evaluators, EGRI bridge).
@@ -2183,6 +2229,176 @@ async fn set_provider(
         provider: new_name,
         available,
     }))
+}
+
+// ─── Autonomic context regulation ────────────────────────────────────────────
+
+const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
+
+impl AutonomicDaemonState {
+    fn new(bare: bool) -> Self {
+        let context_window = if bare { 4_096 } else { DEFAULT_CONTEXT_WINDOW };
+        let mut homeostatic = autonomic_core::gating::HomeostaticState::for_agent("daemon");
+        homeostatic.cognitive.tokens_remaining = context_window as u64;
+        Self {
+            homeostatic,
+            rule: autonomic_controller::ContextPressureRule::default(),
+            last_ruling: None,
+            context_window,
+        }
+    }
+
+    /// Update context pressure from a completed run's state and evaluate.
+    fn evaluate_after_run(&mut self, state: &aios_protocol::AgentStateVector) {
+        self.homeostatic.cognitive.tokens_remaining = state
+            .budget
+            .tokens_remaining
+            .min(self.context_window as u64);
+
+        // Derive pressure from state vector
+        self.homeostatic.cognitive.context_pressure = state.context_pressure as f32;
+        self.homeostatic.eval.aggregate_quality_score =
+            (1.0 - state.uncertainty as f64).clamp(0.0, 1.0);
+
+        let advice = self.rule.evaluate_compression(&self.homeostatic);
+        self.last_ruling = Some(advice);
+    }
+
+    /// Update the context window when the provider changes.
+    fn update_context_window(&mut self, window: usize) {
+        self.context_window = window;
+        self.homeostatic.cognitive.tokens_remaining = window as u64;
+    }
+}
+
+/// Response for `GET /autonomic`.
+#[derive(Debug, Serialize, ToSchema)]
+struct AutonomicResponse {
+    /// Current ruling: "Breathe", "Dilate", "Compress", or "Emergency".
+    ruling: String,
+    /// Context pressure as a percentage (0.0 – 1.0).
+    pressure: f64,
+    /// Rationale for the current ruling.
+    rationale: String,
+    /// Target token count if compaction is advised.
+    target_tokens: Option<usize>,
+    /// Quality score (0.0 – 1.0).
+    quality_score: f64,
+    /// Context window size.
+    context_window: usize,
+}
+
+/// Response for `GET /context`.
+#[derive(Debug, Serialize, ToSchema)]
+struct ContextResponse {
+    /// Context window size in tokens.
+    context_window: usize,
+    /// Estimated tokens used.
+    tokens_used: u64,
+    /// Context pressure as a percentage (0.0 – 100.0).
+    pressure_percent: f64,
+    /// Current Autonomic ruling.
+    ruling: String,
+}
+
+/// Response for `GET /cost`.
+#[derive(Debug, Serialize, ToSchema)]
+struct CostResponse {
+    /// Budget remaining in USD.
+    cost_remaining_usd: f64,
+    /// Tokens remaining in budget.
+    tokens_remaining: u64,
+    /// Daemon uptime in seconds.
+    uptime_seconds: u64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/autonomic",
+    tag = "autonomic",
+    responses(
+        (status = 200, description = "Current Autonomic ruling and homeostatic state", body = AutonomicResponse)
+    )
+)]
+async fn get_autonomic(State(state): State<CanonicalState>) -> Json<AutonomicResponse> {
+    let guard = state
+        .autonomic
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(ref advice) = guard.last_ruling {
+        Json(AutonomicResponse {
+            ruling: format!("{:?}", advice.ruling),
+            pressure: advice.pressure as f64,
+            rationale: advice.rationale.clone(),
+            target_tokens: advice.target_tokens,
+            quality_score: guard.homeostatic.eval.aggregate_quality_score as f64,
+            context_window: guard.context_window,
+        })
+    } else {
+        Json(AutonomicResponse {
+            ruling: "Breathe".to_string(),
+            pressure: 0.0,
+            rationale: "No runs evaluated yet".to_string(),
+            target_tokens: None,
+            quality_score: 1.0,
+            context_window: guard.context_window,
+        })
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/context",
+    tag = "autonomic",
+    responses(
+        (status = 200, description = "Context window usage and pressure", body = ContextResponse)
+    )
+)]
+async fn get_context(State(state): State<CanonicalState>) -> Json<ContextResponse> {
+    let guard = state
+        .autonomic
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tokens_used = guard.context_window as u64 - guard.homeostatic.cognitive.tokens_remaining;
+    let pressure = if guard.context_window > 0 {
+        (tokens_used as f64 / guard.context_window as f64) * 100.0
+    } else {
+        0.0
+    };
+    let ruling = guard
+        .last_ruling
+        .as_ref()
+        .map(|a| format!("{:?}", a.ruling))
+        .unwrap_or_else(|| "Breathe".to_string());
+
+    Json(ContextResponse {
+        context_window: guard.context_window,
+        tokens_used,
+        pressure_percent: pressure,
+        ruling,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/cost",
+    tag = "autonomic",
+    responses(
+        (status = 200, description = "Session cost and budget info", body = CostResponse)
+    )
+)]
+async fn get_cost(State(state): State<CanonicalState>) -> Json<CostResponse> {
+    let guard = state
+        .autonomic
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let uptime = state.started_at.elapsed().as_secs();
+
+    Json(CostResponse {
+        cost_remaining_usd: 5.0, // TODO: track actual cost from provider usage
+        tokens_remaining: guard.homeostatic.cognitive.tokens_remaining,
+        uptime_seconds: uptime,
+    })
 }
 
 // ─── Error helpers ───────────────────────────────────────────────────────────

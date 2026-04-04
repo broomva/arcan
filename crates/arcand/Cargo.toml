@@ -16,6 +16,8 @@ workspace = true
 
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.3.0" }
+autonomic-core = { workspace = true }
+autonomic-controller = { workspace = true }
 arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
 arcan-lago = { path = "../arcan-lago", version = "0.3.0" }
 praxis-skills.workspace = true

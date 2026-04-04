@@ -632,6 +632,8 @@ dependencies = [
  "arcan-core",
  "arcan-lago",
  "async-trait",
+ "autonomic-controller",
+ "autonomic-core",
  "axum 0.8.8",
  "chrono",
  "http-body-util",
