@@ -30,6 +30,8 @@ const USER_AGENT: &str = concat!("arcan/", env!("CARGO_PKG_VERSION"));
 const ANTHROPIC_AUTH_URL: &str = "https://claude.com/cai/oauth/authorize";
 const ANTHROPIC_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/// Manual redirect URL for headless environments (copy/paste auth code flow).
+#[allow(dead_code)]
 const ANTHROPIC_MANUAL_REDIRECT_URL: &str = "https://platform.claude.com/oauth/code/callback";
 /// Scopes matching Noesis/Claude Code: inference + profile + sessions + MCP + uploads.
 const ANTHROPIC_SCOPES: &str =
