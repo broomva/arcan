@@ -1378,20 +1378,22 @@ pub fn run_shell(
     // All journal writes, memory extraction, and MEMORY.md regeneration
     // go through this channel. Sequential, ordered, non-blocking to the REPL.
     enum WriteTask {
-        Event {
-            journal: Arc<dyn Journal>,
-            event: EventEnvelope,
-        },
+        Event(Box<WriteTaskEvent>),
         ExtractMemories {
             messages: Vec<ChatMessage>,
             memory_dir: std::path::PathBuf,
         },
     }
+    struct WriteTaskEvent {
+        journal: Arc<dyn Journal>,
+        event: EventEnvelope,
+    }
     let (writer_tx, writer_rx) = std::sync::mpsc::channel::<WriteTask>();
     std::thread::spawn(move || {
         for task in writer_rx {
             match task {
-                WriteTask::Event { journal, event } => {
+                WriteTask::Event(box_event) => {
+                    let WriteTaskEvent { journal, event } = *box_event;
                     append_event_sync(journal.as_ref(), event);
                 }
                 WriteTask::ExtractMemories {
@@ -1592,7 +1594,7 @@ pub fn run_shell(
         cmd_ctx.message_count = messages.len();
 
         // Persist user message (non-blocking via writer thread)
-        let _ = writer_tx.send(WriteTask::Event {
+        let _ = writer_tx.send(WriteTask::Event(Box::new(WriteTaskEvent {
             journal: journal.clone(),
             event: make_message_event(
                 &lago_session_id,
@@ -1602,7 +1604,7 @@ pub fn run_shell(
                 input,
                 None,
             ),
-        });
+        })));
 
         let emb_ctx = match (&embedding_provider, &workspace_journal) {
             (Some(ep), Some(wj)) => Some(EmbeddingContext {
@@ -1645,7 +1647,7 @@ pub fn run_shell(
 
                 // --- Persistence via writer thread (non-blocking) ---
                 if !text.is_empty() {
-                    let _ = writer_tx.send(WriteTask::Event {
+                    let _ = writer_tx.send(WriteTask::Event(Box::new(WriteTaskEvent {
                         journal: journal.clone(),
                         event: make_message_event(
                             &lago_session_id,
@@ -1655,7 +1657,7 @@ pub fn run_shell(
                             &text,
                             resolved.model.as_deref(),
                         ),
-                    });
+                    })));
                 }
                 if let Some(ref wj) = workspace_journal {
                     let truncated: String = text.chars().take(200).collect();
@@ -1670,7 +1672,7 @@ pub fn run_shell(
                             lago_session_id, cmd_ctx.session_turns, text
                         )
                     };
-                    let _ = writer_tx.send(WriteTask::Event {
+                    let _ = writer_tx.send(WriteTask::Event(Box::new(WriteTaskEvent {
                         journal: wj.clone(),
                         event: make_message_event(
                             &workspace_session_id,
@@ -1680,7 +1682,7 @@ pub fn run_shell(
                             &summary,
                             None,
                         ),
-                    });
+                    })));
                 }
                 let _ = writer_tx.send(WriteTask::ExtractMemories {
                     messages: messages.clone(),
