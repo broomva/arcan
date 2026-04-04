@@ -53,6 +53,10 @@ use life_vigil::VigConfig;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
+use autonomic_controller::ContextPressureRule;
+use autonomic_core::context::ContextRuling;
+use autonomic_core::gating::HomeostaticState;
+
 use crate::config::ResolvedConfig;
 
 // ---------------------------------------------------------------------------
@@ -138,12 +142,6 @@ const EXTRACT_MAX_CHARS: usize = 2000;
 
 /// Fallback context window (tokens) when the provider doesn't report one.
 const DEFAULT_CONTEXT_WINDOW: usize = 200_000;
-
-/// Compact at 60% of context window.
-const COMPACT_THRESHOLD_PCT: usize = 60;
-
-/// Target 35% of context window after compaction.
-const COMPACT_TARGET_PCT: usize = 35;
 
 /// Estimate cost in USD for a model call based on token usage and model name.
 ///
@@ -937,6 +935,15 @@ pub fn run_shell(
     // --- Provider ---
     let provider = crate::build_provider(resolved)?;
 
+    // --- Autonomic context regulation ---
+    let context_rule = ContextPressureRule::default();
+    let context_window = provider
+        .context_window()
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW as u32) as usize;
+    let mut homeostatic_state =
+        HomeostaticState::for_agent(&lago_session_id_for_journal.to_string());
+    homeostatic_state.cognitive.tokens_remaining = context_window as u64;
+
     // --- Tools (same set as run_serve) ---
     let mut registry = ToolRegistry::default();
 
@@ -945,30 +952,30 @@ pub fn run_shell(
         // Small models (≤4K context) hallucinate function calls when tools are present.
         eprintln!("[bare] No tools registered — capabilities described in system prompt");
     } else {
-    let fs_policy = FsPolicy::new(workspace_root.clone());
-    let local_fs = Arc::new(LocalFs::new(fs_policy));
+        let fs_policy = FsPolicy::new(workspace_root.clone());
+        let local_fs = Arc::new(LocalFs::new(fs_policy));
 
-    registry.register(PraxisToolBridge::new(ReadFileTool::new(local_fs.clone())));
-    registry.register(PraxisToolBridge::new(WriteFileTool::new(local_fs.clone())));
-    registry.register(PraxisToolBridge::new(ListDirTool::new(local_fs.clone())));
-    registry.register(PraxisToolBridge::new(EditFileTool::new(local_fs.clone())));
-    registry.register(PraxisToolBridge::new(GlobTool::new(local_fs.clone())));
-    registry.register(PraxisToolBridge::new(GrepTool::new(local_fs)));
+        registry.register(PraxisToolBridge::new(ReadFileTool::new(local_fs.clone())));
+        registry.register(PraxisToolBridge::new(WriteFileTool::new(local_fs.clone())));
+        registry.register(PraxisToolBridge::new(ListDirTool::new(local_fs.clone())));
+        registry.register(PraxisToolBridge::new(EditFileTool::new(local_fs.clone())));
+        registry.register(PraxisToolBridge::new(GlobTool::new(local_fs.clone())));
+        registry.register(PraxisToolBridge::new(GrepTool::new(local_fs)));
 
-    let sandbox_policy = SandboxPolicy {
-        workspace_root: workspace_root.clone(),
-        shell_enabled: true,
-        network: NetworkPolicy::AllowAll,
-        allowed_env: BTreeSet::new(),
-        max_execution_ms: 30_000,
-        max_stdout_bytes: 1024 * 1024,
-        max_stderr_bytes: 1024 * 1024,
-    };
+        let sandbox_policy = SandboxPolicy {
+            workspace_root: workspace_root.clone(),
+            shell_enabled: true,
+            network: NetworkPolicy::AllowAll,
+            allowed_env: BTreeSet::new(),
+            max_execution_ms: 30_000,
+            max_stdout_bytes: 1024 * 1024,
+            max_stderr_bytes: 1024 * 1024,
+        };
 
-    let sandbox_provider = crate::sandbox_router::build_sandbox_provider_with_fallback();
-    let runner: Box<dyn praxis_core::sandbox::CommandRunner> =
-        Box::new(arcan_praxis::SandboxCommandRunner::new(sandbox_provider));
-    registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
+        let sandbox_provider = crate::sandbox_router::build_sandbox_provider_with_fallback();
+        let runner: Box<dyn praxis_core::sandbox::CommandRunner> =
+            Box::new(arcan_praxis::SandboxCommandRunner::new(sandbox_provider));
+        registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
     } // else (not bare) — tool registration
 
     // --- Embedding provider (BRO-388) ---
@@ -983,44 +990,44 @@ pub fn run_shell(
 
     // Extended tools — skipped in bare mode
     if !resolved.bare {
-    registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
-        memory_dir.clone(),
-    )));
-    registry.register(PraxisToolBridge::new(WriteMemoryTool::new(
-        memory_dir.clone(),
-    )));
+        registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
+            memory_dir.clone(),
+        )));
+        registry.register(PraxisToolBridge::new(WriteMemoryTool::new(
+            memory_dir.clone(),
+        )));
 
-    // --- BRO-417: Agent-driven memory retrieval tools ---
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemorySearchTool::new(&memory_dir),
-    ));
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemorySimilarTool::new(
-            &memory_dir,
-            embedding_provider.clone(),
-            workspace_lance.clone(),
-        ),
-    ));
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemoryBrowseTool::new(&memory_dir),
-    ));
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemoryRecentTool::new(&memory_dir),
-    ));
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemoryOffloadTool::new(&memory_dir),
-    ));
-    registry.register(PraxisToolBridge::new(
-        crate::memory_tools::MemoryForgetTool::new(&memory_dir),
-    ));
+        // --- BRO-417: Agent-driven memory retrieval tools ---
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemorySearchTool::new(&memory_dir),
+        ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemorySimilarTool::new(
+                &memory_dir,
+                embedding_provider.clone(),
+                workspace_lance.clone(),
+            ),
+        ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryBrowseTool::new(&memory_dir),
+        ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryRecentTool::new(&memory_dir),
+        ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryOffloadTool::new(&memory_dir),
+        ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryForgetTool::new(&memory_dir),
+        ));
 
-    // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
-    let memory_journal: Arc<dyn Journal> =
-        workspace_journal.clone().unwrap_or_else(|| journal.clone());
-    let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
-    registry.register(MemoryQueryTool::new(memory_projection));
-    registry.register(MemoryProposeTool::new(memory_journal.clone()));
-    registry.register(MemoryCommitTool::new(memory_journal));
+        // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
+        let memory_journal: Arc<dyn Journal> =
+            workspace_journal.clone().unwrap_or_else(|| journal.clone());
+        let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
+        registry.register(MemoryQueryTool::new(memory_projection));
+        registry.register(MemoryProposeTool::new(memory_journal.clone()));
+        registry.register(MemoryCommitTool::new(memory_journal));
     } // if !resolved.bare — extended tools
 
     // --- Phase 6: Spaces networking (BRO-368, BRO-369) ---
@@ -1197,14 +1204,12 @@ pub fn run_shell(
         );
         // Populate context token estimates for /context command
         cmd_ctx.project_instructions_tokens = claude_md.as_deref().map_or(0, |s| s.len() / 4);
-        cmd_ctx.skills_catalog_tokens =
-            skill_catalog_text.as_deref().map_or(0, |s| s.len() / 4);
+        cmd_ctx.skills_catalog_tokens = skill_catalog_text.as_deref().map_or(0, |s| s.len() / 4);
         cmd_ctx.git_context_tokens =
             crate::prompt::build_git_section(&cmd_ctx.workspace).map_or(0, |s| s.len() / 4);
         cmd_ctx.memory_index_tokens =
             crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
-        cmd_ctx.workspace_context_tokens =
-            workspace_context.as_deref().map_or(0, |s| s.len() / 4);
+        cmd_ctx.workspace_context_tokens = workspace_context.as_deref().map_or(0, |s| s.len() / 4);
 
         system_prompt_struct.combined()
     };
@@ -1432,9 +1437,9 @@ pub fn run_shell(
                 }
                 Some(CommandResult::CompactRequested) => {
                     let before = estimate_tokens(&messages);
-                    let ctx_win = provider.context_window().map(|w| w as usize).unwrap_or(DEFAULT_CONTEXT_WINDOW);
-                    let target = ctx_win * COMPACT_TARGET_PCT / 100;
+                    let target = context_window * 35 / 100;
                     compact_with_extraction(&mut messages, &memory_dir, target);
+                    homeostatic_state.cognitive.turns_since_compact = 0;
                     let after = estimate_tokens(&messages);
                     eprintln!("[compact] {before} tokens -> {after} tokens (target: {target})");
                 }
@@ -1533,6 +1538,19 @@ pub fn run_shell(
                 }
                 // Update message count after loop completes
                 cmd_ctx.message_count = messages.len();
+                // Reset error streak on successful response
+                homeostatic_state.operational.error_streak = 0;
+
+                // Feed quality signal into Autonomic homeostatic state
+                if !text.is_empty() {
+                    let prev = homeostatic_state.eval.aggregate_quality_score;
+                    let signal = if text.len() > 20 { 0.85 } else { 0.5 };
+                    homeostatic_state.eval.aggregate_quality_score = prev * 0.7 + signal * 0.3;
+                    homeostatic_state.eval.quality_trend =
+                        homeostatic_state.eval.aggregate_quality_score - prev;
+                    homeostatic_state.eval.inline_eval_count += 1;
+                }
+
                 // Extract and save key facts from this turn to persistent memory.
                 extract_and_save_memories(&messages, &memory_dir);
                 // Regenerate MEMORY.md index after memory extraction (BRO-419)
@@ -1575,23 +1593,68 @@ pub fn run_shell(
             }
             Err(e) => {
                 eprintln!("Error: {e}");
+                homeostatic_state.operational.error_streak += 1;
             }
         }
 
-        // --- Auto-compact if conversation exceeds threshold ---
-        // Thresholds scale with the model's context window:
-        //   apfel (4K):   compact at ~2457, target ~1433
-        //   GPT-4o (128K): compact at ~76800, target ~44800
-        //   Claude (200K): compact at ~120000, target ~70000
+        // --- Autonomic-regulated context compression ---
         let tokens = estimate_tokens(&messages);
-        let ctx_win = provider.context_window().map(|w| w as usize).unwrap_or(DEFAULT_CONTEXT_WINDOW);
-        let threshold = ctx_win * COMPACT_THRESHOLD_PCT / 100;
-        let target = ctx_win * COMPACT_TARGET_PCT / 100;
-        if tokens > threshold {
-            eprintln!("[compact] {tokens} tokens -> compacting to ~{target} (context window: {ctx_win})");
-            compact_with_extraction(&mut messages, &memory_dir, target);
-            let after = estimate_tokens(&messages);
-            eprintln!("[compact] now ~{after} tokens (memories extracted)");
+        let pressure = if context_window > 0 {
+            tokens as f32 / context_window as f32
+        } else {
+            0.0
+        };
+
+        // Update cognitive state for Autonomic evaluation
+        homeostatic_state.cognitive.context_pressure = pressure;
+        homeostatic_state.cognitive.total_tokens_used =
+            cmd_ctx.session_input_tokens + cmd_ctx.session_output_tokens;
+        homeostatic_state.cognitive.tokens_remaining = context_window.saturating_sub(tokens) as u64;
+        homeostatic_state.cognitive.turns_completed += 1;
+        homeostatic_state.cognitive.turns_since_compact += 1;
+        homeostatic_state.cognitive.tool_density =
+            if homeostatic_state.cognitive.turns_completed > 0 {
+                cmd_ctx.tool_call_count as f64 / homeostatic_state.cognitive.turns_completed as f64
+            } else {
+                0.0
+            };
+
+        let advice = context_rule.evaluate_compression(&homeostatic_state);
+
+        match advice.ruling {
+            ContextRuling::Breathe => {}
+            ContextRuling::Dilate => {
+                eprintln!(
+                    "[context] {:.0}% \u{2014} dilating ({})",
+                    pressure * 100.0,
+                    advice.rationale
+                );
+            }
+            ContextRuling::Compress => {
+                let target = advice.target_tokens.unwrap_or(context_window * 35 / 100);
+                eprintln!(
+                    "[context] {:.0}% \u{2014} compressing to ~{} ({})",
+                    pressure * 100.0,
+                    target,
+                    advice.rationale
+                );
+                compact_with_extraction(&mut messages, &memory_dir, target);
+                homeostatic_state.cognitive.turns_since_compact = 0;
+                let after = estimate_tokens(&messages);
+                eprintln!("[context] now ~{after} tokens (memories extracted)");
+            }
+            ContextRuling::Emergency => {
+                let target = advice.target_tokens.unwrap_or(context_window * 25 / 100);
+                eprintln!(
+                    "[context] EMERGENCY {:.0}% \u{2014} compacting to ~{}",
+                    pressure * 100.0,
+                    target
+                );
+                compact_with_extraction(&mut messages, &memory_dir, target);
+                homeostatic_state.cognitive.turns_since_compact = 0;
+                let after = estimate_tokens(&messages);
+                eprintln!("[context] now ~{after} tokens");
+            }
         }
     }
 

@@ -30,6 +30,8 @@ arcan-spaces = { path = "../arcan-spaces", version = "0.2.1", optional = true }
 arcan-commands = { path = "../arcan-commands", version = "0.2.1" }
 arcan-praxis = { path = "../arcan-praxis", version = "0.2.1" }
 arcan-core = { path = "../arcan-core", version = "0.2.1" }
+autonomic-core.workspace = true
+autonomic-controller.workspace = true
 arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.2.1" }
 arcan-harness = { path = "../arcan-harness", version = "0.2.1" }
 praxis-core.workspace = true
