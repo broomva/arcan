@@ -226,6 +226,10 @@ struct CanonicalState {
     /// Autonomic context regulation state — shared across all sessions.
     /// Protected by Mutex for interior mutability in the axum handler.
     autonomic: Arc<Mutex<AutonomicDaemonState>>,
+    /// Cached git context (branch, recent commits, uncommitted changes).
+    /// Refreshed at most every 60 seconds to avoid running git on every request.
+    /// BRO-374: Daemon injects git context into system prompt.
+    cached_git_context: Arc<Mutex<Option<(Instant, String)>>>,
 }
 
 /// Daemon-level Autonomic context regulation state.
@@ -687,6 +691,7 @@ pub fn create_canonical_router_with_skills(
         frozen_prompt_prefixes: Arc::new(Mutex::new(HashMap::new())),
         bare,
         autonomic: Arc::new(Mutex::new(AutonomicDaemonState::new(bare))),
+        cached_git_context: Arc::new(Mutex::new(None)),
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -1498,6 +1503,13 @@ async fn run_session(
     let model_name = std::env::var("ARCAN_MODEL")
         .or_else(|_| std::env::var("MODEL"))
         .unwrap_or_else(|_| "default".to_string());
+    // BRO-374: Fetch git context asynchronously (cached for 60s, runs in spawn_blocking).
+    let git_context = if state.bare {
+        None
+    } else {
+        state.git_context().await
+    };
+
     let system_prompt = if state.bare {
         // Bare mode: minimal prompt for small-context models (≤4K tokens).
         // No project instructions, no memory, no git context, no skills.
@@ -1512,6 +1524,7 @@ async fn run_session(
             build_system_prompt_prefix(
                 &state.workspace_root,
                 state.cached_project_instructions.as_deref(),
+                git_context.as_deref(),
                 &state.data_dir.join("memory"),
                 &provider_name,
                 &model_name,
@@ -1713,9 +1726,11 @@ async fn extract_run_context(
     (final_answer, messages)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_system_prompt_prefix(
     workspace_root: &std::path::Path,
     cached_project_instructions: Option<&str>,
+    cached_git_context: Option<&str>,
     memory_dir: &std::path::Path,
     provider_name: &str,
     model_name: &str,
@@ -1732,8 +1747,10 @@ fn build_system_prompt_prefix(
         model_name,
     ));
 
-    if let Some(git) = arcan_core::prompt::build_git_section(workspace_root) {
-        sections.push(git);
+    // BRO-374: Use pre-fetched and cached git context (refreshed every 60s
+    // via spawn_blocking) instead of running git commands synchronously.
+    if let Some(git) = cached_git_context {
+        sections.push(git.to_owned());
     }
 
     if let Some(instructions) = cached_project_instructions {
@@ -1776,6 +1793,100 @@ impl CanonicalState {
             })
             .clone()
     }
+
+    /// Return cached git context, refreshing at most every 60 seconds.
+    ///
+    /// BRO-374: Runs git commands in `spawn_blocking` to avoid blocking the
+    /// async runtime, and caches the result so repeated requests within the
+    /// TTL window are free.
+    async fn git_context(&self) -> Option<String> {
+        const GIT_CONTEXT_TTL: Duration = Duration::from_secs(60);
+
+        // Fast path: return cached value if still fresh.
+        {
+            let cache = self
+                .cached_git_context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((fetched_at, ref ctx)) = *cache {
+                if fetched_at.elapsed() < GIT_CONTEXT_TTL {
+                    return Some(ctx.clone());
+                }
+            }
+        }
+
+        // Slow path: fetch git context on a blocking thread.
+        let ws = self.workspace_root.clone();
+        let result = tokio::task::spawn_blocking(move || build_git_context(&ws))
+            .await
+            .ok()?;
+
+        if let Some(ref ctx) = result {
+            let mut cache = self
+                .cached_git_context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *cache = Some((Instant::now(), ctx.clone()));
+        }
+
+        result
+    }
+}
+
+/// Build git context for the daemon system prompt (BRO-374).
+///
+/// Runs three git commands and formats the output as a markdown section:
+/// - `git branch --show-current` — current branch name
+/// - `git log --oneline -5` — recent commit history
+/// - `git diff --stat` — uncommitted changes summary
+///
+/// Returns `None` if the workspace is not inside a git repository.
+fn build_git_context(workspace_root: &std::path::Path) -> Option<String> {
+    let branch = std::process::Command::new("git")
+        .args([
+            "-C",
+            &workspace_root.to_string_lossy(),
+            "branch",
+            "--show-current",
+        ])
+        .output()
+        .ok()?;
+    if !branch.status.success() {
+        return None;
+    }
+    let branch_name = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+
+    let log = std::process::Command::new("git")
+        .args([
+            "-C",
+            &workspace_root.to_string_lossy(),
+            "log",
+            "--oneline",
+            "-5",
+        ])
+        .output()
+        .ok()?;
+    let log_text = String::from_utf8_lossy(&log.stdout).trim().to_string();
+
+    let diff = std::process::Command::new("git")
+        .args(["-C", &workspace_root.to_string_lossy(), "diff", "--stat"])
+        .output()
+        .ok()?;
+    let diff_text = String::from_utf8_lossy(&diff.stdout).trim().to_string();
+    let diff_display = if diff_text.is_empty() {
+        "No uncommitted changes".to_string()
+    } else if diff_text.len() > 800 {
+        format!("{}...(truncated)", &diff_text[..800])
+    } else {
+        diff_text
+    };
+
+    Some(format!(
+        "## Git Context\n\n\
+         **Branch**: {branch_name}\n\n\
+         **Recent commits**:\n```\n{log_text}\n```\n\n\
+         **Uncommitted changes**:\n```\n{diff_display}\n```"
+    ))
 }
 
 #[utoipa::path(
