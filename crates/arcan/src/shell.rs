@@ -1395,6 +1395,16 @@ pub fn run_shell(
             // Update message_count before command dispatch
             cmd_ctx.message_count = messages.len();
 
+            // Bare "/" — show all available commands as hints.
+            if input == "/" {
+                let all = commands.matching_commands("");
+                eprintln!("Available commands:");
+                for (name, desc) in &all {
+                    eprintln!("  {name} — {desc}");
+                }
+                continue;
+            }
+
             // --- BRO-359: /sessions and /session commands (need journal access) ---
             if input == "/sessions" || input == "/sess" {
                 // List sessions from journal files in shell-journals/ directory
@@ -1526,7 +1536,22 @@ pub fn run_shell(
                         }
                     }
 
-                    eprintln!("Unknown command: {input}. Type /help for available commands.");
+                    // Show matching commands as hints.
+                    let prefix = input.strip_prefix('/').unwrap_or(input);
+                    let matches = commands.matching_commands(prefix);
+                    if matches.is_empty() {
+                        eprintln!("Unknown command: {input}. Type /help for available commands.");
+                    } else if matches.len() == 1 {
+                        eprintln!("Unknown command: {input}. Did you mean?");
+                        for (name, desc) in &matches {
+                            eprintln!("  {name} — {desc}");
+                        }
+                    } else {
+                        eprintln!("Matching commands:");
+                        for (name, desc) in &matches {
+                            eprintln!("  {name} — {desc}");
+                        }
+                    }
                 }
             }
             continue;

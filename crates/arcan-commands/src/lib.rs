@@ -287,6 +287,29 @@ impl CommandRegistry {
         &self.help_text
     }
 
+    /// Return commands matching a prefix (for slash-command hints).
+    ///
+    /// Given `"/"` returns all commands. Given `"/co"` returns `/compact`, `/commit`,
+    /// `/config`, `/consolidate`, `/context`, `/cost`. Matches against names and aliases.
+    pub fn matching_commands(&self, prefix: &str) -> Vec<(String, String)> {
+        let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
+        let mut matches: Vec<(String, String)> = Vec::new();
+
+        for cmd in self.commands.values() {
+            if cmd.name().starts_with(prefix) {
+                matches.push((format!("/{}", cmd.name()), cmd.description().to_string()));
+            }
+            for alias in cmd.aliases() {
+                if alias.starts_with(prefix) && !cmd.name().starts_with(prefix) {
+                    matches.push((format!("/{alias}"), cmd.description().to_string()));
+                }
+            }
+        }
+
+        matches.sort_by(|a, b| a.0.cmp(&b.0));
+        matches
+    }
+
     fn rebuild_help_text(&mut self) {
         let mut lines = vec!["Available commands:".to_string()];
         for cmd in self.commands.values() {
