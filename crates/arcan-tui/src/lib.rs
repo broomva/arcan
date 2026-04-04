@@ -10,6 +10,8 @@ pub mod history;
 #[cfg(test)]
 mod integration_test;
 #[cfg(test)]
+mod live_test;
+#[cfg(test)]
 pub mod mock_client;
 pub mod models;
 #[cfg(test)]
