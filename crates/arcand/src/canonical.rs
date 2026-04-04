@@ -1605,8 +1605,14 @@ async fn run_session(
         }
     }
 
+    // Agent loop: tick repeatedly until the agent finishes (end_turn) or hits
+    // the iteration limit. Each tick is one LLM call + tool execution. If the
+    // LLM returns tool_use, we tick again with empty objective (continuation)
+    // so the LLM sees the tool results and can respond.
+    const MAX_AGENT_ITERATIONS: u32 = 10;
+
     let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
-    let tick_result = state
+    let mut tick_result = state
         .runtime
         .tick_on_branch(
             &session_id,
@@ -1614,12 +1620,41 @@ async fn run_session(
             TickInput {
                 objective,
                 proposed_tool,
-                system_prompt,
-                allowed_tools: combined_allowed_tools,
+                system_prompt: system_prompt.clone(),
+                allowed_tools: combined_allowed_tools.clone(),
             },
         )
-        .instrument(agent_span)
+        .instrument(agent_span.clone())
         .await;
+
+    // Continue ticking if the agent executed tools and needs to call the LLM
+    // again with tool results (mode=Execute means tools ran, needs continuation).
+    for iteration in 1..MAX_AGENT_ITERATIONS {
+        match &tick_result {
+            Ok(tick) if tick.mode == OperatingMode::Execute => {
+                tracing::info!(
+                    iteration,
+                    mode = ?tick.mode,
+                    "Agent loop: continuing after tool execution"
+                );
+                tick_result = state
+                    .runtime
+                    .tick_on_branch(
+                        &session_id,
+                        &branch,
+                        TickInput {
+                            objective: String::new(), // continuation — no new objective
+                            proposed_tool: None,
+                            system_prompt: system_prompt.clone(),
+                            allowed_tools: combined_allowed_tools.clone(),
+                        },
+                    )
+                    .instrument(agent_span.clone())
+                    .await;
+            }
+            _ => break, // Done, error, or non-Execute mode
+        }
+    }
 
     // Always unmark after tick completes (success or error) to avoid leaking the
     // ephemeral registration across future requests on the same session.
