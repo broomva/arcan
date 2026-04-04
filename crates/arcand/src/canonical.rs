@@ -756,7 +756,11 @@ pub fn create_canonical_router_with_skills(
 // ─── Identity → PolicySet mapping ────────────────────────────────────────────
 
 /// Capability strings for the free tier (sandboxed read-only shell).
+///
+/// Includes fs:read for file tools (read_file, glob, grep, list_dir).
+/// Does NOT include fs:write or exec:cmd:* beyond safe read commands.
 const FREE_TIER_CAPS: &[&str] = &[
+    "fs:read:**",
     "exec:cmd:cat",
     "exec:cmd:ls",
     "exec:cmd:grep",
@@ -974,7 +978,18 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<aios_protocol::SessionManifest>, (StatusCode, Json<serde_json::Value>)> {
     let owner = request.owner.unwrap_or_else(|| "arcan".to_owned());
-    let policy = request.policy.unwrap_or_default();
+    // When no policy is provided, use the local development policy (full access)
+    // rather than the restrictive default (fs:read:/session/** only).
+    // Authenticated sessions get their policy from identity claims.
+    let policy = request.policy.unwrap_or_else(|| {
+        if state.anima_secret.is_some() {
+            // Production: restrictive default (session sandbox only)
+            PolicySet::default()
+        } else {
+            // Local development (no auth): permissive — full filesystem + shell
+            caps(MEMBER_CAPS)
+        }
+    });
     let routing = request.model_routing.unwrap_or_default();
     let manifest = if let Some(session_id) = request.session_id {
         state
