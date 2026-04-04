@@ -1374,7 +1374,11 @@ pub fn run_shell(
 
     // --- REPL loop ---
     loop {
-        eprint!("arcan> ");
+        // Drain any input that was buffered while post-turn processing ran.
+        // This prevents queued Enter presses from producing empty prompts.
+        while let Ok(_stale) = input_rx.try_recv() {}
+
+        eprint!("\narcan> ");
         std::io::stderr().flush().ok();
 
         let Ok(Some(line)) = input_rx.recv() else {
@@ -1600,12 +1604,23 @@ pub fn run_shell(
                     homeostatic_state.eval.inline_eval_count += 1;
                 }
 
-                // Extract and save key facts from this turn to persistent memory.
-                extract_and_save_memories(&messages, &memory_dir);
-                // Regenerate MEMORY.md index after memory extraction (BRO-419)
-                crate::prompt::write_memory_index(&memory_dir);
+                // --- Post-turn bookkeeping (background) ---
+                // Run memory extraction, journal writes, and autonomic queries
+                // in a background thread so the prompt returns immediately.
+                {
+                    let messages_snapshot = messages.clone();
+                    let memory_dir_bg = memory_dir.clone();
 
-                // --- BRO-385: Write session turn summary to workspace journal ---
+                    std::thread::spawn(move || {
+                        // Extract and save key facts to persistent memory.
+                        extract_and_save_memories(&messages_snapshot, &memory_dir_bg);
+                        crate::prompt::write_memory_index(&memory_dir_bg);
+                    });
+                }
+
+                // Workspace journal + autonomic stay synchronous (they use
+                // non-Clone types like SeqCounter). These are fast enough
+                // not to cause noticeable delay.
                 if let Some(ref wj) = workspace_journal {
                     let truncated: String = text.chars().take(200).collect();
                     let summary_content = if truncated.len() < text.len() {
@@ -1631,8 +1646,6 @@ pub fn run_shell(
                         ),
                     );
                 }
-
-                // --- Refresh Autonomic economic mode (BRO-365) ---
                 if resolved.autonomic_url.is_some() {
                     cmd_ctx.economic_mode = resolved
                         .autonomic_url
