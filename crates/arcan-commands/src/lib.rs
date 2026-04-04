@@ -107,6 +107,10 @@ pub struct CommandContext {
     pub context_ruling: Option<String>,
     /// Context window size in tokens (from provider).
     pub context_window: Option<usize>,
+    /// Identity tier label (e.g. "pro", "free", "anonymous").
+    pub identity_tier: Option<String>,
+    /// Identity subject (e.g. "user@example.com").
+    pub identity_subject: Option<String>,
 }
 
 /// Permission mode governing tool approval in the shell.

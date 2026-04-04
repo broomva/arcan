@@ -44,6 +44,44 @@ impl SystemPrompt {
     }
 }
 
+/// Identity information for prompt injection.
+///
+/// When provided to [`build_system_prompt()`], an identity block is included
+/// in the cacheable (stable) section of the system prompt.
+#[derive(Debug, Clone)]
+pub struct PromptIdentity {
+    /// Tier label (e.g. "pro", "free", "anonymous").
+    pub tier: String,
+    /// Subject identifier (e.g. "user@example.com"). `None` for anonymous.
+    pub subject: Option<String>,
+}
+
+/// Build an identity/persona block for the system prompt.
+///
+/// Matches the daemon's `AgentIdentityProvider::persona_block()` pattern
+/// from `arcand/src/canonical.rs`.
+pub fn build_identity_section(identity: Option<&PromptIdentity>) -> String {
+    match identity {
+        Some(id) => {
+            let subject_line = id
+                .subject
+                .as_deref()
+                .map(|s| format!("\n**Subject**: {s}"))
+                .unwrap_or_default();
+            format!(
+                "## Identity\n\
+                 **Agent**: arcan shell\n\
+                 **Tier**: {}{}",
+                id.tier, subject_line
+            )
+        }
+        None => "## Identity\n\
+             **Agent**: arcan shell\n\
+             **Tier**: anonymous local agent"
+            .to_string(),
+    }
+}
+
 /// Build the complete system prompt from all available context sources.
 ///
 /// Returns a [`SystemPrompt`] with cacheable (stable) and dynamic (per-turn)
@@ -57,11 +95,40 @@ pub fn build_system_prompt(
     skill_catalog: Option<&str>,
     claude_md_content: Option<&str>,
 ) -> SystemPrompt {
+    build_system_prompt_with_identity(
+        workspace,
+        provider_name,
+        model_name,
+        memory_dir,
+        workspace_context,
+        skill_catalog,
+        claude_md_content,
+        None,
+    )
+}
+
+/// Build the complete system prompt with optional identity injection.
+///
+/// Same as [`build_system_prompt()`] but accepts a [`PromptIdentity`] for
+/// persona injection into the cacheable section.
+pub fn build_system_prompt_with_identity(
+    workspace: &Path,
+    provider_name: &str,
+    model_name: &str,
+    memory_dir: &Path,
+    workspace_context: Option<&str>,
+    skill_catalog: Option<&str>,
+    claude_md_content: Option<&str>,
+    identity: Option<&PromptIdentity>,
+) -> SystemPrompt {
     // --- CACHEABLE (stable across turns) ---
     let mut cacheable_sections = Vec::new();
 
     // 1. Role definition
     cacheable_sections.push(build_role_section());
+
+    // 1b. Identity/persona block (BRO-367)
+    cacheable_sections.push(build_identity_section(identity));
 
     // 2. Environment info
     cacheable_sections.push(build_environment_section(
@@ -889,6 +956,18 @@ mod tests {
                 Option<&str>,
                 Option<&str>,
             ) -> SystemPrompt;
+        let _ = build_system_prompt_with_identity
+            as fn(
+                &Path,
+                &str,
+                &str,
+                &Path,
+                Option<&str>,
+                Option<&str>,
+                Option<&str>,
+                Option<&PromptIdentity>,
+            ) -> SystemPrompt;
+        let _ = build_identity_section as fn(Option<&PromptIdentity>) -> String;
         let _ = build_git_section as fn(&Path) -> Option<String>;
         let _ = load_project_instructions as fn(&Path) -> Option<String>;
         let _ = build_environment_section as fn(&Path, &str, &str) -> String;
@@ -898,6 +977,85 @@ mod tests {
         let _ = build_bare_prompt as fn(&Path, &str, &str) -> String;
         let _ = generate_memory_index as fn(&Path) -> String;
         let _ = write_memory_index as fn(&Path);
+    }
+
+    // ── BRO-367: Identity section tests ──
+
+    #[test]
+    fn test_identity_section_with_full_identity() {
+        let id = PromptIdentity {
+            tier: "pro".to_string(),
+            subject: Some("user@example.com".to_string()),
+        };
+        let section = build_identity_section(Some(&id));
+        assert!(section.contains("## Identity"));
+        assert!(section.contains("**Agent**: arcan shell"));
+        assert!(section.contains("**Tier**: pro"));
+        assert!(section.contains("**Subject**: user@example.com"));
+    }
+
+    #[test]
+    fn test_identity_section_without_subject() {
+        let id = PromptIdentity {
+            tier: "free".to_string(),
+            subject: None,
+        };
+        let section = build_identity_section(Some(&id));
+        assert!(section.contains("**Tier**: free"));
+        assert!(!section.contains("**Subject**"));
+    }
+
+    #[test]
+    fn test_identity_section_anonymous() {
+        let section = build_identity_section(None);
+        assert!(section.contains("## Identity"));
+        assert!(section.contains("anonymous local agent"));
+    }
+
+    #[test]
+    fn test_system_prompt_with_identity_includes_block() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+
+        let id = PromptIdentity {
+            tier: "enterprise".to_string(),
+            subject: Some("admin@corp.com".to_string()),
+        };
+        let sp = build_system_prompt_with_identity(
+            workspace,
+            "anthropic",
+            "claude-sonnet",
+            &memory_dir,
+            None,
+            None,
+            None,
+            Some(&id),
+        );
+        let combined = sp.combined();
+        assert!(combined.contains("## Identity"), "missing identity section");
+        assert!(
+            combined.contains("**Tier**: enterprise"),
+            "missing tier in identity"
+        );
+        assert!(
+            combined.contains("**Subject**: admin@corp.com"),
+            "missing subject in identity"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_without_identity_shows_anonymous() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path();
+        let memory_dir = workspace.join(".arcan/memory");
+
+        let sp = build_system_prompt(workspace, "mock", "mock", &memory_dir, None, None, None);
+        let combined = sp.combined();
+        assert!(
+            combined.contains("anonymous local agent"),
+            "should show anonymous when no identity"
+        );
     }
 
     // ── BRO-419: MEMORY.md index tests ──

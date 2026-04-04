@@ -63,6 +63,13 @@ impl Command for StatusCommand {
             None => "  Workspace: (not configured)".to_string(),
         };
 
+        // Identity line (BRO-370)
+        let identity_line = match (&ctx.identity_tier, &ctx.identity_subject) {
+            (Some(tier), Some(subject)) => format!("  Identity: {tier} ({subject})"),
+            (Some(tier), None) => format!("  Identity: {tier}"),
+            _ => "  Identity: anonymous local agent".to_string(),
+        };
+
         let output = format!(
             "Session status:\n\
              \n  Provider: {}\
@@ -75,6 +82,7 @@ impl Command for StatusCommand {
              \n  Cost:     ${:.4}\
              \n{safety_line}\
              \n{economic_line}\
+             \n{identity_line}\
              \n{workspace_line}",
             ctx.provider_name,
             ctx.model_name,
@@ -177,6 +185,34 @@ mod tests {
                 assert!(text.contains("$1.25"));
                 assert!(text.contains("$10.00 budget"));
                 assert!(!text.contains("Sovereign"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_shows_identity_with_subject() {
+        let cmd = StatusCommand;
+        let mut ctx = CommandContext {
+            identity_tier: Some("pro".to_string()),
+            identity_subject: Some("user@example.com".to_string()),
+            ..Default::default()
+        };
+        match cmd.execute("", &mut ctx) {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Identity: pro (user@example.com)"));
+            }
+            other => panic!("expected Output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_shows_anonymous_identity() {
+        let cmd = StatusCommand;
+        let mut ctx = CommandContext::default();
+        match cmd.execute("", &mut ctx) {
+            CommandResult::Output(text) => {
+                assert!(text.contains("Identity: anonymous local agent"));
             }
             other => panic!("expected Output, got {other:?}"),
         }

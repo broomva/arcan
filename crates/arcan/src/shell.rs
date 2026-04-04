@@ -1257,8 +1257,17 @@ pub fn run_shell(
             .as_ref()
             .map(|_| format!("{} (shared)", workspace_path.display())),
         context_window: Some(context_window),
+        // BRO-370: Identity in CommandContext
+        identity_tier: identity.as_ref().map(|id| id.tier.to_string()),
+        identity_subject: identity.as_ref().and_then(|id| id.subject.clone()),
         ..Default::default()
     };
+
+    // BRO-367: Build PromptIdentity for system prompt injection
+    let prompt_identity = identity.as_ref().map(|id| crate::prompt::PromptIdentity {
+        tier: id.tier.to_string(),
+        subject: id.subject.clone(),
+    });
 
     // --- Generate MEMORY.md index (BRO-419) ---
     crate::prompt::write_memory_index(&memory_dir);
@@ -1282,7 +1291,7 @@ pub fn run_shell(
             )
         });
 
-        let system_prompt_struct = crate::prompt::build_system_prompt(
+        let system_prompt_struct = crate::prompt::build_system_prompt_with_identity(
             &cmd_ctx.workspace,
             &provider_name,
             &model_name,
@@ -1290,6 +1299,7 @@ pub fn run_shell(
             workspace_context.as_deref(),
             skill_catalog_text.as_deref(),
             claude_md.as_deref(),
+            prompt_identity.as_ref(),
         );
         // Populate context token estimates for /context command
         cmd_ctx.project_instructions_tokens = claude_md.as_deref().map_or(0, |s| s.len() / 4);
