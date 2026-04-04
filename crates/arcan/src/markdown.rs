@@ -228,8 +228,10 @@ fn find_closing(chars: &[char], start: usize, delim: [char; 2]) -> Option<usize>
 fn find_single_closing(chars: &[char], start: usize, delim: char) -> Option<usize> {
     chars
         .iter()
-        .position(|&c| c == delim)
-        .filter(|&p| p >= start)
+        .enumerate()
+        .skip(start)
+        .find(|&(_, &c)| c == delim)
+        .map(|(i, _)| i)
 }
 
 #[cfg(test)]
