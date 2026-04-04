@@ -1404,16 +1404,9 @@ pub fn run_shell(
     eprintln!();
 
     // --- Phase 8: Vigil session span (BRO-372, BRO-373) ---
-    // Wrap the entire REPL session in a tracing span for observability.
-    // If no OTLP endpoint is configured, these are no-op structured log entries.
-    let _session_span = tracing::info_span!(
-        "arcan_shell_session",
-        session_id = %lago_session_id,
-        provider = %provider_name,
-        model = %model_name,
-        identity_tier = identity.as_ref().map(|id| id.tier.to_string()).unwrap_or_else(|| "none".to_string()),
-    )
-    .entered();
+    // Uses Vigil's agent_span for proper GenAI semantic conventions.
+    let _session_span =
+        life_vigil::spans::agent_span(lago_session_id.as_str(), "arcan-shell").entered();
 
     // --- Message queue: stdin reader thread ---
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Option<String>>();
@@ -1915,14 +1908,11 @@ fn run_agent_loop(
             state: state.clone(),
         };
 
-        // Phase 8: Vigil span for provider call (BRO-372)
-        let _provider_span = tracing::info_span!(
-            "provider_call",
-            provider = %cmd_ctx.provider_name,
-            model = %cmd_ctx.model_name,
-            iteration = iteration,
-        )
-        .entered();
+        // Phase 8: Vigil span for provider call (BRO-372, BRO-373)
+        // Uses Vigil's chat_span with GenAI semantic conventions
+        let provider_span =
+            life_vigil::spans::chat_span(&cmd_ctx.model_name, &cmd_ctx.provider_name, None, None);
+        let _provider_guard = provider_span.enter();
 
         let spinner = crate::spinner::ShellSpinner::start();
         let spinner_state = Arc::clone(&spinner.state);
@@ -2014,7 +2004,7 @@ fn run_agent_loop(
         // Flush any remaining buffered markdown (partial final line).
         md_renderer.borrow_mut().flush();
 
-        drop(_provider_span);
+        drop(_provider_guard);
 
         // Finish spinner with cost info
         let turn_cost = if let Some(usage) = &turn.usage {
