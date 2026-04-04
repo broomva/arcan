@@ -345,6 +345,44 @@ fn put_session_sync(journal: &dyn Journal, session: LagoSession) {
     }
 }
 
+/// Read recent peer activity from Spaces #agent-logs channel (BRO-369).
+#[cfg(feature = "spaces")]
+fn read_peer_context_from_spaces(resolved: &crate::config::ResolvedConfig) -> Option<String> {
+    let port: Arc<dyn arcan_spaces::SpacesPort> = match resolved.spaces_backend.as_str() {
+        "spacetimedb" | "mainnet" => {
+            let config = arcan_spaces::SpacetimeDbConfig::resolve(
+                resolved.spaces_host.as_deref(),
+                resolved.spaces_database_id.as_deref(),
+                resolved.spaces_token.as_deref(),
+            )
+            .ok()?;
+            Arc::new(arcan_spaces::SpacetimeDbClient::new(config))
+        }
+        "mock" => Arc::new(arcan_spaces::MockSpacesClient::default_hub()),
+        _ => return None,
+    };
+
+    let channels = port.list_channels().ok()?;
+    let agent_logs = channels
+        .iter()
+        .find(|c| c.name == "agent-logs" || c.name == "#agent-logs")?;
+
+    let messages = port.read_messages(agent_logs.id, 5, None).ok()?;
+    if messages.is_empty() {
+        return None;
+    }
+
+    let formatted: Vec<String> = messages
+        .iter()
+        .map(|m| {
+            let sender = m.sender_name.as_deref().unwrap_or("agent");
+            format!("[{}] {}: {}", m.timestamp, sender, m.content)
+        })
+        .collect();
+
+    arcan_core::prompt::build_peer_context_section(&formatted)
+}
+
 /// List all sessions from the journal (sync wrapper).
 fn list_sessions_sync(journal: &dyn Journal) -> Vec<LagoSession> {
     let fut = journal.list_sessions();
@@ -1262,7 +1300,22 @@ pub fn run_shell(
             crate::prompt::build_memory_section(&memory_dir).map_or(0, |s| s.len() / 4);
         cmd_ctx.workspace_context_tokens = workspace_context.as_deref().map_or(0, |s| s.len() / 4);
 
-        system_prompt_struct.combined()
+        // BRO-369: Inject Spaces peer context if connected
+        #[cfg(feature = "spaces")]
+        let peer_section = if spaces_connected {
+            read_peer_context_from_spaces(resolved)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "spaces"))]
+        let peer_section: Option<String> = None;
+
+        let mut combined = system_prompt_struct.combined();
+        if let Some(ref peers) = peer_section {
+            combined.push_str("\n\n---\n\n");
+            combined.push_str(peers);
+        }
+        combined
     };
 
     // --- Replay or initialize message history (BRO-358) ---

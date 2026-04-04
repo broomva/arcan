@@ -565,6 +565,21 @@ pub fn build_guidelines_section() -> String {
         .to_string()
 }
 
+/// Build a "Peer Activity" section from Spaces agent-logs messages (BRO-369).
+///
+/// Call this separately and append to the `SystemPrompt.dynamic` section
+/// when Spaces is connected and has recent peer messages.
+pub fn build_peer_context_section(messages: &[String]) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+    let mut section = String::from("# Peer Activity\n\nRecent messages from other agents:\n\n");
+    for msg in messages.iter().take(10) {
+        section.push_str(&format!("- {msg}\n"));
+    }
+    Some(section)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
