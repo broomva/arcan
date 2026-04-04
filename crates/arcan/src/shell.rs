@@ -1601,25 +1601,10 @@ pub fn run_shell(
             Ok(text) => {
                 if !text.is_empty() {
                     messages.push(ChatMessage::assistant(&text));
-                    // Persist assistant response (BRO-357)
-                    append_event_sync(
-                        journal.as_ref(),
-                        make_message_event(
-                            &lago_session_id,
-                            &branch_id,
-                            &seq_counter,
-                            "assistant",
-                            &text,
-                            resolved.model.as_deref(),
-                        ),
-                    );
                 }
-                // Update message count after loop completes
+                // Update in-memory state immediately (instant).
                 cmd_ctx.message_count = messages.len();
-                // Reset error streak on successful response
                 homeostatic_state.operational.error_streak = 0;
-
-                // Feed quality signal into Autonomic homeostatic state
                 if !text.is_empty() {
                     let prev = homeostatic_state.eval.aggregate_quality_score;
                     let signal = if text.len() > 20 { 0.85 } else { 0.5 };
@@ -1629,53 +1614,67 @@ pub fn run_shell(
                     homeostatic_state.eval.inline_eval_count += 1;
                 }
 
-                // --- Post-turn bookkeeping (background) ---
-                // Run memory extraction, journal writes, and autonomic queries
-                // in a background thread so the prompt returns immediately.
+                // --- ALL persistence/bookkeeping in background ---
+                // Nothing between "Done" and the next prompt should block.
                 {
+                    let text_bg = text.clone();
+                    let journal_bg = journal.clone();
+                    let lago_sid_bg = lago_session_id.clone();
+                    let branch_bg = branch_id.clone();
+                    let seq_ref = &seq_counter;
+                    let model_bg = resolved.model.clone();
                     let messages_snapshot = messages.clone();
                     let memory_dir_bg = memory_dir.clone();
+                    let wj_bg = workspace_journal.clone();
+                    let ws_session_bg = workspace_session_id.clone();
+                    let ws_seq_ref = &workspace_seq;
+                    let turns = cmd_ctx.session_turns;
+
+                    // Build events synchronously (uses SeqCounter atomically) but
+                    // append them in background.
+                    let assistant_event = if !text_bg.is_empty() {
+                        Some(make_message_event(
+                            &lago_sid_bg,
+                            &branch_bg,
+                            seq_ref,
+                            "assistant",
+                            &text_bg,
+                            model_bg.as_deref(),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    let workspace_event = wj_bg.as_ref().map(|_| {
+                        let truncated: String = text_bg.chars().take(200).collect();
+                        let summary = if truncated.len() < text_bg.len() {
+                            format!("Session {} turn {}: {truncated}...", lago_sid_bg, turns)
+                        } else {
+                            format!("Session {} turn {}: {}", lago_sid_bg, turns, text_bg)
+                        };
+                        make_message_event(
+                            &ws_session_bg,
+                            &branch_bg,
+                            ws_seq_ref,
+                            "system",
+                            &summary,
+                            None,
+                        )
+                    });
 
                     std::thread::spawn(move || {
-                        // Extract and save key facts to persistent memory.
+                        // 1. Persist assistant message to session journal.
+                        if let Some(event) = assistant_event {
+                            append_event_sync(journal_bg.as_ref(), event);
+                        }
+                        // 2. Write workspace journal summary.
+                        if let (Some(wj), Some(event)) = (&wj_bg, workspace_event) {
+                            append_event_sync(wj.as_ref(), event);
+                        }
+                        // 3. Extract memories + regenerate index.
                         extract_and_save_memories(&messages_snapshot, &memory_dir_bg);
                         crate::prompt::write_memory_index(&memory_dir_bg);
                     });
-                }
-
-                // Workspace journal + autonomic stay synchronous (they use
-                // non-Clone types like SeqCounter). These are fast enough
-                // not to cause noticeable delay.
-                if let Some(ref wj) = workspace_journal {
-                    let truncated: String = text.chars().take(200).collect();
-                    let summary_content = if truncated.len() < text.len() {
-                        format!(
-                            "Session {} turn {}: {truncated}...",
-                            lago_session_id, cmd_ctx.session_turns,
-                        )
-                    } else {
-                        format!(
-                            "Session {} turn {}: {}",
-                            lago_session_id, cmd_ctx.session_turns, text
-                        )
-                    };
-                    append_event_sync(
-                        wj.as_ref(),
-                        make_message_event(
-                            &workspace_session_id,
-                            &branch_id,
-                            &workspace_seq,
-                            "system",
-                            &summary_content,
-                            None,
-                        ),
-                    );
-                }
-                if resolved.autonomic_url.is_some() {
-                    cmd_ctx.economic_mode = resolved
-                        .autonomic_url
-                        .as_deref()
-                        .and_then(query_autonomic_mode);
                 }
             }
             Err(e) => {
