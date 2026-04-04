@@ -57,6 +57,15 @@ pub struct AppState {
 
     /// Last known provider name (from RunStarted events).
     pub provider: Option<String>,
+
+    /// Context pressure percentage (0–100), updated after each run.
+    pub context_pressure_pct: f64,
+
+    /// Autonomic ruling label (e.g., "Breathe", "Compress"), updated after each run.
+    pub autonomic_ruling: Option<String>,
+
+    /// Session cost remaining in USD, updated after each run.
+    pub cost_remaining: Option<f64>,
 }
 
 impl Default for AppState {
@@ -80,6 +89,9 @@ impl AppState {
             connection_status: ConnectionStatus::Connecting,
             last_error: None,
             provider: None,
+            context_pressure_pct: 0.0,
+            autonomic_ruling: None,
+            cost_remaining: None,
         }
     }
 
@@ -98,6 +110,9 @@ impl AppState {
         self.scroll = super::scroll::ScrollState::new();
         self.last_error = None;
         self.provider = None;
+        self.context_pressure_pct = 0.0;
+        self.autonomic_ruling = None;
+        self.cost_remaining = None;
     }
 
     /// Set an error flash that will be displayed in the status bar.

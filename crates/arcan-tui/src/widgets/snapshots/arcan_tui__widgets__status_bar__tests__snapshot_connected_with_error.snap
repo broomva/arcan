@@ -1,6 +1,5 @@
 ---
 source: crates/arcan-tui/src/widgets/status_bar.rs
-assertion_line: 113
 expression: output
 ---
- ● ? │ ⎇ main │ idle │ sess-003 │ ⚠ timeout
+ ● ? │ ⎇ main │ 0% │ — │ — │ idle │ sess-003 │ ⚠ timeout

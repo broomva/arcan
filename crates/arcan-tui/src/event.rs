@@ -31,6 +31,12 @@ pub enum TuiEvent {
     },
     /// A background task wants to display a system alert.
     SystemAlert(String),
+    /// Status bar data fetched from daemon after a run completes.
+    StatusBarUpdate {
+        context_pressure_pct: Option<f64>,
+        autonomic_ruling: Option<String>,
+        cost_remaining: Option<f64>,
+    },
 }
 
 /// Spawn background producers that merge terminal input, network events,

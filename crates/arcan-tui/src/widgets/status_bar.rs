@@ -36,11 +36,29 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
         .map(|s| if s.len() > 8 { &s[..8] } else { s })
         .unwrap_or("--");
 
+    // Context pressure percentage
+    let ctx_str = format!("{:.0}%", state.context_pressure_pct);
+
+    // Autonomic ruling (short)
+    let ruling_str = state.autonomic_ruling.as_deref().unwrap_or("\u{2014}"); // — (em dash)
+
+    // Cost display
+    let cost_str = state
+        .cost_remaining
+        .map(|c| format!("${c:.2}"))
+        .unwrap_or_else(|| "\u{2014}".to_string());
+
     let mut spans = vec![
         Span::styled(format!(" {conn_dot} "), conn_style),
         Span::styled(provider_str.to_string(), theme.status_bar_bg),
         Span::styled(" \u{2502} ", theme.status_bar_bg), // │
         Span::styled(format!("\u{2387} {branch_str}"), theme.status_bar_bg), // ⎇
+        Span::styled(" \u{2502} ", theme.status_bar_bg),
+        Span::styled(ctx_str, theme.status_bar_bg),
+        Span::styled(" \u{2502} ", theme.status_bar_bg),
+        Span::styled(ruling_str.to_string(), theme.status_bar_bg),
+        Span::styled(" \u{2502} ", theme.status_bar_bg),
+        Span::styled(cost_str, theme.status_bar_bg),
         Span::styled(" \u{2502} ", theme.status_bar_bg),
         Span::styled(mode_str.to_string(), theme.status_bar_bg),
         Span::styled(" \u{2502} ", theme.status_bar_bg),

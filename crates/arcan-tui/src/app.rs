@@ -118,7 +118,12 @@ impl App {
                 }
                 TuiEvent::Network(agent_event) => {
                     self.state.connection_status = ConnectionStatus::Connected;
+                    let was_busy = self.state.is_busy;
                     self.state.apply_event(agent_event);
+                    // When a run finishes, fetch status bar data from daemon
+                    if was_busy && !self.state.is_busy {
+                        self.refresh_status_bar();
+                    }
                 }
                 TuiEvent::Tick => {
                     self.state
@@ -152,6 +157,21 @@ impl App {
                 },
                 TuiEvent::SystemAlert(msg) => {
                     self.push_system_alert(msg);
+                }
+                TuiEvent::StatusBarUpdate {
+                    context_pressure_pct,
+                    autonomic_ruling,
+                    cost_remaining,
+                } => {
+                    if let Some(pct) = context_pressure_pct {
+                        self.state.context_pressure_pct = pct;
+                    }
+                    if let Some(ruling) = autonomic_ruling {
+                        self.state.autonomic_ruling = Some(ruling);
+                    }
+                    if let Some(cost) = cost_remaining {
+                        self.state.cost_remaining = Some(cost);
+                    }
                 }
                 _ => {}
             }
@@ -601,6 +621,35 @@ impl App {
                 self.push_system_alert(format!("Failed to query provider from daemon: {e}"));
             }
         }
+    }
+
+    /// Fire-and-forget: fetch context/autonomic/cost from daemon to update status bar.
+    fn refresh_status_bar(&self) {
+        let client = self.client.clone();
+        let tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            // Fetch all three in parallel
+            let (ctx_result, cost_result) = tokio::join!(client.get_context(), client.get_cost(),);
+
+            if let Ok(ctx) = ctx_result {
+                let _ = tx
+                    .send(TuiEvent::StatusBarUpdate {
+                        context_pressure_pct: Some(ctx.pressure_percent),
+                        autonomic_ruling: Some(ctx.ruling),
+                        cost_remaining: None,
+                    })
+                    .await;
+            }
+            if let Ok(cost) = cost_result {
+                let _ = tx
+                    .send(TuiEvent::StatusBarUpdate {
+                        context_pressure_pct: None,
+                        autonomic_ruling: None,
+                        cost_remaining: Some(cost.cost_remaining_usd),
+                    })
+                    .await;
+            }
+        });
     }
 
     async fn show_autonomic(&mut self) {
