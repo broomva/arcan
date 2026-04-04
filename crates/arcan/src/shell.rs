@@ -1372,6 +1372,37 @@ pub fn run_shell(
         }
     });
 
+    // --- Dedicated writer thread for non-blocking persistence ---
+    // All journal writes, memory extraction, and MEMORY.md regeneration
+    // go through this channel. Sequential, ordered, non-blocking to the REPL.
+    enum WriteTask {
+        Event {
+            journal: Arc<dyn Journal>,
+            event: EventEnvelope,
+        },
+        ExtractMemories {
+            messages: Vec<ChatMessage>,
+            memory_dir: std::path::PathBuf,
+        },
+    }
+    let (writer_tx, writer_rx) = std::sync::mpsc::channel::<WriteTask>();
+    std::thread::spawn(move || {
+        for task in writer_rx {
+            match task {
+                WriteTask::Event { journal, event } => {
+                    append_event_sync(journal.as_ref(), event);
+                }
+                WriteTask::ExtractMemories {
+                    messages,
+                    memory_dir,
+                } => {
+                    extract_and_save_memories(&messages, &memory_dir);
+                    crate::prompt::write_memory_index(&memory_dir);
+                }
+            }
+        }
+    });
+
     // --- REPL loop ---
     loop {
         // Drain any input that was buffered while post-turn processing ran.
@@ -1562,10 +1593,10 @@ pub fn run_shell(
         cmd_ctx.session_turns += 1;
         cmd_ctx.message_count = messages.len();
 
-        // Persist user message (BRO-357)
-        append_event_sync(
-            journal.as_ref(),
-            make_message_event(
+        // Persist user message (non-blocking via writer thread)
+        let _ = writer_tx.send(WriteTask::Event {
+            journal: journal.clone(),
+            event: make_message_event(
                 &lago_session_id,
                 &branch_id,
                 &seq_counter,
@@ -1573,7 +1604,7 @@ pub fn run_shell(
                 input,
                 None,
             ),
-        );
+        });
 
         let emb_ctx = match (&embedding_provider, &workspace_journal) {
             (Some(ep), Some(wj)) => Some(EmbeddingContext {
@@ -1614,68 +1645,49 @@ pub fn run_shell(
                     homeostatic_state.eval.inline_eval_count += 1;
                 }
 
-                // --- ALL persistence/bookkeeping in background ---
-                // Nothing between "Done" and the next prompt should block.
-                {
-                    let text_bg = text.clone();
-                    let journal_bg = journal.clone();
-                    let lago_sid_bg = lago_session_id.clone();
-                    let branch_bg = branch_id.clone();
-                    let seq_ref = &seq_counter;
-                    let model_bg = resolved.model.clone();
-                    let messages_snapshot = messages.clone();
-                    let memory_dir_bg = memory_dir.clone();
-                    let wj_bg = workspace_journal.clone();
-                    let ws_session_bg = workspace_session_id.clone();
-                    let ws_seq_ref = &workspace_seq;
-                    let turns = cmd_ctx.session_turns;
-
-                    // Build events synchronously (uses SeqCounter atomically) but
-                    // append them in background.
-                    let assistant_event = if !text_bg.is_empty() {
-                        Some(make_message_event(
-                            &lago_sid_bg,
-                            &branch_bg,
-                            seq_ref,
+                // --- Persistence via writer thread (non-blocking) ---
+                if !text.is_empty() {
+                    let _ = writer_tx.send(WriteTask::Event {
+                        journal: journal.clone(),
+                        event: make_message_event(
+                            &lago_session_id,
+                            &branch_id,
+                            &seq_counter,
                             "assistant",
-                            &text_bg,
-                            model_bg.as_deref(),
-                        ))
+                            &text,
+                            resolved.model.as_deref(),
+                        ),
+                    });
+                }
+                if let Some(ref wj) = workspace_journal {
+                    let truncated: String = text.chars().take(200).collect();
+                    let summary = if truncated.len() < text.len() {
+                        format!(
+                            "Session {} turn {}: {truncated}...",
+                            lago_session_id, cmd_ctx.session_turns
+                        )
                     } else {
-                        None
+                        format!(
+                            "Session {} turn {}: {}",
+                            lago_session_id, cmd_ctx.session_turns, text
+                        )
                     };
-
-                    let workspace_event = wj_bg.as_ref().map(|_| {
-                        let truncated: String = text_bg.chars().take(200).collect();
-                        let summary = if truncated.len() < text_bg.len() {
-                            format!("Session {} turn {}: {truncated}...", lago_sid_bg, turns)
-                        } else {
-                            format!("Session {} turn {}: {}", lago_sid_bg, turns, text_bg)
-                        };
-                        make_message_event(
-                            &ws_session_bg,
-                            &branch_bg,
-                            ws_seq_ref,
+                    let _ = writer_tx.send(WriteTask::Event {
+                        journal: wj.clone(),
+                        event: make_message_event(
+                            &workspace_session_id,
+                            &branch_id,
+                            &workspace_seq,
                             "system",
                             &summary,
                             None,
-                        )
-                    });
-
-                    std::thread::spawn(move || {
-                        // 1. Persist assistant message to session journal.
-                        if let Some(event) = assistant_event {
-                            append_event_sync(journal_bg.as_ref(), event);
-                        }
-                        // 2. Write workspace journal summary.
-                        if let (Some(wj), Some(event)) = (&wj_bg, workspace_event) {
-                            append_event_sync(wj.as_ref(), event);
-                        }
-                        // 3. Extract memories + regenerate index.
-                        extract_and_save_memories(&messages_snapshot, &memory_dir_bg);
-                        crate::prompt::write_memory_index(&memory_dir_bg);
+                        ),
                     });
                 }
+                let _ = writer_tx.send(WriteTask::ExtractMemories {
+                    messages: messages.clone(),
+                    memory_dir: memory_dir.clone(),
+                });
             }
             Err(e) => {
                 eprintln!("Error: {e}");
