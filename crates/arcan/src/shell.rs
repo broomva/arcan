@@ -940,8 +940,7 @@ pub fn run_shell(
     let context_window = provider
         .context_window()
         .unwrap_or(DEFAULT_CONTEXT_WINDOW as u32) as usize;
-    let mut homeostatic_state =
-        HomeostaticState::for_agent(&lago_session_id_for_journal.to_string());
+    let mut homeostatic_state = HomeostaticState::for_agent("shell");
     homeostatic_state.cognitive.tokens_remaining = context_window as u64;
 
     // --- Tools (same set as run_serve) ---
