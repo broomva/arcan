@@ -268,30 +268,6 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
 // ---------------------------------------------------------------------------
 // Terminal echo suppression (prevents raw keystrokes during agent thinking)
 // ---------------------------------------------------------------------------
-
-/// Suppress terminal echo. Returns the saved termios state to restore later.
-#[cfg(unix)]
-fn suppress_echo() -> Option<nix::sys::termios::Termios> {
-    let stdin = std::io::stdin();
-    let saved = nix::sys::termios::tcgetattr(&stdin).ok()?;
-    let mut modified = saved.clone();
-    modified
-        .local_flags
-        .remove(nix::sys::termios::LocalFlags::ECHO);
-    nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &modified).ok()?;
-    Some(saved)
-}
-
-/// Restore terminal echo from saved termios state.
-#[cfg(unix)]
-fn restore_echo(saved: Option<nix::sys::termios::Termios>) {
-    if let Some(original) = saved {
-        let stdin = std::io::stdin();
-        let _ = nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &original);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Lago journal helpers (BRO-356 / BRO-357)
 // ---------------------------------------------------------------------------
 
