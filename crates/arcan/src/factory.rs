@@ -10,10 +10,40 @@ use std::sync::Arc;
 ///
 /// Delegates to existing provider configs. Parses specs like
 /// `"anthropic"`, `"ollama:llama3.2"`, `"openai:gpt-4o"`, `"mock"`.
+///
+/// Also supports gateway model specs containing `/` (e.g.,
+/// `"anthropic/claude-haiku-4.5"`, `"openai/gpt-4.1-mini"`). These are
+/// routed through an OpenAI-compatible provider using `OPENAI_BASE_URL`
+/// as the gateway endpoint (e.g., Vercel AI Gateway).
 pub struct ArcanProviderFactory;
+
+impl ArcanProviderFactory {
+    /// Build a provider for a gateway model ID (contains `/`).
+    ///
+    /// Uses `OPENAI_BASE_URL` as the gateway endpoint and `OPENAI_API_KEY`
+    /// for auth. The full spec (e.g., `"anthropic/claude-haiku-4.5"`) is
+    /// passed as the model ID.
+    fn build_gateway_model(&self, spec: &str) -> Result<Arc<dyn Provider>, CoreError> {
+        let config = OpenAiConfig::openai_from_resolved(Some(spec), None, None)
+            .map_err(|e| CoreError::Provider(format!("gateway model {spec}: {e}")))?;
+        tracing::info!(
+            model = %config.model,
+            base_url = %config.base_url,
+            "Provider switched to: gateway model"
+        );
+        Ok(Arc::new(OpenAiCompatibleProvider::new(config)))
+    }
+}
 
 impl ProviderFactory for ArcanProviderFactory {
     fn build(&self, spec: &str) -> Result<Arc<dyn Provider>, CoreError> {
+        // Gateway model IDs use "/" (e.g., "anthropic/claude-haiku-4.5",
+        // "openai/gpt-4.1-mini"). Route these through the OpenAI-compatible
+        // provider using OPENAI_BASE_URL as the gateway endpoint.
+        if spec.contains('/') {
+            return self.build_gateway_model(spec);
+        }
+
         let (provider_name, model_override) = match spec.split_once(':') {
             Some((name, model)) => (name, Some(model)),
             None => (spec, None),
@@ -60,6 +90,9 @@ impl ProviderFactory for ArcanProviderFactory {
     }
 
     fn available_providers(&self) -> Vec<String> {
+        // NOTE: gateway models (e.g. "anthropic/claude-haiku-4.5") are not
+        // enumerated here — they're open-ended. The user can pass any
+        // "provider/model" spec and it will be routed via OPENAI_BASE_URL.
         let mut providers = vec![
             "anthropic".to_string(),
             "openai".to_string(),
