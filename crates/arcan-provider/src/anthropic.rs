@@ -94,6 +94,28 @@ impl AnthropicConfig {
     }
 }
 
+/// Check if a key is an OAuth access token (vs. regular API key).
+fn is_oauth_token(key: &str) -> bool {
+    key.starts_with("sk-ant-oat")
+}
+
+/// Apply auth headers to a request builder.
+///
+/// OAuth tokens (`sk-ant-oat01-*`) use `Authorization: Bearer` + the
+/// `anthropic-beta: oauth-2025-04-20` header. Regular API keys use `x-api-key`.
+fn apply_auth(
+    builder: reqwest::blocking::RequestBuilder,
+    key: &str,
+) -> reqwest::blocking::RequestBuilder {
+    if is_oauth_token(key) {
+        builder
+            .header("authorization", format!("Bearer {key}"))
+            .header("anthropic-beta", "oauth-2025-04-20")
+    } else {
+        builder.header("x-api-key", key)
+    }
+}
+
 /// Anthropic Messages API provider implementing the `Provider` trait.
 pub struct AnthropicProvider {
     config: AnthropicConfig,
@@ -280,12 +302,12 @@ impl Provider for AnthropicProvider {
             .auth_header()
             .map_err(|e| CoreError::Provider(format!("credential error: {e}")))?;
 
-        let response = self
+        let request = self
             .client
             .post(&url)
-            .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        let response = apply_auth(request, &api_key)
             .json(&body)
             .send()
             .map_err(|e| CoreError::Provider(format!("streaming request failed: {e}")))?;
@@ -449,12 +471,12 @@ impl Provider for AnthropicProvider {
             .auth_header()
             .map_err(|e| CoreError::Provider(format!("credential error: {e}")))?;
 
-        let response = self
+        let request = self
             .client
             .post(&url)
-            .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        let response = apply_auth(request, &api_key)
             .json(&body)
             .send()
             .map_err(|e| CoreError::Provider(format!("HTTP request failed: {e}")))?;
