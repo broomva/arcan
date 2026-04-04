@@ -1639,11 +1639,6 @@ pub fn run_shell(
             }),
             _ => None,
         };
-        // Suppress terminal echo while agent is working so queued
-        // keystrokes don't visually leak onto the streaming output.
-        #[cfg(unix)]
-        let saved_termios = suppress_echo();
-
         let response_text = run_agent_loop(
             &provider,
             &registry,
@@ -1655,10 +1650,6 @@ pub fn run_shell(
             nous_registry.as_ref(),
             emb_ctx.as_ref(),
         );
-
-        // Restore terminal echo.
-        #[cfg(unix)]
-        restore_echo(saved_termios);
 
         match response_text {
             Ok(text) => {
