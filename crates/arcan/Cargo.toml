@@ -85,7 +85,7 @@ nous-middleware.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 chrono.workspace = true
-nix = { version = "0.31.2", features = ["signal"] }
+nix = { version = "0.31.2", features = ["signal", "term"] }
 fastrand = "2"
 crossterm = "0.29"
 

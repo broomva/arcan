@@ -266,6 +266,33 @@ fn compact_conversation(messages: &mut Vec<ChatMessage>, target: usize) {
 }
 
 // ---------------------------------------------------------------------------
+// Terminal echo suppression (prevents raw keystrokes during agent thinking)
+// ---------------------------------------------------------------------------
+
+/// Suppress terminal echo. Returns the saved termios state to restore later.
+#[cfg(unix)]
+fn suppress_echo() -> Option<nix::sys::termios::Termios> {
+    let stdin = std::io::stdin();
+    let saved = nix::sys::termios::tcgetattr(&stdin).ok()?;
+    let mut modified = saved.clone();
+    modified
+        .local_flags
+        .remove(nix::sys::termios::LocalFlags::ECHO);
+    nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &modified).ok()?;
+    Some(saved)
+}
+
+/// Restore terminal echo from saved termios state.
+#[cfg(unix)]
+fn restore_echo(saved: Option<nix::sys::termios::Termios>) {
+    if let Some(original) = saved {
+        let stdin = std::io::stdin();
+        let _ =
+            nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &original);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lago journal helpers (BRO-356 / BRO-357)
 // ---------------------------------------------------------------------------
 
@@ -1405,10 +1432,6 @@ pub fn run_shell(
 
     // --- REPL loop ---
     loop {
-        // Drain any input that was buffered while post-turn processing ran.
-        // This prevents queued Enter presses from producing empty prompts.
-        while let Ok(_stale) = input_rx.try_recv() {}
-
         eprint!("\narcan> ");
         std::io::stderr().flush().ok();
 
@@ -1616,6 +1639,11 @@ pub fn run_shell(
             }),
             _ => None,
         };
+        // Suppress terminal echo while agent is working so queued
+        // keystrokes don't visually leak onto the streaming output.
+        #[cfg(unix)]
+        let saved_termios = suppress_echo();
+
         let response_text = run_agent_loop(
             &provider,
             &registry,
@@ -1627,6 +1655,10 @@ pub fn run_shell(
             nous_registry.as_ref(),
             emb_ctx.as_ref(),
         );
+
+        // Restore terminal echo.
+        #[cfg(unix)]
+        restore_echo(saved_termios);
 
         match response_text {
             Ok(text) => {
