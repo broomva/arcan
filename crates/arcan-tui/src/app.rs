@@ -423,6 +423,12 @@ impl App {
                 self.state.streaming_text = None;
                 self.state.is_busy = false;
             }
+            Ok(Command::Compact) => {
+                self.show_compact().await;
+            }
+            Ok(Command::Config) => {
+                self.show_config().await;
+            }
             Ok(Command::Help) => {
                 let lines: Vec<String> = COMMANDS
                     .iter()
@@ -435,6 +441,9 @@ impl App {
             }
             Ok(Command::Cost) => {
                 self.show_cost().await;
+            }
+            Ok(Command::Memory) => {
+                self.show_memory();
             }
             Ok(Command::Model(subcmd)) => {
                 self.execute_model_command(subcmd).await;
@@ -455,6 +464,9 @@ impl App {
                 self.show_panels = true;
                 self.state.focus = FocusTarget::StateInspector;
                 self.fetch_state().await;
+            }
+            Ok(Command::Status) => {
+                self.show_status().await;
             }
             Ok(Command::Login { provider, device }) => {
                 self.execute_login(provider, device);
@@ -701,6 +713,175 @@ impl App {
                 self.push_system_alert(format!("Failed to query cost: {e}"));
             }
         }
+    }
+
+    async fn show_compact(&mut self) {
+        // Stub: daemon does not yet expose a /compact POST endpoint.
+        self.push_system_alert(
+            "Compact not yet implemented in daemon. \
+             This command will trigger context compaction once the daemon supports it.",
+        );
+    }
+
+    async fn show_config(&mut self) {
+        let mut lines = Vec::new();
+
+        // Fetch provider info from daemon
+        match self.client.get_provider_info().await {
+            Ok(info) => {
+                lines.push(format!("  provider: {}", info.provider));
+                lines.push(format!("  available: {}", info.available.join(", ")));
+            }
+            Err(e) => {
+                lines.push(format!("  provider: (error: {e})"));
+            }
+        }
+
+        // Get model from daemon
+        match self.client.get_model().await {
+            Ok(model) => lines.push(format!("  model: {model}")),
+            Err(_) => lines.push("  model: (unknown)".to_string()),
+        }
+
+        // Session & connection info
+        lines.push(format!(
+            "  session: {}",
+            self.state.session_id.as_deref().unwrap_or("(none)")
+        ));
+        lines.push(format!("  daemon: {}", self.client.base_url()));
+
+        // Local config
+        let config = crate::config::load_global_config();
+        if let Some(data_dir) = crate::config::global_config_path() {
+            lines.push(format!("  config-file: {}", data_dir.display()));
+        }
+        if let Some(ref p) = config.defaults.provider {
+            lines.push(format!("  config.defaults.provider: {p}"));
+        }
+        if let Some(ref m) = config.defaults.model {
+            lines.push(format!("  config.defaults.model: {m}"));
+        }
+
+        self.push_system_alert(format!("Configuration:\n{}", lines.join("\n")));
+    }
+
+    fn show_memory(&mut self) {
+        let memory_dir = dirs::data_dir()
+            .or_else(dirs::home_dir)
+            .map(|d| d.join(".arcan").join("memory"));
+
+        let Some(dir) = memory_dir else {
+            self.push_system_alert("Memory: could not determine data directory.");
+            return;
+        };
+
+        if !dir.exists() {
+            self.push_system_alert(format!(
+                "Memory: no memory directory found at {}",
+                dir.display()
+            ));
+            return;
+        }
+
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut files: Vec<String> = Vec::new();
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                        let size_str = if size < 1024 {
+                            format!("{size} B")
+                        } else {
+                            format!("{:.1} KB", size as f64 / 1024.0)
+                        };
+                        files.push(format!("  {name:<30} {size_str}"));
+                    }
+                }
+                if files.is_empty() {
+                    self.push_system_alert(format!(
+                        "Memory: directory is empty ({})",
+                        dir.display()
+                    ));
+                } else {
+                    files.sort();
+                    self.push_system_alert(format!(
+                        "Memory files ({}):\n{}",
+                        dir.display(),
+                        files.join("\n")
+                    ));
+                }
+            }
+            Err(e) => {
+                self.push_system_alert(format!(
+                    "Memory: could not read directory {}: {e}",
+                    dir.display()
+                ));
+            }
+        }
+    }
+
+    async fn show_status(&mut self) {
+        let mut lines = Vec::new();
+
+        // Session info
+        lines.push(format!(
+            "  Session: {}",
+            self.state.session_id.as_deref().unwrap_or("(none)")
+        ));
+
+        // Provider/model
+        match self.client.get_model().await {
+            Ok(model) => lines.push(format!("  Provider: {model}")),
+            Err(_) => lines.push("  Provider: (unknown)".to_string()),
+        }
+
+        // Context usage
+        match self.client.get_context().await {
+            Ok(ctx) => {
+                lines.push(format!(
+                    "  Context: {:.1}% ({} / {} tokens)",
+                    ctx.pressure_percent, ctx.tokens_used, ctx.context_window,
+                ));
+                lines.push(format!("  Autonomic ruling: {}", ctx.ruling));
+            }
+            Err(e) => {
+                lines.push(format!("  Context: (error: {e})"));
+            }
+        }
+
+        // Autonomic details
+        match self.client.get_autonomic().await {
+            Ok(info) => {
+                lines.push(format!(
+                    "  Autonomic: {} — quality {:.2}, pressure {:.0}%",
+                    info.ruling,
+                    info.quality_score,
+                    info.pressure * 100.0,
+                ));
+            }
+            Err(_) => {} // Already covered by context ruling
+        }
+
+        // Cost
+        match self.client.get_cost().await {
+            Ok(cost) => {
+                let uptime_min = cost.uptime_seconds / 60;
+                lines.push(format!(
+                    "  Cost: ${:.4} remaining | {} tokens remaining | uptime: {}m",
+                    cost.cost_remaining_usd, cost.tokens_remaining, uptime_min,
+                ));
+            }
+            Err(e) => {
+                lines.push(format!("  Cost: (error: {e})"));
+            }
+        }
+
+        self.push_system_alert(format!("Status:\n{}", lines.join("\n")));
     }
 
     async fn set_provider(&mut self, name: &str) {

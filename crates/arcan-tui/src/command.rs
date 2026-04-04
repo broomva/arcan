@@ -24,6 +24,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/clear",
     },
     CommandInfo {
+        name: "/compact",
+        description: "Force context compaction",
+        usage: "/compact",
+    },
+    CommandInfo {
+        name: "/config",
+        description: "Show current configuration",
+        usage: "/config",
+    },
+    CommandInfo {
         name: "/context",
         description: "Show context window usage",
         usage: "/context",
@@ -49,6 +59,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/logout [openai]",
     },
     CommandInfo {
+        name: "/memory",
+        description: "Show memory files",
+        usage: "/memory",
+    },
+    CommandInfo {
         name: "/model",
         description: "Show or set model",
         usage: "/model [provider[:model]]",
@@ -68,6 +83,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Inspect agent state",
         usage: "/state",
     },
+    CommandInfo {
+        name: "/status",
+        description: "Show session status summary",
+        usage: "/status",
+    },
 ];
 
 /// Filter commands whose name starts with the given prefix.
@@ -85,12 +105,18 @@ pub enum Command {
     Autonomic,
     /// Clear the conversation log.
     Clear,
+    /// Force context compaction.
+    Compact,
+    /// Show current configuration.
+    Config,
     /// Show context window usage.
     Context,
     /// Show session cost and budget.
     Cost,
     /// Show available commands.
     Help,
+    /// Show memory files from .arcan/memory/.
+    Memory,
     /// Model inspection or switching.
     Model(ModelSubcommand),
     /// Submit an approval decision.
@@ -109,6 +135,8 @@ pub enum Command {
     Sessions,
     /// Fetch and display agent state.
     State,
+    /// Show session status summary (combined context + autonomic + cost).
+    Status,
     /// Send a plain message to the agent.
     SendMessage(String),
 }
@@ -146,19 +174,23 @@ pub fn parse(input: &str) -> Result<Command, String> {
     match cmd {
         "/autonomic" => Ok(Command::Autonomic),
         "/clear" => Ok(Command::Clear),
+        "/compact" => Ok(Command::Compact),
+        "/config" => Ok(Command::Config),
         "/context" => Ok(Command::Context),
         "/cost" => Ok(Command::Cost),
         "/help" => Ok(Command::Help),
-        "/model" => parse_model(args),
-        "/approve" => parse_approve(args),
         "/login" => parse_login(args),
         "/logout" => parse_logout(args),
+        "/memory" => Ok(Command::Memory),
+        "/model" => parse_model(args),
+        "/approve" => parse_approve(args),
         "/provider" => {
             let name = args.split_whitespace().next().map(|s| s.to_string());
             Ok(Command::Provider { name })
         }
         "/sessions" => Ok(Command::Sessions),
         "/state" => Ok(Command::State),
+        "/status" => Ok(Command::Status),
         unknown => Err(format!(
             "Unknown command: {unknown}. Type /help for available commands."
         )),
@@ -437,6 +469,26 @@ mod tests {
     }
 
     #[test]
+    fn compact_command() {
+        assert_eq!(parse("/compact").unwrap(), Command::Compact);
+    }
+
+    #[test]
+    fn config_command() {
+        assert_eq!(parse("/config").unwrap(), Command::Config);
+    }
+
+    #[test]
+    fn memory_command() {
+        assert_eq!(parse("/memory").unwrap(), Command::Memory);
+    }
+
+    #[test]
+    fn status_command() {
+        assert_eq!(parse("/status").unwrap(), Command::Status);
+    }
+
+    #[test]
     fn filter_commands_all() {
         let all = filter_commands("/");
         assert_eq!(all.len(), COMMANDS.len());
@@ -452,10 +504,11 @@ mod tests {
     #[test]
     fn filter_commands_multiple_matches() {
         let filtered = filter_commands("/s");
-        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered.len(), 3);
         let names: Vec<&str> = filtered.iter().map(|c| c.name).collect();
         assert!(names.contains(&"/sessions"));
         assert!(names.contains(&"/state"));
+        assert!(names.contains(&"/status"));
     }
 
     #[test]

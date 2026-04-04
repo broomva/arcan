@@ -1081,4 +1081,54 @@ mod tests {
             "should show cost info: {frame}"
         );
     }
+
+    #[tokio::test]
+    async fn compact_command_shows_stub() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/compact").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Compact") || frame.contains("not yet implemented"),
+            "should show compact stub message: {frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_command_shows_configuration() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/config").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Configuration") || frame.contains("provider"),
+            "should show configuration info: {frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_command_shows_memory_info() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/memory").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        // Memory directory may or may not exist, but command should not panic
+        // and should show either "Memory" or file listing
+        assert!(
+            frame.contains("Memory") || frame.contains("memory"),
+            "should show memory info: {frame}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_command_shows_summary() {
+        let (mut app, _) = make_app();
+        type_and_submit(&mut app, "/status").await;
+
+        let frame = render_frame(&mut app, 100, 30);
+        assert!(
+            frame.contains("Status") || frame.contains("Session"),
+            "should show status summary: {frame}"
+        );
+    }
 }
