@@ -609,6 +609,55 @@ fn extract_and_save_memories(messages: &[ChatMessage], memory_dir: &Path) {
 fn is_memory_signal(line: &str) -> bool {
     let lower = line.to_lowercase();
 
+    // --- Blocklist: filter out noise that matches bullet patterns ---
+    // Tool descriptions from bare mode system prompt
+    let tool_noise = [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "bash:",
+        "glob:",
+        "grep:",
+        "list_dir",
+        "memory_query",
+        "memory_propose",
+        "memory_commit",
+        "read_memory",
+        "write_memory",
+        "memory_search",
+        "memory_similar",
+        "memory_browse",
+        "memory_recent",
+        "memory_offload",
+        "memory_forget",
+        "run shell commands",
+        "find files by pattern",
+        "search file contents",
+        "read file contents",
+        "create or overwrite",
+        "make targeted edits",
+    ];
+    // Strip markdown bold markers before matching (catches **read_file:** etc.)
+    let stripped = lower.replace("**", "").replace('`', "");
+    if tool_noise.iter().any(|t| stripped.contains(t)) {
+        return false;
+    }
+
+    // Generic filler patterns (model boilerplate)
+    let filler_noise = [
+        "let me know if you",
+        "feel free to ask",
+        "i can help with",
+        "here's how you can",
+        "would you like to",
+        "shall i proceed",
+        "i hope this helps",
+        "is there anything else",
+    ];
+    if filler_noise.iter().any(|f| lower.contains(f)) {
+        return false;
+    }
+
     // Decision / conclusion markers
     if lower.starts_with("- ") || lower.starts_with("* ") {
         // Bullet points are often summaries

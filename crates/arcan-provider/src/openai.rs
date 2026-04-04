@@ -174,7 +174,7 @@ impl OpenAiConfig {
     }
 
     /// Create config for Apple's on-device model via apfel.
-    /// Defaults to localhost:11435 with no API key, streaming disabled (small model).
+    /// Defaults to localhost:11435 with no API key, streaming enabled.
     pub fn apfel_from_env() -> Result<Self, CoreError> {
         let base_url = std::env::var("APFEL_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:11435".to_string());
@@ -189,7 +189,7 @@ impl OpenAiConfig {
             max_tokens,
             base_url,
             provider_name: "apfel".to_string(),
-            enable_streaming: false,
+            enable_streaming: true,
             // Tell apfel to trim old messages if context overflows (safety net).
             extra_body: Some(serde_json::json!({
                 "x_context_strategy": "newest-first"
@@ -222,7 +222,7 @@ impl OpenAiConfig {
             max_tokens,
             base_url,
             provider_name: "apfel".to_string(),
-            enable_streaming: false,
+            enable_streaming: true,
             // Tell apfel to trim old messages if context overflows (safety net).
             extra_body: Some(serde_json::json!({
                 "x_context_strategy": "newest-first"

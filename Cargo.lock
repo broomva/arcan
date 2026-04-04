@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "arcan"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "aios-runtime",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-aios-adapters"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-policy",
  "aios-protocol",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-anima"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anima-core",
  "anima-lago",
@@ -366,14 +366,14 @@ dependencies = [
 
 [[package]]
 name = "arcan-commands"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "arcan-console"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "axum 0.8.8",
  "mime_guess",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "chrono",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-harness"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "arcan-core",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-lago"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "arcan-core",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-praxis"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "arcan-core",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-provider"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arcan-core",
  "base64",
@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-provider-bubblewrap"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arcan-sandbox",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-provider-local"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arcan-sandbox",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-provider-vercel"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arcan-sandbox",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-sandbox"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-spaces"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arcan-core",
  "dirs 6.0.0",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-store"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arcan-core",
  "chrono",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "arcan-tui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "arcand"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aios-events",
  "aios-policy",

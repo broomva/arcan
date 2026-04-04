@@ -1,6 +1,6 @@
 [package]
 name = "arcan-tui"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 license.workspace = true
 authors.workspace = true
@@ -50,8 +50,8 @@ libc = "0.2"
 
 # Domain Types
 aios-protocol = { workspace = true }
-arcan-core = { path = "../arcan-core", version = "0.2.1" }
-arcan-provider = { path = "../arcan-provider", version = "0.2.1" }
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+arcan-provider = { path = "../arcan-provider", version = "0.3.0" }
 
 [dev-dependencies]
 insta = "1.39"

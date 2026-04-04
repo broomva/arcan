@@ -15,7 +15,7 @@ readme = "../../README.md"
 workspace = true
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.2.1" }
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
 anima-core.workspace = true
 anima-lago.workspace = true
 lago-core.workspace = true

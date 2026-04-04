@@ -55,7 +55,7 @@ strip = true
 panic = "abort"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -151,7 +151,7 @@ opentelemetry = "0.29"
 opentelemetry_sdk = { version = "0.29", features = ["trace", "metrics"] }
 opentelemetry-otlp = { version = "0.29", features = ["trace", "metrics", "grpc-tonic"] }
 tracing-opentelemetry = "0.30"
-arcan-sandbox = { path = "crates/arcan-sandbox", version = "0.2.1" }
-arcan-provider-vercel = { path = "crates/arcan-provider-vercel", version = "0.2.1" }
-arcan-provider-bubblewrap = { path = "crates/arcan-provider-bubblewrap", version = "0.2.1" }
-arcan-provider-local = { path = "crates/arcan-provider-local", version = "0.2.1" }
+arcan-sandbox = { path = "crates/arcan-sandbox", version = "0.3.0" }
+arcan-provider-vercel = { path = "crates/arcan-provider-vercel", version = "0.3.0" }
+arcan-provider-bubblewrap = { path = "crates/arcan-provider-bubblewrap", version = "0.3.0" }
+arcan-provider-local = { path = "crates/arcan-provider-local", version = "0.3.0" }

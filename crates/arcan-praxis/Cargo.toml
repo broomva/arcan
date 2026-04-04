@@ -15,8 +15,8 @@ readme = "../../README.md"
 workspace = true
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.2.1" }
-arcan-harness = { path = "../arcan-harness", version = "0.2.1" }
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
 arcan-sandbox.workspace = true
 arcan-provider-bubblewrap.workspace = true
 arcan-provider-local.workspace = true

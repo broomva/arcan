@@ -19,7 +19,7 @@ haima = ["dep:haima-core", "dep:haima-x402", "dep:haima-wallet", "dep:haima-lago
 workspace = true
 
 [dependencies]
-arcan-core = { path = "../arcan-core", version = "0.2.1" }
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
 arcan-sandbox.workspace = true
 aios-protocol.workspace = true
 aios-policy = { workspace = true }
