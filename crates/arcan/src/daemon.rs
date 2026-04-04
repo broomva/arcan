@@ -121,6 +121,7 @@ pub async fn ensure_daemon(
     port: u16,
     provider: Option<&str>,
     model: Option<&str>,
+    bare: bool,
 ) -> anyhow::Result<String> {
     let base_url = format!("http://127.0.0.1:{port}");
     let current_version = env!("CARGO_PKG_VERSION");
@@ -185,6 +186,9 @@ pub async fn ensure_daemon(
     }
     if let Some(m) = model {
         args.extend(["--model", m]);
+    }
+    if bare {
+        args.push("--bare");
     }
 
     let child = std::process::Command::new(exe)

@@ -526,18 +526,30 @@ fn capitalize(s: &str) -> String {
 /// Build a minimal system prompt for small-context-window models.
 ///
 /// Omits project instructions, memory, git context, and skills to stay
-/// under ~200 tokens. Designed for models with ≤4K context windows
+/// under ~300 tokens. Designed for models with ≤4K context windows
 /// (e.g. Apple's on-device model via apfel).
+///
+/// Tool definitions are described as plain text (not OpenAI function schemas)
+/// so the model knows what capabilities exist without attempting function calls.
 pub fn build_bare_prompt(workspace: &Path, provider: &str, model: &str) -> String {
     let cwd = workspace.display();
     let platform = std::env::consts::OS;
     let date = chrono::Local::now().format("%Y-%m-%d");
 
     format!(
-        "You are an AI coding assistant. Help with software engineering tasks: \
-         reading files, editing code, running commands, and answering questions. \
-         Be concise. Read files before editing. Follow existing code style.\n\n\
-         Workspace: {cwd} | Platform: {platform} | Date: {date} | Provider: {provider} | Model: {model}"
+        "You are an AI coding assistant running on {platform}. \
+         Help with software engineering tasks and answer questions. \
+         Be concise and direct.\n\n\
+         Workspace: {cwd} | Date: {date} | Provider: {provider} | Model: {model}\n\n\
+         You have these capabilities (available as tools when needed):\n\
+         - read_file: Read file contents from the workspace\n\
+         - write_file: Create or overwrite a file\n\
+         - edit_file: Make targeted edits to existing files\n\
+         - bash: Run shell commands\n\
+         - glob: Find files by pattern\n\
+         - grep: Search file contents with regex\n\n\
+         When answering questions directly, respond with plain text. \
+         Only suggest using tools when the user needs to interact with files or run commands."
     )
 }
 
@@ -1279,13 +1291,17 @@ mod tests {
 
         // Must contain key info
         assert!(prompt.contains("AI coding assistant"), "missing role");
-        assert!(prompt.contains("Platform:"), "missing platform");
         assert!(prompt.contains("Date:"), "missing date");
         assert!(prompt.contains("Provider: apfel"), "missing provider");
         assert!(
             prompt.contains("Model: apple-foundationmodel"),
             "missing model"
         );
+
+        // Must contain tool descriptions as text
+        assert!(prompt.contains("read_file"), "missing read_file tool");
+        assert!(prompt.contains("bash"), "missing bash tool");
+        assert!(prompt.contains("grep"), "missing grep tool");
 
         // Must NOT contain heavy sections
         assert!(
@@ -1301,10 +1317,10 @@ mod tests {
             "bare prompt should not have git context"
         );
 
-        // Should be compact — well under 200 tokens (~4 chars/token heuristic)
+        // Should be compact — under ~300 tokens (~4 chars/token heuristic)
         assert!(
-            prompt.len() < 800,
-            "bare prompt too long: {} chars (target <800)",
+            prompt.len() < 1200,
+            "bare prompt too long: {} chars (target <1200)",
             prompt.len()
         );
     }

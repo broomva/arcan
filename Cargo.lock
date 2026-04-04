@@ -84,8 +84,6 @@ version = "0.2.0"
 dependencies = [
  "aios-protocol",
  "anyhow",
- "async-trait",
- "blake3",
  "chrono",
  "hex",
  "life-vigil",
@@ -1002,7 +1000,6 @@ name = "autonomic-controller"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
- "anima-core",
  "autonomic-core",
  "chrono",
  "serde",
@@ -1015,7 +1012,6 @@ name = "autonomic-core"
 version = "0.1.0"
 dependencies = [
  "aios-protocol",
- "anima-core",
  "chrono",
  "serde",
  "serde_json",

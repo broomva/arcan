@@ -327,7 +327,7 @@ fn format_tokens(tokens: u64) -> String {
 // ---------------------------------------------------------------------------
 
 const PHASE_THINKING: u8 = 0;
-const PHASE_STREAMING: u8 = 1;
+pub(crate) const PHASE_STREAMING: u8 = 1;
 pub(crate) const PHASE_REASONING: u8 = 2;
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ pub(crate) struct SpinnerState {
     pub(crate) phase: AtomicU8,
     pub(crate) tokens: AtomicU64,
     pub(crate) first_token_at: Mutex<Option<Instant>>,
-    stop: AtomicBool,
+    pub(crate) stop: AtomicBool,
     started_at: Instant,
     verb: String,
     tool_name: Option<String>,
@@ -516,19 +516,20 @@ fn render_loop(state: &Arc<SpinnerState>, is_tool: bool) {
             let name = state.tool_name.as_deref().unwrap_or("tool");
             format!("  {glyph} {} {name}\u{2026}", state.verb)
         } else {
-            let mut status = format!(
-                "{glyph} {}\u{2026} ({}",
-                state.verb,
-                format_duration(elapsed)
-            );
-            if phase == PHASE_STREAMING && tokens > 0 {
+            let verb = if phase == PHASE_REASONING {
+                "Reasoning"
+            } else {
+                &state.verb
+            };
+            let mut status = format!("{glyph} {verb}\u{2026} ({}", format_duration(elapsed));
+            if phase == PHASE_REASONING && tokens > 0 {
                 status.push_str(&format!(
-                    " \u{00b7} \u{2193} {} tokens",
+                    " \u{00b7} \u{2B6F} {} tokens",
                     format_tokens(tokens)
                 ));
-            } else if phase == PHASE_REASONING {
+            } else if phase == PHASE_STREAMING && tokens > 0 {
                 status.push_str(&format!(
-                    " \u{00b7} reasoning {} tokens",
+                    " \u{00b7} \u{2193} {} tokens",
                     format_tokens(tokens)
                 ));
             }

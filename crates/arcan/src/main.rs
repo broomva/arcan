@@ -497,7 +497,12 @@ fn run_serve(
     // --- Tools (Praxis canonical implementations, bridged into Arcan) ---
     let mut registry = ToolRegistry::default();
 
-    // Core tools — always registered (also the only tools in bare mode)
+    if resolved.bare {
+        // Bare mode: NO tool schemas sent to model (described in system prompt instead).
+        // Small models (≤4K context) hallucinate function calls when tools are present.
+        tracing::info!("Bare mode: no tools registered, minimal prompt (for small-context models)");
+    } else {
+    // Core tools
     registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
     registry.register(PraxisToolBridge::new(WriteFileTool::new(
         tracked_fs.clone(),
@@ -511,12 +516,8 @@ fn run_serve(
     );
     registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
 
-    if resolved.bare {
-        tracing::info!("Bare mode: 6 core tools, minimal prompt (for small-context models)");
-    }
-
-    // Extended tools — skipped in bare mode to save context window tokens
-    if !resolved.bare {
+    // Extended tools
+    {
         registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs)));
 
         let memory_dir = data_dir.join("memory");
@@ -532,6 +533,7 @@ fn run_serve(
         registry.register(MemoryProposeTool::new(memory_journal.clone()));
         registry.register(MemoryCommitTool::new(memory_journal));
     }
+    } // else (not bare)
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
     let mut skill_registry_arc: Option<Arc<praxis_skills::registry::SkillRegistry>> = None;
@@ -809,6 +811,7 @@ async fn run_chat(
                 resolved.port,
                 Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
                 resolved.model.as_deref(),
+                resolved.bare,
             )
             .await?
         }
@@ -842,6 +845,7 @@ async fn run_message(
                 resolved.port,
                 Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
                 resolved.model.as_deref(),
+                resolved.bare,
             )
             .await?
         }
@@ -1047,6 +1051,7 @@ async fn run_api(
                 resolved.port,
                 Some(resolved.provider.as_str()).filter(|s| !s.is_empty()),
                 resolved.model.as_deref(),
+                resolved.bare,
             )
             .await?
         }

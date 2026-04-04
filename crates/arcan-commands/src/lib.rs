@@ -16,6 +16,7 @@ mod history;
 mod memory;
 mod model;
 mod quit;
+mod reasoning;
 mod search;
 mod skill;
 mod status;
@@ -100,6 +101,8 @@ pub struct CommandContext {
     pub workspace_context_tokens: usize,
     /// Estimated tokens for skills catalog.
     pub skills_catalog_tokens: usize,
+    /// Whether to display reasoning/thinking tokens in the output.
+    pub show_reasoning: bool,
 }
 
 /// Permission mode governing tool approval in the shell.
@@ -236,6 +239,7 @@ impl CommandRegistry {
         registry.register(Box::new(context::ContextCommand));
         registry.register(Box::new(consolidate::ConsolidateCommand));
         registry.register(Box::new(search::SearchCommand));
+        registry.register(Box::new(reasoning::ReasoningCommand));
         registry.rebuild_help_text();
         registry
     }
