@@ -183,8 +183,12 @@ async fn listen_events(
     session_id: &str,
     sender: mpsc::Sender<AgentEvent>,
 ) -> anyhow::Result<()> {
+    // Use raw aiOS protocol format (default) so lifecycle events
+    // (RunStarted, RunErrored, RunFinished) are included in the stream.
+    // The Vercel v6 format only emits content-level events and drops
+    // lifecycle events, causing the TUI to get stuck on "Thinking...".
     let url = format!(
-        "{base_url}/sessions/{session_id}/events/stream?branch=main&cursor=0&format=vercel_ai_sdk_v6"
+        "{base_url}/sessions/{session_id}/events/stream?branch=main&cursor=0"
     );
 
     let mut es = EventSource::get(url);
