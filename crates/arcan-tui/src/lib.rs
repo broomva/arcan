@@ -26,7 +26,6 @@ pub mod widgets;
 use app::App;
 use client::AgentClientPort;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -58,7 +57,9 @@ pub async fn run_tui_with_client(client: Arc<dyn AgentClientPort>) -> anyhow::Re
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // No EnableMouseCapture — allows normal text selection/copy in terminal.
+    // Mouse scroll still works on most terminals without capture mode.
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -68,11 +69,7 @@ pub async fn run_tui_with_client(client: Arc<dyn AgentClientPort>) -> anyhow::Re
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(ref err) = res {
