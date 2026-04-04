@@ -6,6 +6,7 @@ mod embedding;
 mod ephemeral_journal;
 mod factory;
 mod markdown;
+mod memory_observer;
 mod memory_tools;
 mod nous_observer;
 mod prompt;
@@ -754,6 +755,14 @@ fn run_serve(
 
         if let Some(obs) = nous_observer {
             run_observers.push(obs);
+        }
+
+        // Memory extraction observer — writes key facts to .arcan/memory/
+        {
+            let memory_dir = data_dir.join("memory");
+            run_observers.push(Arc::new(memory_observer::MemoryExtractionObserver::new(
+                memory_dir,
+            )));
         }
 
         {
