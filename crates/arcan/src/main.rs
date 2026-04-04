@@ -325,8 +325,8 @@ fn try_openai_oauth_provider() -> Option<Arc<dyn Provider>> {
 fn try_anthropic_oauth_provider() -> Option<Arc<dyn Provider>> {
     let tokens = arcan_provider::oauth::load_tokens("anthropic").ok()?;
     let credential = Arc::new(arcan_provider::oauth::OAuthCredential::anthropic(tokens));
-    let model =
-        std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
+    let model = std::env::var("ANTHROPIC_MODEL")
+        .unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
     let config = AnthropicConfig {
         credential,
         model: model.clone(),

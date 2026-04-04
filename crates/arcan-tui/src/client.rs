@@ -192,16 +192,13 @@ pub fn agent_event_from_protocol_record(record: &ProtocolEventRecord) -> Option<
             directive_count: *directive_count,
             usage: None,
         }),
-        ProtocolEventKind::AssistantTextDelta { delta, index } => Some(AgentEvent::TextDelta {
+        ProtocolEventKind::AssistantTextDelta { delta, index }
+        | ProtocolEventKind::TextDelta { delta, index } => Some(AgentEvent::TextDelta {
             run_id,
             session_id,
             iteration: index.unwrap_or(0),
             delta: delta.clone(),
         }),
-        // Persisted TextDelta is a duplicate of the ephemeral AssistantTextDelta
-        // that was already broadcast during streaming. Ignoring it prevents the
-        // TUI from accumulating the same content twice in streaming_text.
-        ProtocolEventKind::TextDelta { .. } => None,
         // Message / AssistantMessageCommitted are redundant when RunFinished
         // already carries final_answer. Converting both to RunFinished caused
         // duplicate assistant messages in the TUI.

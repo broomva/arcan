@@ -2,6 +2,8 @@ pub mod app;
 pub mod client;
 pub mod command;
 pub mod config;
+#[cfg(test)]
+mod e2e_test;
 pub mod event;
 pub mod focus;
 pub mod history;

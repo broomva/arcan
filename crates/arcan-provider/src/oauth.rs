@@ -667,10 +667,7 @@ fn wait_for_callback_with_state(
         .and_then(|line| line.split_whitespace().nth(1))
         .ok_or_else(|| CoreError::Auth("malformed callback request".to_string()))?;
 
-    let port = listener
-        .local_addr()
-        .map(|a| a.port())
-        .unwrap_or(0);
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let full_url = format!("http://127.0.0.1:{port}{path}");
     let parsed = url::Url::parse(&full_url)
         .map_err(|e| CoreError::Auth(format!("failed to parse callback URL: {e}")))?;

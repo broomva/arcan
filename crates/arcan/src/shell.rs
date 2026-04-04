@@ -287,8 +287,7 @@ fn suppress_echo() -> Option<nix::sys::termios::Termios> {
 fn restore_echo(saved: Option<nix::sys::termios::Termios>) {
     if let Some(original) = saved {
         let stdin = std::io::stdin();
-        let _ =
-            nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &original);
+        let _ = nix::sys::termios::tcsetattr(&stdin, nix::sys::termios::SetArg::TCSANOW, &original);
     }
 }
 
