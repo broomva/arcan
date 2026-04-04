@@ -2256,15 +2256,16 @@ impl AutonomicDaemonState {
             .min(self.context_window as u64);
 
         // Derive pressure from state vector
-        self.homeostatic.cognitive.context_pressure = state.context_pressure as f32;
+        self.homeostatic.cognitive.context_pressure = state.context_pressure;
         self.homeostatic.eval.aggregate_quality_score =
-            (1.0 - state.uncertainty as f64).clamp(0.0, 1.0);
+            f64::from(1.0 - state.uncertainty).clamp(0.0, 1.0);
 
         let advice = self.rule.evaluate_compression(&self.homeostatic);
         self.last_ruling = Some(advice);
     }
 
     /// Update the context window when the provider changes.
+    #[allow(dead_code)]
     fn update_context_window(&mut self, window: usize) {
         self.context_window = window;
         self.homeostatic.cognitive.tokens_remaining = window as u64;
@@ -2331,7 +2332,7 @@ async fn get_autonomic(State(state): State<CanonicalState>) -> Json<AutonomicRes
             pressure: advice.pressure as f64,
             rationale: advice.rationale.clone(),
             target_tokens: advice.target_tokens,
-            quality_score: guard.homeostatic.eval.aggregate_quality_score as f64,
+            quality_score: guard.homeostatic.eval.aggregate_quality_score,
             context_window: guard.context_window,
         })
     } else {
