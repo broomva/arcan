@@ -502,37 +502,37 @@ fn run_serve(
         // Small models (≤4K context) hallucinate function calls when tools are present.
         tracing::info!("Bare mode: no tools registered, minimal prompt (for small-context models)");
     } else {
-    // Core tools
-    registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
-    registry.register(PraxisToolBridge::new(WriteFileTool::new(
-        tracked_fs.clone(),
-    )));
-    registry.register(PraxisToolBridge::new(EditFileTool::new(tracked_fs.clone())));
-    registry.register(PraxisToolBridge::new(GlobTool::new(tracked_fs.clone())));
-    registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs.clone())));
-
-    let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
-        arcan_praxis::SandboxCommandRunner::new(sandbox_provider.clone()),
-    );
-    registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
-
-    // Extended tools
-    {
-        registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs)));
-
-        let memory_dir = data_dir.join("memory");
-        std::fs::create_dir_all(&memory_dir)?;
-        registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
-            memory_dir.clone(),
+        // Core tools
+        registry.register(PraxisToolBridge::new(ReadFileTool::new(tracked_fs.clone())));
+        registry.register(PraxisToolBridge::new(WriteFileTool::new(
+            tracked_fs.clone(),
         )));
-        registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+        registry.register(PraxisToolBridge::new(EditFileTool::new(tracked_fs.clone())));
+        registry.register(PraxisToolBridge::new(GlobTool::new(tracked_fs.clone())));
+        registry.register(PraxisToolBridge::new(GrepTool::new(tracked_fs.clone())));
 
-        // --- Governed memory tools (event-sourced via Lago) ---
-        let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
-        registry.register(MemoryQueryTool::new(memory_projection));
-        registry.register(MemoryProposeTool::new(memory_journal.clone()));
-        registry.register(MemoryCommitTool::new(memory_journal));
-    }
+        let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
+            arcan_praxis::SandboxCommandRunner::new(sandbox_provider.clone()),
+        );
+        registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
+
+        // Extended tools
+        {
+            registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs)));
+
+            let memory_dir = data_dir.join("memory");
+            std::fs::create_dir_all(&memory_dir)?;
+            registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
+                memory_dir.clone(),
+            )));
+            registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+
+            // --- Governed memory tools (event-sourced via Lago) ---
+            let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
+            registry.register(MemoryQueryTool::new(memory_projection));
+            registry.register(MemoryProposeTool::new(memory_journal.clone()));
+            registry.register(MemoryCommitTool::new(memory_journal));
+        }
     } // else (not bare)
 
     // --- Skill discovery (scan directories for SKILL.md files) ---
