@@ -153,6 +153,7 @@ pub async fn ensure_daemon(
         // Process is alive but health check failed — it might be starting up.
         tracing::info!(pid, "Daemon process alive, waiting for health...");
         let delay = Duration::from_millis(200);
+        let mut became_healthy = false;
         for _ in 0..15 {
             tokio::time::sleep(delay).await;
             if let Some(v) = daemon_health(&base_url).await {
@@ -160,13 +161,28 @@ pub async fn ensure_daemon(
                     tracing::info!("Existing daemon became healthy on {base_url} (v{v})");
                     return Ok(base_url);
                 }
+                // Healthy but wrong version — stop it.
+                became_healthy = true;
+                break;
             }
         }
-        // Still not healthy after 3s — the process might be stuck.
-        tracing::warn!(
-            pid,
-            "Daemon process alive but not healthy/current after 3s, spawning new"
-        );
+        if !became_healthy {
+            // Process alive but not responding — stop it to release the redb lock.
+            tracing::warn!(
+                pid,
+                "Daemon process alive but not healthy after 3s, stopping to release journal lock"
+            );
+        }
+        if let Err(e) = stop_daemon(data_dir, port).await {
+            tracing::warn!("Failed to stop unresponsive daemon (PID {pid}): {e}");
+            // Last resort: SIGKILL to release the redb lock.
+            #[cfg(unix)]
+            {
+                let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                remove_pid_file(data_dir);
+            }
+        }
     }
 
     tracing::info!("Starting daemon on port {port}...");
