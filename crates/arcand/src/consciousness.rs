@@ -72,6 +72,8 @@ pub enum ConsciousnessEvent {
         /// Message content.
         content: String,
     },
+    /// Autonomic context-pressure signal (e.g. Breathe/Compress/Emergency).
+    AutonomicSignal { ruling: String },
     /// Graceful shutdown request.
     Shutdown,
 }
@@ -152,6 +154,12 @@ struct ConsciousnessState {
     mode: ConsciousnessMode,
     queue: MessageQueue,
     last_activity: Instant,
+    /// Counts consecutive ticks in Execute mode with no new events emitted.
+    /// When this reaches 3, the agent cycle is considered stalled and breaks.
+    stall_counter: u32,
+    /// Set by AutonomicSignal when a Compress or Emergency ruling is received.
+    /// Cleared after being consumed by the next `run_agent_cycle`.
+    needs_compaction: bool,
 }
 
 impl ConsciousnessState {
@@ -162,6 +170,8 @@ impl ConsciousnessState {
             mode: ConsciousnessMode::Idle,
             queue: MessageQueue::new(QueueConfig::default()),
             last_activity: Instant::now(),
+            stall_counter: 0,
+            needs_compaction: false,
         }
     }
 }
@@ -276,6 +286,9 @@ impl SessionConsciousness {
                     self.handle_spaces_message(channel_id, sender, content)
                         .await;
                 }
+                ConsciousnessEvent::AutonomicSignal { ruling } => {
+                    self.handle_autonomic_signal(&ruling);
+                }
             }
         }
 
@@ -377,8 +390,22 @@ impl SessionConsciousness {
     ) {
         let run_id = uuid::Uuid::new_v4().to_string();
         self.state.queue.set_active_run(true).ok();
+        self.state.stall_counter = 0;
 
         debug!(run_id, objective = %objective, "starting agent cycle");
+
+        // If autonomic signaled compaction, inject a hint into the system prompt.
+        let effective_system_prompt = if self.state.needs_compaction {
+            self.state.needs_compaction = false;
+            info!(
+                session = %self.state.session_id,
+                "injecting context compaction hint into system prompt"
+            );
+            let base = run_context.system_prompt.clone().unwrap_or_default();
+            Some(format!("{base}\n[Context pressure: compact]"))
+        } else {
+            run_context.system_prompt.clone()
+        };
 
         let agent_span = life_vigil::spans::agent_span(self.state.session_id.as_str(), "arcan");
 
@@ -391,7 +418,7 @@ impl SessionConsciousness {
                 TickInput {
                     objective,
                     proposed_tool: run_context.proposed_tool,
-                    system_prompt: run_context.system_prompt.clone(),
+                    system_prompt: effective_system_prompt.clone(),
                     allowed_tools: run_context.allowed_tools.clone(),
                 },
             )
@@ -402,6 +429,10 @@ impl SessionConsciousness {
         for iteration in 1..self.config.max_agent_iterations {
             match &tick_result {
                 Ok(tick) if tick.mode == OperatingMode::Execute => {
+                    // ── Stall detection ──
+                    // Track whether events_emitted advances between iterations.
+                    let last_events = tick.events_emitted;
+
                     // Check preemption at tool boundary.
                     match self.state.queue.check_preemption() {
                         Ok(SteeringAction::Abort { reason }) => {
@@ -459,12 +490,53 @@ impl SessionConsciousness {
                             TickInput {
                                 objective: String::new(),
                                 proposed_tool: None,
-                                system_prompt: run_context.system_prompt.clone(),
+                                system_prompt: effective_system_prompt.clone(),
                                 allowed_tools: run_context.allowed_tools.clone(),
                             },
                         )
                         .instrument(agent_span.clone())
                         .await;
+
+                    // ── Stall detection (post-tick) ──
+                    if let Ok(ref new_tick) = tick_result {
+                        if new_tick.events_emitted == last_events
+                            && new_tick.mode == OperatingMode::Execute
+                        {
+                            self.state.stall_counter += 1;
+                            debug!(
+                                iteration,
+                                stall_counter = self.state.stall_counter,
+                                "no new events emitted — potential stall"
+                            );
+
+                            if self.state.stall_counter >= 3 {
+                                warn!(
+                                    session = %self.state.session_id,
+                                    iteration,
+                                    stall_counter = self.state.stall_counter,
+                                    "stall detected — breaking agent cycle"
+                                );
+                                let _ = self
+                                    .runtime
+                                    .record_external_event(
+                                        &self.state.session_id,
+                                        EventKind::Custom {
+                                            event_type: "consciousness.stall_detected".to_string(),
+                                            data: serde_json::json!({
+                                                "iteration": iteration,
+                                                "stall_counter": self.state.stall_counter,
+                                                "run_id": run_id,
+                                            }),
+                                        },
+                                    )
+                                    .await;
+                                break;
+                            }
+                        } else {
+                            // Progress made — reset stall counter.
+                            self.state.stall_counter = 0;
+                        }
+                    }
                 }
                 _ => break,
             }
@@ -623,6 +695,27 @@ impl SessionConsciousness {
                     "ignoring Spaces message during shutdown"
                 );
             }
+        }
+    }
+
+    /// Handle an autonomic context-pressure signal.
+    ///
+    /// If the ruling indicates Compress or Emergency, set the `needs_compaction`
+    /// flag so the next `run_agent_cycle` injects a compaction hint.
+    fn handle_autonomic_signal(&mut self, ruling: &str) {
+        info!(
+            session = %self.state.session_id,
+            ruling,
+            "received autonomic signal"
+        );
+
+        if ruling.contains("Compress") || ruling.contains("Emergency") {
+            self.state.needs_compaction = true;
+            warn!(
+                session = %self.state.session_id,
+                ruling,
+                "context pressure elevated — compaction flag set"
+            );
         }
     }
 
