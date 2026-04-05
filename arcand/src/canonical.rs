@@ -791,14 +791,8 @@ pub fn create_canonical_router_with_skills(
             post(resolve_approval),
         )
         // BRO-456: Consciousness message push and queue introspection.
-        .route(
-            "/sessions/{session_id}/messages",
-            post(push_message),
-        )
-        .route(
-            "/sessions/{session_id}/queue",
-            get(get_queue_status),
-        )
+        .route("/sessions/{session_id}/messages", post(push_message))
+        .route("/sessions/{session_id}/queue", get(get_queue_status))
         .route("/provider", get(get_provider).put(set_provider))
         .route("/autonomic", get(get_autonomic))
         .route("/context", get(get_context))
