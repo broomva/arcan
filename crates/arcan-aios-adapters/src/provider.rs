@@ -177,7 +177,7 @@ impl ModelProviderPort for ArcanProviderAdapter {
             }
         }
 
-        // Build messages: system prompt(s) first, then user objective.
+        // Build messages: system prompt(s), conversation history, then current objective.
         let mut messages = Vec::new();
 
         // Adapter-level system prompt (skill catalog from startup).
@@ -190,7 +190,19 @@ impl ModelProviderPort for ArcanProviderAdapter {
             messages.push(ChatMessage::system(prompt.as_str()));
         }
 
-        messages.push(ChatMessage::user(request.objective));
+        // Conversation history from prior turns (built by tick_on_branch from Lago).
+        for turn in &request.conversation_history {
+            match turn.role.as_str() {
+                "user" => messages.push(ChatMessage::user(&turn.content)),
+                "assistant" => messages.push(ChatMessage::assistant(&turn.content)),
+                _ => messages.push(ChatMessage::system(&turn.content)),
+            }
+        }
+
+        // Current user objective (the new message for this turn).
+        if !request.objective.is_empty() {
+            messages.push(ChatMessage::user(request.objective));
+        }
 
         // Apply tool filtering from active skill's allowed_tools whitelist.
         let tools = self.filter_tools(request.allowed_tools.as_deref());
