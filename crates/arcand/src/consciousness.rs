@@ -76,6 +76,21 @@ pub enum ConsciousnessEvent {
     AutonomicSignal { ruling: String },
     /// Graceful shutdown request.
     Shutdown,
+    /// A tool execution completed successfully (future per-tool async).
+    ToolResult {
+        call_id: String,
+        tool_name: String,
+        result: serde_json::Value,
+        duration_ms: u64,
+    },
+    /// A tool execution failed (future per-tool async).
+    ToolFailed {
+        call_id: String,
+        tool_name: String,
+        error: String,
+    },
+    /// An agent cycle (spawned task) completed.
+    CycleCompleted { run_id: String },
 }
 
 /// Snapshot of the actor's status for the GET /queue endpoint.
@@ -145,6 +160,8 @@ pub enum ConsciousnessMode {
     Sleeping,
     /// Gracefully shutting down.
     ShuttingDown,
+    /// Waiting for spawned tool executions to complete (future per-tool async).
+    WaitingForTools,
 }
 
 /// Per-session mutable state owned by the consciousness actor.
@@ -154,9 +171,6 @@ struct ConsciousnessState {
     mode: ConsciousnessMode,
     queue: MessageQueue,
     last_activity: Instant,
-    /// Counts consecutive ticks in Execute mode with no new events emitted.
-    /// When this reaches 3, the agent cycle is considered stalled and breaks.
-    stall_counter: u32,
     /// Set by AutonomicSignal when a Compress or Emergency ruling is received.
     /// Cleared after being consumed by the next `run_agent_cycle`.
     needs_compaction: bool,
@@ -170,7 +184,6 @@ impl ConsciousnessState {
             mode: ConsciousnessMode::Idle,
             queue: MessageQueue::new(QueueConfig::default()),
             last_activity: Instant::now(),
-            stall_counter: 0,
             needs_compaction: false,
         }
     }
@@ -181,6 +194,13 @@ impl ConsciousnessState {
 /// The consciousness actor — a long-lived tokio task per session.
 pub struct SessionConsciousness {
     rx: mpsc::Receiver<ConsciousnessEvent>,
+    /// Weak sender for the actor to send events to itself (from spawned tasks).
+    ///
+    /// Uses `WeakSender` so the channel can still close when all external
+    /// `Sender` handles are dropped (e.g. `ConsciousnessHandle` is dropped).
+    /// Spawned tasks upgrade to a strong `Sender` which keeps the channel
+    /// alive only while the task is running.
+    self_tx: mpsc::WeakSender<ConsciousnessEvent>,
     state: ConsciousnessState,
     runtime: Arc<KernelRuntime>,
     config: ConsciousnessConfig,
@@ -200,6 +220,7 @@ impl SessionConsciousness {
         let span = tracing::info_span!("consciousness", session = %session_id);
         let actor = Self {
             rx,
+            self_tx: tx.downgrade(),
             state: ConsciousnessState::new(session_id, branch),
             runtime,
             config,
@@ -289,6 +310,25 @@ impl SessionConsciousness {
                 ConsciousnessEvent::AutonomicSignal { ruling } => {
                     self.handle_autonomic_signal(&ruling);
                 }
+                ConsciousnessEvent::CycleCompleted { run_id } => {
+                    debug!(run_id, "agent cycle completed");
+                    self.state.mode = ConsciousnessMode::Idle;
+                    self.state.last_activity = Instant::now();
+                    self.state.queue.set_active_run(false).ok();
+                    self.drain_queue_after_run().await;
+                }
+                ConsciousnessEvent::ToolResult { call_id, .. } => {
+                    debug!(
+                        call_id,
+                        "tool result received (per-tool async not yet implemented)"
+                    );
+                }
+                ConsciousnessEvent::ToolFailed { call_id, .. } => {
+                    debug!(
+                        call_id,
+                        "tool failure received (per-tool async not yet implemented)"
+                    );
+                }
             }
         }
 
@@ -324,15 +364,15 @@ impl SessionConsciousness {
 
         match self.state.mode {
             ConsciousnessMode::Idle | ConsciousnessMode::Sleeping => {
-                // Start a new run immediately.
+                // Start a new run immediately in a spawned task.
                 if let Some(ack) = ack {
                     let _ = ack.send(ConsciousnessAck::Accepted { queued: false });
                 }
                 self.state.mode = ConsciousnessMode::Active;
-                self.run_agent_cycle(objective, branch, run_context).await;
-                self.drain_queue_after_run().await;
+                self.state.queue.set_active_run(true).ok();
+                self.spawn_agent_cycle(objective, branch, run_context);
             }
-            ConsciousnessMode::Active => {
+            ConsciousnessMode::Active | ConsciousnessMode::WaitingForTools => {
                 // Queue the message for later processing.
                 let msg_id = uuid::Uuid::new_v4().to_string();
                 let queued = QueuedMessage {
@@ -379,46 +419,83 @@ impl SessionConsciousness {
         }
     }
 
-    /// Run the agent loop: tick repeatedly until end_turn or max iterations.
+    /// Spawn the agent cycle as a non-blocking tokio task.
     ///
-    /// Equivalent to the blocking loop in `canonical.rs` run_session handler.
-    async fn run_agent_cycle(
-        &mut self,
+    /// The spawned task runs the tick loop and sends `CycleCompleted` back
+    /// to the actor via `self_tx` when done. Queue state management
+    /// (set_active_run, drain) stays in the actor event loop.
+    fn spawn_agent_cycle(&self, objective: String, branch: BranchId, run_context: RunContext) {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let runtime = self.runtime.clone();
+        let weak_tx = self.self_tx.clone();
+        let session_id = self.state.session_id.clone();
+        let queue = self.state.queue.clone();
+        let max_iterations = self.config.max_agent_iterations;
+
+        // Upgrade the weak sender to a strong sender for the spawned task.
+        // If upgrade fails, all external senders were dropped — skip spawning.
+        let Some(self_tx) = weak_tx.upgrade() else {
+            warn!(run_id, "cannot spawn agent cycle: channel closed");
+            return;
+        };
+
+        let span = tracing::info_span!("agent_cycle", run_id = %run_id, session = %session_id);
+
+        tokio::spawn(
+            async move {
+                Self::run_agent_cycle_inner(
+                    &run_id,
+                    objective,
+                    branch,
+                    run_context,
+                    runtime,
+                    session_id,
+                    queue,
+                    max_iterations,
+                )
+                .await;
+
+                // Notify the actor that the cycle is done.
+                if let Err(err) = self_tx
+                    .send(ConsciousnessEvent::CycleCompleted {
+                        run_id: run_id.clone(),
+                    })
+                    .await
+                {
+                    error!(run_id, %err, "failed to send CycleCompleted back to actor");
+                }
+            }
+            .instrument(span),
+        );
+    }
+
+    /// Inner tick loop extracted for use by spawned tasks.
+    ///
+    /// This is a static-like method that takes all state by value/ref so it
+    /// can run independently of the actor's `&mut self`.
+    async fn run_agent_cycle_inner(
+        run_id: &str,
         objective: String,
         branch: BranchId,
         run_context: RunContext,
+        runtime: Arc<KernelRuntime>,
+        session_id: SessionId,
+        queue: MessageQueue,
+        max_iterations: u32,
     ) {
-        let run_id = uuid::Uuid::new_v4().to_string();
-        self.state.queue.set_active_run(true).ok();
-        self.state.stall_counter = 0;
-
         debug!(run_id, objective = %objective, "starting agent cycle");
 
-        // If autonomic signaled compaction, inject a hint into the system prompt.
-        let effective_system_prompt = if self.state.needs_compaction {
-            self.state.needs_compaction = false;
-            info!(
-                session = %self.state.session_id,
-                "injecting context compaction hint into system prompt"
-            );
-            let base = run_context.system_prompt.clone().unwrap_or_default();
-            Some(format!("{base}\n[Context pressure: compact]"))
-        } else {
-            run_context.system_prompt.clone()
-        };
-
-        let agent_span = life_vigil::spans::agent_span(self.state.session_id.as_str(), "arcan");
+        let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
 
         // First tick with the actual objective.
-        let mut tick_result = self
-            .runtime
+        let mut tick_result = runtime
             .tick_on_branch(
-                &self.state.session_id,
+                &session_id,
                 &branch,
                 TickInput {
                     objective,
                     proposed_tool: run_context.proposed_tool,
-                    system_prompt: effective_system_prompt.clone(),
+                    system_prompt: run_context.system_prompt.clone(),
                     allowed_tools: run_context.allowed_tools.clone(),
                 },
             )
@@ -426,7 +503,8 @@ impl SessionConsciousness {
             .await;
 
         // Continue ticking while mode=Execute (tools ran, need continuation).
-        for iteration in 1..self.config.max_agent_iterations {
+        let mut stall_counter: u32 = 0;
+        for iteration in 1..max_iterations {
             match &tick_result {
                 Ok(tick) if tick.mode == OperatingMode::Execute => {
                     // ── Stall detection ──
@@ -434,15 +512,14 @@ impl SessionConsciousness {
                     let last_events = tick.events_emitted;
 
                     // Check preemption at tool boundary.
-                    match self.state.queue.check_preemption() {
+                    match queue.check_preemption() {
                         Ok(SteeringAction::Abort { reason }) => {
                             warn!(iteration, %reason, "run aborted by interrupt");
-                            let _ = self
-                                .runtime
+                            let _ = runtime
                                 .record_external_event(
-                                    &self.state.session_id,
+                                    &session_id,
                                     EventKind::Steered {
-                                        queue_id: run_id.clone(),
+                                        queue_id: run_id.to_owned(),
                                         preempted_at: format!("iteration:{iteration}"),
                                     },
                                 )
@@ -455,10 +532,9 @@ impl SessionConsciousness {
                                 msg_id = %msg.id,
                                 "steering: switch after current iteration"
                             );
-                            let _ = self
-                                .runtime
+                            let _ = runtime
                                 .record_external_event(
-                                    &self.state.session_id,
+                                    &session_id,
                                     EventKind::Steered {
                                         queue_id: msg.id.clone(),
                                         preempted_at: format!("iteration:{iteration}"),
@@ -472,7 +548,7 @@ impl SessionConsciousness {
                                 content: msg.content,
                                 queued_at: None,
                             };
-                            self.state.queue.enqueue(requeue).ok();
+                            queue.enqueue(requeue).ok();
                             break;
                         }
                         Ok(SteeringAction::InjectMessage(_) | SteeringAction::Continue) => {}
@@ -482,15 +558,14 @@ impl SessionConsciousness {
                     }
 
                     debug!(iteration, "agent loop: continuing after tool execution");
-                    tick_result = self
-                        .runtime
+                    tick_result = runtime
                         .tick_on_branch(
-                            &self.state.session_id,
+                            &session_id,
                             &branch,
                             TickInput {
                                 objective: String::new(),
                                 proposed_tool: None,
-                                system_prompt: effective_system_prompt.clone(),
+                                system_prompt: run_context.system_prompt.clone(),
                                 allowed_tools: run_context.allowed_tools.clone(),
                             },
                         )
@@ -502,29 +577,24 @@ impl SessionConsciousness {
                         if new_tick.events_emitted == last_events
                             && new_tick.mode == OperatingMode::Execute
                         {
-                            self.state.stall_counter += 1;
-                            debug!(
-                                iteration,
-                                stall_counter = self.state.stall_counter,
-                                "no new events emitted — potential stall"
-                            );
+                            stall_counter += 1;
+                            debug!(iteration, stall_counter, "no new events — potential stall");
 
-                            if self.state.stall_counter >= 3 {
+                            if stall_counter >= 3 {
                                 warn!(
-                                    session = %self.state.session_id,
+                                    session = %session_id,
                                     iteration,
-                                    stall_counter = self.state.stall_counter,
+                                    stall_counter,
                                     "stall detected — breaking agent cycle"
                                 );
-                                let _ = self
-                                    .runtime
+                                let _ = runtime
                                     .record_external_event(
-                                        &self.state.session_id,
+                                        &session_id,
                                         EventKind::Custom {
                                             event_type: "consciousness.stall_detected".to_string(),
                                             data: serde_json::json!({
                                                 "iteration": iteration,
-                                                "stall_counter": self.state.stall_counter,
+                                                "stall_counter": stall_counter,
                                                 "run_id": run_id,
                                             }),
                                         },
@@ -533,8 +603,7 @@ impl SessionConsciousness {
                                 break;
                             }
                         } else {
-                            // Progress made — reset stall counter.
-                            self.state.stall_counter = 0;
+                            stall_counter = 0;
                         }
                     }
                 }
@@ -542,22 +611,21 @@ impl SessionConsciousness {
             }
         }
 
-        self.state.queue.set_active_run(false).ok();
-
         match &tick_result {
             Ok(tick) => {
-                debug!(mode = ?tick.mode, events = tick.events_emitted, "agent cycle completed");
+                debug!(run_id, mode = ?tick.mode, events = tick.events_emitted, "agent cycle completed");
             }
             Err(err) => {
-                error!(%err, "agent cycle failed");
+                error!(run_id, %err, "agent cycle failed");
             }
         }
-
-        self.state.mode = ConsciousnessMode::Idle;
-        self.state.last_activity = Instant::now();
     }
 
     /// Process queued messages after a run completes.
+    ///
+    /// Spawns the next queued message as a non-blocking agent cycle.
+    /// Only the first drained message is spawned; remaining messages stay
+    /// queued and will be drained when the spawned cycle completes.
     async fn drain_queue_after_run(&mut self) {
         let drained: Vec<QueuedMessage> = match self.state.queue.drain_after_run() {
             Ok(msgs) => msgs,
@@ -585,14 +653,29 @@ impl SessionConsciousness {
             )
             .await;
 
-        for msg in drained {
+        // Re-enqueue all but the first message so they are processed
+        // sequentially as each CycleCompleted triggers another drain.
+        let mut iter = drained.into_iter();
+        if let Some(next) = iter.next() {
+            // Re-enqueue remaining messages for future drains.
+            for msg in iter {
+                let requeue = QueuedMessage {
+                    id: msg.id,
+                    mode: msg.mode,
+                    content: msg.content,
+                    queued_at: None,
+                };
+                self.state.queue.enqueue(requeue).ok();
+            }
+
+            // Spawn the next message as a non-blocking cycle.
             self.state.mode = ConsciousnessMode::Active;
-            self.run_agent_cycle(
-                msg.content,
+            self.state.queue.set_active_run(true).ok();
+            self.spawn_agent_cycle(
+                next.content,
                 self.state.branch.clone(),
                 RunContext::default(),
-            )
-            .await;
+            );
         }
     }
 
@@ -680,7 +763,7 @@ impl SessionConsciousness {
                 )
                 .await;
             }
-            ConsciousnessMode::Active => {
+            ConsciousnessMode::Active | ConsciousnessMode::WaitingForTools => {
                 // Don't interrupt the current run — log as context for future use.
                 debug!(
                     session = %self.state.session_id,
