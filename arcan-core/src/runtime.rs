@@ -411,18 +411,18 @@ impl Orchestrator {
 
         for iteration in 1..=self.config.max_iterations {
             // Check cancellation at each iteration boundary
-            if let Some(flag) = cancel {
-                if flag.load(Ordering::Relaxed) {
-                    stop_reason = RunStopReason::Cancelled;
-                    let err_event = AgentEvent::RunErrored {
-                        run_id: input.run_id.clone(),
-                        session_id: input.session_id.clone(),
-                        error: "run cancelled".to_string(),
-                    };
-                    event_handler(err_event.clone());
-                    events.push(err_event);
-                    break;
-                }
+            if let Some(flag) = cancel
+                && flag.load(Ordering::Relaxed)
+            {
+                stop_reason = RunStopReason::Cancelled;
+                let err_event = AgentEvent::RunErrored {
+                    run_id: input.run_id.clone(),
+                    session_id: input.session_id.clone(),
+                    error: "run cancelled".to_string(),
+                };
+                event_handler(err_event.clone());
+                events.push(err_event);
+                break;
             }
 
             total_iterations = iteration;
@@ -435,20 +435,20 @@ impl Orchestrator {
             events.push(iter_event);
 
             // Context window compaction: trim messages before sending to provider
-            if let Some(ref ctx_config) = self.config.context {
-                if let Some(result) = compact_messages(&messages, ctx_config) {
-                    let compact_event = AgentEvent::ContextCompacted {
-                        run_id: input.run_id.clone(),
-                        session_id: input.session_id.clone(),
-                        iteration,
-                        dropped_count: result.dropped_count,
-                        tokens_before: result.tokens_before,
-                        tokens_after: result.tokens_after,
-                    };
-                    event_handler(compact_event.clone());
-                    events.push(compact_event);
-                    messages = result.messages;
-                }
+            if let Some(ref ctx_config) = self.config.context
+                && let Some(result) = compact_messages(&messages, ctx_config)
+            {
+                let compact_event = AgentEvent::ContextCompacted {
+                    run_id: input.run_id.clone(),
+                    session_id: input.session_id.clone(),
+                    iteration,
+                    dropped_count: result.dropped_count,
+                    tokens_before: result.tokens_before,
+                    tokens_after: result.tokens_after,
+                };
+                event_handler(compact_event.clone());
+                events.push(compact_event);
+                messages = result.messages;
             }
 
             let mut provider_request = ProviderRequest {

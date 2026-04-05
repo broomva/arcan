@@ -55,10 +55,11 @@ pub fn discover_skills(
         "skill discovery completed"
     );
 
-    if write_registry && registry.count() > 0 {
-        if let Err(e) = write_registry_cache(&registry, skill_dirs, data_dir) {
-            tracing::warn!(error = %e, "failed to write skill registry cache");
-        }
+    if write_registry
+        && registry.count() > 0
+        && let Err(e) = write_registry_cache(&registry, skill_dirs, data_dir)
+    {
+        tracing::warn!(error = %e, "failed to write skill registry cache");
     }
 
     Ok(registry)

@@ -95,20 +95,18 @@ impl HiveSpacesCoordinator {
             if msg.thread_id != Some(generation as u64) {
                 continue;
             }
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content) {
-                if parsed.get("hive_event").and_then(|v| v.as_str()) == Some("artifact_shared") {
-                    if let Ok(artifact) =
-                        serde_json::from_value::<HiveArtifactMessage>(serde_json::json!({
-                            "hive_task_id": parsed["hive_task_id"],
-                            "session_id": parsed["session_id"],
-                            "score": parsed["score"],
-                            "generation": parsed["generation"],
-                            "tldr": parsed["tldr"],
-                        }))
-                    {
-                        artifacts.push(artifact);
-                    }
-                }
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&msg.content)
+                && parsed.get("hive_event").and_then(|v| v.as_str()) == Some("artifact_shared")
+                && let Ok(artifact) =
+                    serde_json::from_value::<HiveArtifactMessage>(serde_json::json!({
+                        "hive_task_id": parsed["hive_task_id"],
+                        "session_id": parsed["session_id"],
+                        "score": parsed["score"],
+                        "generation": parsed["generation"],
+                        "tldr": parsed["tldr"],
+                    }))
+            {
+                artifacts.push(artifact);
             }
         }
 

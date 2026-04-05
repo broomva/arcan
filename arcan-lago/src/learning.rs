@@ -115,22 +115,22 @@ impl Middleware for LearningMiddleware {
         request: &arcan_core::runtime::ProviderRequest,
     ) -> Result<(), CoreError> {
         // Initialize buffer with run context on first model call
-        if let Ok(mut buf) = self.buffer.lock() {
-            if buf.run_id.is_empty() {
-                buf.run_id = request.run_id.clone();
-                buf.session_id = request.session_id.clone();
-            }
+        if let Ok(mut buf) = self.buffer.lock()
+            && buf.run_id.is_empty()
+        {
+            buf.run_id = request.run_id.clone();
+            buf.session_id = request.session_id.clone();
         }
         Ok(())
     }
 
     fn pre_tool_call(&self, context: &ToolContext, call: &ToolCall) -> Result<(), CoreError> {
         // Set context if not set yet (e.g., first tool call in a run)
-        if let Ok(mut buf) = self.buffer.lock() {
-            if buf.run_id.is_empty() {
-                buf.run_id = context.run_id.clone();
-                buf.session_id = context.session_id.clone();
-            }
+        if let Ok(mut buf) = self.buffer.lock()
+            && buf.run_id.is_empty()
+        {
+            buf.run_id = context.run_id.clone();
+            buf.session_id = context.session_id.clone();
         }
         // Nothing to capture before the call
         let _ = call;

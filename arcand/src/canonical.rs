@@ -895,16 +895,16 @@ fn enterprise_policy_for_role(
         TenantRole::Viewer => caps(VIEWER_CAPS),
         TenantRole::Agent => {
             // Agent role is configurable via custom_capabilities.
-            if let Some(cc) = custom {
-                if !cc.is_empty() {
-                    return PolicySet {
-                        allow_capabilities: cc
-                            .iter()
-                            .map(|c| aios_protocol::Capability::new(c.clone()))
-                            .collect(),
-                        ..PolicySet::default()
-                    };
-                }
+            if let Some(cc) = custom
+                && !cc.is_empty()
+            {
+                return PolicySet {
+                    allow_capabilities: cc
+                        .iter()
+                        .map(|c| aios_protocol::Capability::new(c.clone()))
+                        .collect(),
+                    ..PolicySet::default()
+                };
             }
             caps(&["*"])
         }
@@ -926,16 +926,16 @@ fn enterprise_policy_for_role(
 /// | Enterprise  | Role-based (Admin=`*`, Member=sandboxed+write, Viewer=read)   |
 fn policy_from_identity_claims(claims: &IdentityClaims) -> PolicySet {
     // custom_capabilities always overrides role/tier defaults.
-    if let Some(custom) = &claims.custom_capabilities {
-        if !custom.is_empty() {
-            return PolicySet {
-                allow_capabilities: custom
-                    .iter()
-                    .map(|c| aios_protocol::Capability::new(c.clone()))
-                    .collect(),
-                ..PolicySet::default()
-            };
-        }
+    if let Some(custom) = &claims.custom_capabilities
+        && !custom.is_empty()
+    {
+        return PolicySet {
+            allow_capabilities: custom
+                .iter()
+                .map(|c| aios_protocol::Capability::new(c.clone()))
+                .collect(),
+            ..PolicySet::default()
+        };
     }
 
     match claims.tier {
@@ -1713,10 +1713,8 @@ async fn run_session(
     // MemoryCommitted events are discarded instead of persisted to Lago.
     // Free sessions retain memory with 7-day TTL (BRO-218).
     // Pro/enterprise sessions are never marked ephemeral.
-    if is_anonymous_tier {
-        if let Some(ref selector) = state.session_selector {
-            selector.mark_ephemeral(session_id.as_str());
-        }
+    if is_anonymous_tier && let Some(ref selector) = state.session_selector {
+        selector.mark_ephemeral(session_id.as_str());
     }
 
     // BRO-218/219: Register with the retention journal before the tick so that
@@ -1726,14 +1724,12 @@ async fn run_session(
         if let Some(ref ftj) = state.free_tier_journal {
             ftj.register_session(session_id.as_str(), &session_owner);
         }
-    } else if is_pro_tier {
-        if let Some(ref ftj) = state.free_tier_journal {
-            ftj.register_session_with_config(
-                session_id.as_str(),
-                &session_owner,
-                arcan_lago::LagoPolicyConfig::pro(),
-            );
-        }
+    } else if is_pro_tier && let Some(ref ftj) = state.free_tier_journal {
+        ftj.register_session_with_config(
+            session_id.as_str(),
+            &session_owner,
+            arcan_lago::LagoPolicyConfig::pro(),
+        );
     }
 
     // Agent loop: tick repeatedly until the agent finishes (end_turn) or hits
@@ -1789,18 +1785,16 @@ async fn run_session(
 
     // Always unmark after tick completes (success or error) to avoid leaking the
     // ephemeral registration across future requests on the same session.
-    if is_anonymous_tier {
-        if let Some(ref selector) = state.session_selector {
-            selector.unmark_ephemeral(session_id.as_str());
-        }
+    if is_anonymous_tier && let Some(ref selector) = state.session_selector {
+        selector.unmark_ephemeral(session_id.as_str());
     }
 
     // BRO-218/219: Always unregister after tick completes (free or pro) so the
     // retention journal does not accumulate stale session → user_id mappings.
-    if is_free_tier || is_pro_tier {
-        if let Some(ref ftj) = state.free_tier_journal {
-            ftj.unregister_session(session_id.as_str());
-        }
+    if (is_free_tier || is_pro_tier)
+        && let Some(ref ftj) = state.free_tier_journal
+    {
+        ftj.unregister_session(session_id.as_str());
     }
 
     let tick = tick_result.map_err(internal_error)?;
@@ -1989,10 +1983,10 @@ impl CanonicalState {
                 .cached_git_context
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((fetched_at, ref ctx)) = *cache {
-                if fetched_at.elapsed() < GIT_CONTEXT_TTL {
-                    return Some(ctx.clone());
-                }
+            if let Some((fetched_at, ref ctx)) = *cache
+                && fetched_at.elapsed() < GIT_CONTEXT_TTL
+            {
+                return Some(ctx.clone());
             }
         }
 

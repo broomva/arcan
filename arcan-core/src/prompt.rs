@@ -138,10 +138,10 @@ pub fn build_system_prompt_with_identity(
     ));
 
     // 3. CLAUDE.md / project instructions
-    if let Some(instructions) = claude_md_content {
-        if !instructions.is_empty() {
-            cacheable_sections.push(format!("# Project Instructions\n\n{instructions}"));
-        }
+    if let Some(instructions) = claude_md_content
+        && !instructions.is_empty()
+    {
+        cacheable_sections.push(format!("# Project Instructions\n\n{instructions}"));
     }
 
     // 4. Guidelines
@@ -163,17 +163,17 @@ pub fn build_system_prompt_with_identity(
     }
 
     // 7. Workspace context
-    if let Some(context) = workspace_context {
-        if !context.is_empty() {
-            dynamic_sections.push(format!("# Workspace Context\n\n{context}"));
-        }
+    if let Some(context) = workspace_context
+        && !context.is_empty()
+    {
+        dynamic_sections.push(format!("# Workspace Context\n\n{context}"));
     }
 
     // 8. Skills catalog
-    if let Some(catalog) = skill_catalog {
-        if !catalog.is_empty() {
-            dynamic_sections.push(format!("# Available Skills\n\n{catalog}"));
-        }
+    if let Some(catalog) = skill_catalog
+        && !catalog.is_empty()
+    {
+        dynamic_sections.push(format!("# Available Skills\n\n{catalog}"));
     }
 
     let dynamic = if dynamic_sections.is_empty() {
@@ -300,16 +300,16 @@ pub fn load_project_instructions(workspace: &Path) -> Option<String> {
     // Parent CLAUDE.md (e.g., core/life/CLAUDE.md when running in core/life/arcan/)
     if let Some(parent) = workspace.parent() {
         let parent_claude = parent.join("CLAUDE.md");
-        if parent_claude.exists() && parent_claude != workspace.join("CLAUDE.md") {
-            if let Ok(content) = std::fs::read_to_string(&parent_claude) {
-                if !content.trim().is_empty() {
-                    contents.push(format!(
-                        "<!-- from {} -->\n{}",
-                        parent_claude.display(),
-                        content
-                    ));
-                }
-            }
+        if parent_claude.exists()
+            && parent_claude != workspace.join("CLAUDE.md")
+            && let Ok(content) = std::fs::read_to_string(&parent_claude)
+            && !content.trim().is_empty()
+        {
+            contents.push(format!(
+                "<!-- from {} -->\n{}",
+                parent_claude.display(),
+                content
+            ));
         }
     }
 
@@ -317,22 +317,22 @@ pub fn load_project_instructions(workspace: &Path) -> Option<String> {
     // about project status without requiring tool calls
     for doc_file in &["docs/STATUS.md", "docs/ARCHITECTURE.md", "docs/ROADMAP.md"] {
         let path = workspace.join(doc_file);
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    // Truncate large docs to first 2000 chars to save tokens
-                    let truncated = if trimmed.len() > 2000 {
-                        format!(
-                            "{}\n\n... (truncated, {} total chars — use read_file for full content)",
-                            &trimmed[..2000],
-                            trimmed.len()
-                        )
-                    } else {
-                        trimmed.to_string()
-                    };
-                    contents.push(format!("<!-- from {doc_file} -->\n{truncated}"));
-                }
+        if path.exists()
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                // Truncate large docs to first 2000 chars to save tokens
+                let truncated = if trimmed.len() > 2000 {
+                    format!(
+                        "{}\n\n... (truncated, {} total chars — use read_file for full content)",
+                        &trimmed[..2000],
+                        trimmed.len()
+                    )
+                } else {
+                    trimmed.to_string()
+                };
+                contents.push(format!("<!-- from {doc_file} -->\n{truncated}"));
             }
         }
     }
@@ -341,15 +341,14 @@ pub fn load_project_instructions(workspace: &Path) -> Option<String> {
 
     // .control/policy.yaml — machine-readable policy constraints
     let policy_path = workspace.join(".control/policy.yaml");
-    if policy_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&policy_path) {
-            if !content.trim().is_empty() {
-                contents.push(format!(
-                    "<!-- Control policy (.control/policy.yaml) -->\n```yaml\n{}\n```",
-                    content.trim()
-                ));
-            }
-        }
+    if policy_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&policy_path)
+        && !content.trim().is_empty()
+    {
+        contents.push(format!(
+            "<!-- Control policy (.control/policy.yaml) -->\n```yaml\n{}\n```",
+            content.trim()
+        ));
     }
 
     if contents.is_empty() {
@@ -367,32 +366,31 @@ pub fn load_claude_md(workspace: &Path) -> Option<String> {
 /// Load a single file relative to workspace if it exists and is non-empty.
 fn load_file_if_exists(workspace: &Path, relative: &str, contents: &mut Vec<String>) {
     let path = workspace.join(relative);
-    if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !content.trim().is_empty() {
-                contents.push(content);
-            }
-        }
+    if path.exists()
+        && let Ok(content) = std::fs::read_to_string(&path)
+        && !content.trim().is_empty()
+    {
+        contents.push(content);
     }
 }
 
 /// Load all .md files from a rules directory, sorted alphabetically.
 fn load_rules_dir(workspace: &Path, relative: &str, contents: &mut Vec<String>) {
     let rules_dir = workspace.join(relative);
-    if rules_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&rules_dir) {
-            let mut rule_files: Vec<_> = entries
-                .flatten()
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
-                .collect();
-            rule_files.sort_by_key(std::fs::DirEntry::path);
+    if rules_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&rules_dir)
+    {
+        let mut rule_files: Vec<_> = entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        rule_files.sort_by_key(std::fs::DirEntry::path);
 
-            for entry in rule_files {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if !content.trim().is_empty() {
-                        contents.push(content);
-                    }
-                }
+        for entry in rule_files {
+            if let Ok(content) = std::fs::read_to_string(entry.path())
+                && !content.trim().is_empty()
+            {
+                contents.push(content);
             }
         }
     }
@@ -412,12 +410,11 @@ pub fn build_memory_section(memory_dir: &Path) -> Option<String> {
 
     // Prefer the generated MEMORY.md index
     let index_path = memory_dir.join("MEMORY.md");
-    if index_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&index_path) {
-            if !content.trim().is_empty() {
-                return Some(format!("# Agent Memory\n\n{content}"));
-            }
-        }
+    if index_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&index_path)
+        && !content.trim().is_empty()
+    {
+        return Some(format!("# Agent Memory\n\n{content}"));
     }
 
     // Fallback: read individual files (backward compat)
@@ -437,10 +434,10 @@ pub fn build_memory_section(memory_dir: &Path) -> Option<String> {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !content.trim().is_empty() {
-                sections.push(format!("## {key}\n{content}"));
-            }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && !content.trim().is_empty()
+        {
+            sections.push(format!("## {key}\n{content}"));
         }
     }
 

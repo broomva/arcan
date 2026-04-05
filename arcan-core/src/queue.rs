@@ -298,16 +298,15 @@ impl MessageQueue {
         }
 
         let stale_timeout = self.config.steer_timeout * 2;
-        if let Some(oldest) = inner.pending.front() {
-            if let Some(queued_at) = oldest.queued_at {
-                if queued_at.elapsed() > stale_timeout {
-                    warnings.push(format!(
-                        "oldest message {} is stale ({:.1}s old)",
-                        oldest.id,
-                        queued_at.elapsed().as_secs_f64()
-                    ));
-                }
-            }
+        if let Some(oldest) = inner.pending.front()
+            && let Some(queued_at) = oldest.queued_at
+            && queued_at.elapsed() > stale_timeout
+        {
+            warnings.push(format!(
+                "oldest message {} is stale ({:.1}s old)",
+                oldest.id,
+                queued_at.elapsed().as_secs_f64()
+            ));
         }
 
         Ok(warnings)

@@ -154,18 +154,17 @@ impl AnthropicProvider {
                 },
                 Role::User => {
                     // Check if content is JSON-encoded content blocks (from shell tool results)
-                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content) {
-                        if !blocks.is_empty()
-                            && blocks
-                                .iter()
-                                .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
-                        {
-                            api_messages.push(ApiMessage {
-                                role: "user".to_string(),
-                                content: ApiContent::Blocks(blocks),
-                            });
-                            continue;
-                        }
+                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content)
+                        && !blocks.is_empty()
+                        && blocks
+                            .iter()
+                            .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                    {
+                        api_messages.push(ApiMessage {
+                            role: "user".to_string(),
+                            content: ApiContent::Blocks(blocks),
+                        });
+                        continue;
                     }
                     api_messages.push(ApiMessage {
                         role: "user".to_string(),
@@ -174,18 +173,17 @@ impl AnthropicProvider {
                 }
                 Role::Assistant => {
                     // Check if content is JSON-encoded content blocks (from shell tool_use)
-                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content) {
-                        if !blocks.is_empty()
-                            && blocks
-                                .iter()
-                                .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-                        {
-                            api_messages.push(ApiMessage {
-                                role: "assistant".to_string(),
-                                content: ApiContent::Blocks(blocks),
-                            });
-                            continue;
-                        }
+                    if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlock>>(&msg.content)
+                        && !blocks.is_empty()
+                        && blocks
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                    {
+                        api_messages.push(ApiMessage {
+                            role: "assistant".to_string(),
+                            content: ApiContent::Blocks(blocks),
+                        });
+                        continue;
                     }
                     api_messages.push(ApiMessage {
                         role: "assistant".to_string(),
@@ -377,12 +375,12 @@ impl Provider for AnthropicProvider {
                 }
                 "content_block_start" => {
                     let index = v["index"].as_u64().unwrap_or(0) as u32;
-                    if let Some(cb) = v.get("content_block") {
-                        if cb["type"].as_str() == Some("tool_use") {
-                            let id = cb["id"].as_str().unwrap_or_default().to_string();
-                            let name = cb["name"].as_str().unwrap_or_default().to_string();
-                            tool_inputs.insert(index, (id, name, String::new()));
-                        }
+                    if let Some(cb) = v.get("content_block")
+                        && cb["type"].as_str() == Some("tool_use")
+                    {
+                        let id = cb["id"].as_str().unwrap_or_default().to_string();
+                        let name = cb["name"].as_str().unwrap_or_default().to_string();
+                        tool_inputs.insert(index, (id, name, String::new()));
                     }
                 }
                 "content_block_delta" => {
@@ -403,10 +401,10 @@ impl Provider for AnthropicProvider {
                                 }
                             }
                             Some("input_json_delta") => {
-                                if let Some(json_chunk) = delta["partial_json"].as_str() {
-                                    if let Some(entry) = tool_inputs.get_mut(&index) {
-                                        entry.2.push_str(json_chunk);
-                                    }
+                                if let Some(json_chunk) = delta["partial_json"].as_str()
+                                    && let Some(entry) = tool_inputs.get_mut(&index)
+                                {
+                                    entry.2.push_str(json_chunk);
                                 }
                             }
                             _ => {}
@@ -436,10 +434,10 @@ impl Provider for AnthropicProvider {
                             _ => ModelStopReason::Unknown,
                         };
                     }
-                    if let Some(u) = v.get("usage") {
-                        if let Some(ref mut existing) = usage {
-                            existing.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
-                        }
+                    if let Some(u) = v.get("usage")
+                        && let Some(ref mut existing) = usage
+                    {
+                        existing.output_tokens = u["output_tokens"].as_u64().unwrap_or(0);
                     }
                 }
                 _ => {}

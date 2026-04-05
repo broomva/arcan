@@ -340,10 +340,10 @@ pub fn load_config(data_dir: &Path) -> ArcanConfig {
     let mut config = ArcanConfig::default();
 
     // Layer 1: global config
-    if let Some(global_path) = global_config_path() {
-        if let Some(global) = load_config_file(&global_path) {
-            config.merge(&global);
-        }
+    if let Some(global_path) = global_config_path()
+        && let Some(global) = load_config_file(&global_path)
+    {
+        config.merge(&global);
     }
 
     // Layer 2: project-local config
@@ -504,10 +504,10 @@ fn resolve_skill_dirs(configured: &[String]) -> Vec<std::path::PathBuf> {
 
 /// Expand `~` prefix to the user's home directory.
 fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
     std::path::PathBuf::from(path)
 }

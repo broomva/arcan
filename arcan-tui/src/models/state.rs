@@ -130,10 +130,10 @@ impl AppState {
 
     /// Clear expired error flashes (older than `ttl`).
     pub fn clear_expired_errors(&mut self, ttl: chrono::Duration) {
-        if let Some(ref flash) = self.last_error {
-            if Utc::now() - flash.timestamp > ttl {
-                self.last_error = None;
-            }
+        if let Some(ref flash) = self.last_error
+            && Utc::now() - flash.timestamp > ttl
+        {
+            self.last_error = None;
         }
     }
 
@@ -303,20 +303,19 @@ fn extract_api_error(text: &str) -> Option<String> {
 
     // Pattern 2: {"type": "error", "error": {"type": "...", "message": "..."}}
     // Used by Anthropic
-    if obj.get("type").and_then(Value::as_str) == Some("error") {
-        if let Some(error) = obj.get("error") {
-            if let Some(msg) = error.get("message").and_then(Value::as_str) {
-                let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
-                return Some(format!("{error_type}: {msg}"));
-            }
-        }
+    if obj.get("type").and_then(Value::as_str) == Some("error")
+        && let Some(error) = obj.get("error")
+        && let Some(msg) = error.get("message").and_then(Value::as_str)
+    {
+        let error_type = error.get("type").and_then(Value::as_str).unwrap_or("error");
+        return Some(format!("{error_type}: {msg}"));
     }
 
     // Pattern 3: {"message": "...", "status": 4xx/5xx}
-    if let Some(msg) = obj.get("message").and_then(Value::as_str) {
-        if obj.get("status").and_then(Value::as_u64).unwrap_or(0) >= 400 {
-            return Some(msg.to_string());
-        }
+    if let Some(msg) = obj.get("message").and_then(Value::as_str)
+        && obj.get("status").and_then(Value::as_u64).unwrap_or(0) >= 400
+    {
+        return Some(msg.to_string());
     }
 
     None

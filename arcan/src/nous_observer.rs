@@ -141,14 +141,14 @@ impl ToolHarnessObserver for NousToolObserver {
                         );
 
                         // Persist to Lago journal (fire-and-forget)
-                        if let Some(ref publisher) = self.publisher {
-                            if let Err(e) = publisher.publish_score(score).await {
-                                tracing::warn!(
-                                    evaluator = score.evaluator,
-                                    error = %e,
-                                    "failed to publish eval score to Lago (non-fatal)"
-                                );
-                            }
+                        if let Some(ref publisher) = self.publisher
+                            && let Err(e) = publisher.publish_score(score).await
+                        {
+                            tracing::warn!(
+                                evaluator = score.evaluator,
+                                error = %e,
+                                "failed to publish eval score to Lago (non-fatal)"
+                            );
                         }
 
                         // Record to in-memory ScoreStore (serves /nous HTTP eval API)
@@ -258,14 +258,14 @@ impl ToolHarnessObserver for NousToolObserver {
                         );
 
                         // Persist to Lago journal
-                        if let Some(ref publisher) = self.publisher {
-                            if let Err(e) = publisher.publish_score(score).await {
-                                tracing::warn!(
-                                    evaluator = score.evaluator,
-                                    error = %e,
-                                    "failed to publish async judge score to Lago (non-fatal)"
-                                );
-                            }
+                        if let Some(ref publisher) = self.publisher
+                            && let Err(e) = publisher.publish_score(score).await
+                        {
+                            tracing::warn!(
+                                evaluator = score.evaluator,
+                                error = %e,
+                                "failed to publish async judge score to Lago (non-fatal)"
+                            );
                         }
 
                         // Record to in-memory ScoreStore
@@ -316,13 +316,13 @@ impl ToolHarnessObserver for NousToolObserver {
                 outcome,
             };
 
-            if let Some(ref publisher) = self.publisher {
-                if let Err(e) = publisher.publish_event(egri_event).await {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to publish EGRI outcome to Lago (non-fatal)"
-                    );
-                }
+            if let Some(ref publisher) = self.publisher
+                && let Err(e) = publisher.publish_event(egri_event).await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "failed to publish EGRI outcome to Lago (non-fatal)"
+                );
             }
 
             tracing::info!(

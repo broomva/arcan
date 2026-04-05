@@ -309,12 +309,12 @@ impl OpenAiCompatibleProvider {
         let mut directives = Vec::new();
 
         // Handle text content
-        if let Some(content) = &choice.message.content {
-            if !content.is_empty() {
-                directives.push(ModelDirective::Text {
-                    delta: content.clone(),
-                });
-            }
+        if let Some(content) = &choice.message.content
+            && !content.is_empty()
+        {
+            directives.push(ModelDirective::Text {
+                delta: content.clone(),
+            });
         }
 
         // Handle tool calls
@@ -450,11 +450,11 @@ impl OpenAiCompatibleProvider {
         });
 
         // Merge extra body parameters (e.g., x_context_strategy for apfel).
-        if let Some(extra) = &self.config.extra_body {
-            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
-                for (k, v) in extra {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = &self.config.extra_body
+            && let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object())
+        {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone());
             }
         }
 
@@ -526,18 +526,18 @@ impl OpenAiCompatibleProvider {
                     finish_reason = Some(reason);
                 }
 
-                if let Some(content) = &choice.delta.content {
-                    if !content.is_empty() {
-                        on_delta(StreamEvent::Text(content));
-                        accumulated_text.push_str(content);
-                    }
+                if let Some(content) = &choice.delta.content
+                    && !content.is_empty()
+                {
+                    on_delta(StreamEvent::Text(content));
+                    accumulated_text.push_str(content);
                 }
 
                 // Handle reasoning/thinking tokens from models like gemma4
-                if let Some(reasoning) = &choice.delta.reasoning {
-                    if !reasoning.is_empty() {
-                        on_delta(StreamEvent::Reasoning(reasoning));
-                    }
+                if let Some(reasoning) = &choice.delta.reasoning
+                    && !reasoning.is_empty()
+                {
+                    on_delta(StreamEvent::Reasoning(reasoning));
                 }
 
                 if let Some(tcs) = &choice.delta.tool_calls {
@@ -638,11 +638,11 @@ impl Provider for OpenAiCompatibleProvider {
         });
 
         // Merge extra body parameters (e.g., x_context_strategy for apfel).
-        if let Some(extra) = &self.config.extra_body {
-            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
-                for (k, v) in extra {
-                    base.insert(k.clone(), v.clone());
-                }
+        if let Some(extra) = &self.config.extra_body
+            && let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object())
+        {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone());
             }
         }
 

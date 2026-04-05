@@ -144,30 +144,28 @@ impl SessionRepository for LagoSessionRepository {
                 .as_ref()
                 .is_some_and(|pid| pid.to_string() == parent_id);
 
-            if is_child {
-                if let Some(agent_event) = event_map::lago_to_arcan(envelope) {
-                    let arcan_id = envelope
-                        .metadata
-                        .get("arcan_event_id")
-                        .cloned()
-                        .unwrap_or_else(|| envelope.event_id.to_string());
+            if is_child && let Some(agent_event) = event_map::lago_to_arcan(envelope) {
+                let arcan_id = envelope
+                    .metadata
+                    .get("arcan_event_id")
+                    .cloned()
+                    .unwrap_or_else(|| envelope.event_id.to_string());
 
-                    let timestamp = DateTime::<Utc>::from_timestamp(
-                        (envelope.timestamp / 1_000_000) as i64,
-                        ((envelope.timestamp % 1_000_000) * 1_000) as u32,
-                    )
-                    .unwrap_or_else(Utc::now);
+                let timestamp = DateTime::<Utc>::from_timestamp(
+                    (envelope.timestamp / 1_000_000) as i64,
+                    ((envelope.timestamp % 1_000_000) * 1_000) as u32,
+                )
+                .unwrap_or_else(Utc::now);
 
-                    results.push(EventRecord {
-                        id: arcan_id,
-                        session_id: envelope.session_id.to_string(),
-                        branch_id: envelope.branch_id.to_string(),
-                        sequence: envelope.seq,
-                        parent_id: Some(parent_id.to_string()),
-                        timestamp,
-                        event: agent_event,
-                    });
-                }
+                results.push(EventRecord {
+                    id: arcan_id,
+                    session_id: envelope.session_id.to_string(),
+                    branch_id: envelope.branch_id.to_string(),
+                    sequence: envelope.seq,
+                    parent_id: Some(parent_id.to_string()),
+                    timestamp,
+                    event: agent_event,
+                });
             }
         }
 

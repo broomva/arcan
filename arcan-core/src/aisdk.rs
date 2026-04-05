@@ -179,14 +179,14 @@ pub fn to_ui_stream_parts(event: &AgentEvent) -> Vec<UiStreamPart> {
             ..
         } => {
             let mut parts = Vec::new();
-            if let Some(answer) = final_answer {
-                if !answer.is_empty() {
-                    let text_id = format!("{run_id}-text");
-                    parts.push(UiStreamPart::TextDelta {
-                        id: text_id.clone(),
-                        delta: answer.clone(),
-                    });
-                }
+            if let Some(answer) = final_answer
+                && !answer.is_empty()
+            {
+                let text_id = format!("{run_id}-text");
+                parts.push(UiStreamPart::TextDelta {
+                    id: text_id.clone(),
+                    delta: answer.clone(),
+                });
             }
             parts.push(UiStreamPart::Finish {});
             parts

@@ -135,17 +135,17 @@ impl StreamingMarkdown {
         }
 
         // Numbered lists: `1. item`.
-        if trimmed.len() > 2 {
-            if let Some(dot_pos) = trimmed.find(". ") {
-                if dot_pos <= 3 && trimmed[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
-                    let num = &trimmed[..dot_pos];
-                    let rest = &trimmed[dot_pos + 2..];
-                    let styled = render_inline(rest);
-                    let _ = writeln!(out, "  {num}. {styled}");
-                    let _ = out.flush();
-                    return;
-                }
-            }
+        if trimmed.len() > 2
+            && let Some(dot_pos) = trimmed.find(". ")
+            && dot_pos <= 3
+            && trimmed[..dot_pos].chars().all(|c| c.is_ascii_digit())
+        {
+            let num = &trimmed[..dot_pos];
+            let rest = &trimmed[dot_pos + 2..];
+            let styled = render_inline(rest);
+            let _ = writeln!(out, "  {num}. {styled}");
+            let _ = out.flush();
+            return;
         }
 
         // Blockquotes.
@@ -172,39 +172,42 @@ fn render_inline(text: &str) -> String {
 
     while i < len {
         // Bold: **text**
-        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
-            if let Some(end) = find_closing(&chars, i + 2, ['*', '*']) {
-                result.push_str(ansi::BOLD);
-                let inner: String = chars[i + 2..end].iter().collect();
-                result.push_str(&inner);
-                result.push_str(ansi::RESET);
-                i = end + 2;
-                continue;
-            }
+        if i + 1 < len
+            && chars[i] == '*'
+            && chars[i + 1] == '*'
+            && let Some(end) = find_closing(&chars, i + 2, ['*', '*'])
+        {
+            result.push_str(ansi::BOLD);
+            let inner: String = chars[i + 2..end].iter().collect();
+            result.push_str(&inner);
+            result.push_str(ansi::RESET);
+            i = end + 2;
+            continue;
         }
 
         // Italic: *text* (single asterisk, not at word boundary issues)
-        if chars[i] == '*' && (i + 1 < len && chars[i + 1] != '*' && chars[i + 1] != ' ') {
-            if let Some(end) = find_single_closing(&chars, i + 1, '*') {
-                result.push_str(ansi::ITALIC);
-                let inner: String = chars[i + 1..end].iter().collect();
-                result.push_str(&inner);
-                result.push_str(ansi::RESET);
-                i = end + 1;
-                continue;
-            }
+        if chars[i] == '*'
+            && (i + 1 < len && chars[i + 1] != '*' && chars[i + 1] != ' ')
+            && let Some(end) = find_single_closing(&chars, i + 1, '*')
+        {
+            result.push_str(ansi::ITALIC);
+            let inner: String = chars[i + 1..end].iter().collect();
+            result.push_str(&inner);
+            result.push_str(ansi::RESET);
+            i = end + 1;
+            continue;
         }
 
         // Inline code: `text`
-        if chars[i] == '`' {
-            if let Some(end) = find_single_closing(&chars, i + 1, '`') {
-                result.push_str(ansi::YELLOW);
-                let inner: String = chars[i + 1..end].iter().collect();
-                result.push_str(&inner);
-                result.push_str(ansi::RESET);
-                i = end + 1;
-                continue;
-            }
+        if chars[i] == '`'
+            && let Some(end) = find_single_closing(&chars, i + 1, '`')
+        {
+            result.push_str(ansi::YELLOW);
+            let inner: String = chars[i + 1..end].iter().collect();
+            result.push_str(&inner);
+            result.push_str(ansi::RESET);
+            i = end + 1;
+            continue;
         }
 
         result.push(chars[i]);

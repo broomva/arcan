@@ -242,25 +242,23 @@ impl ModelProviderPort for ArcanProviderAdapter {
         // which panics if called directly on a tokio worker thread.
         // Wrap in spawn_blocking to run on a dedicated thread.
         let turn = tokio::task::spawn_blocking(move || {
-            if use_streaming {
-                if let Some(sender) = sender {
-                    let sess = session_id;
-                    let branch = branch_id;
-                    return provider.complete_streaming(&provider_request, &|delta| {
-                        if let StreamEvent::Text(text) = delta {
-                            let event = EventRecord::new(
-                                sess.clone(),
-                                branch.clone(),
-                                0, // sequence 0 = ephemeral, not persisted
-                                EventKind::AssistantTextDelta {
-                                    delta: text.to_owned(),
-                                    index: None,
-                                },
-                            );
-                            let _ = sender.send(event);
-                        }
-                    });
-                }
+            if use_streaming && let Some(sender) = sender {
+                let sess = session_id;
+                let branch = branch_id;
+                return provider.complete_streaming(&provider_request, &|delta| {
+                    if let StreamEvent::Text(text) = delta {
+                        let event = EventRecord::new(
+                            sess.clone(),
+                            branch.clone(),
+                            0, // sequence 0 = ephemeral, not persisted
+                            EventKind::AssistantTextDelta {
+                                delta: text.to_owned(),
+                                index: None,
+                            },
+                        );
+                        let _ = sender.send(event);
+                    }
+                });
             }
             provider.complete(&provider_request)
         })

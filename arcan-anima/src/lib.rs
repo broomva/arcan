@@ -197,18 +197,16 @@ fn extract_anima_events(
         if let EventPayload::Custom {
             event_type, data, ..
         } = &envelope.payload
+            && event_type.starts_with(AnimaEventKind::NAMESPACE)
+            && let Some(anima_event) = AnimaEventKind::from_custom(event_type, data)
         {
-            if event_type.starts_with(AnimaEventKind::NAMESPACE) {
-                if let Some(anima_event) = AnimaEventKind::from_custom(event_type, data) {
-                    let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                        (envelope.timestamp / 1_000_000) as i64,
-                        ((envelope.timestamp % 1_000_000) * 1_000) as u32,
-                    )
-                    .unwrap_or_else(chrono::Utc::now);
+            let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                (envelope.timestamp / 1_000_000) as i64,
+                ((envelope.timestamp % 1_000_000) * 1_000) as u32,
+            )
+            .unwrap_or_else(chrono::Utc::now);
 
-                    events.push((anima_event, envelope.seq, timestamp));
-                }
-            }
+            events.push((anima_event, envelope.seq, timestamp));
         }
     }
 

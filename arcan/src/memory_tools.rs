@@ -56,28 +56,28 @@ fn keyword_search_results(memory_dir: &Path, keywords: &[String]) -> Vec<serde_j
     if let Ok(entries) = fs::read_dir(memory_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|e| e == "md") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    let content_lower = content.to_lowercase();
-                    let hit_count = keyword_refs
-                        .iter()
-                        .filter(|kw| content_lower.contains(*kw))
-                        .count();
+            if path.extension().is_some_and(|e| e == "md")
+                && let Ok(content) = fs::read_to_string(&path)
+            {
+                let content_lower = content.to_lowercase();
+                let hit_count = keyword_refs
+                    .iter()
+                    .filter(|kw| content_lower.contains(*kw))
+                    .count();
 
-                    if hit_count > 0 {
-                        let file_name = path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
+                if hit_count > 0 {
+                    let file_name = path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
 
-                        matches.push(json!({
-                            "file": file_name,
-                            "relevance": hit_count,
-                            "excerpt": extract_excerpt(&content, &keyword_refs, 3),
-                            "backend": "keyword",
-                        }));
-                    }
+                    matches.push(json!({
+                        "file": file_name,
+                        "relevance": hit_count,
+                        "excerpt": extract_excerpt(&content, &keyword_refs, 3),
+                        "backend": "keyword",
+                    }));
                 }
             }
         }
@@ -455,47 +455,47 @@ impl Tool for MemoryBrowseTool {
         if let Ok(entries) = fs::read_dir(&self.memory_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "md") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        let file_name = path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
+                if path.extension().is_some_and(|e| e == "md")
+                    && let Ok(content) = fs::read_to_string(&path)
+                {
+                    let file_name = path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
 
-                        let frontmatter = parse_simple_frontmatter(&content);
-                        let tier = frontmatter
-                            .get("tier")
-                            .cloned()
-                            .unwrap_or_else(|| "unknown".into());
-                        let mem_type = frontmatter
-                            .get("type")
-                            .cloned()
-                            .unwrap_or_else(|| "unknown".into());
-                        let title = frontmatter
-                            .get("title")
-                            .cloned()
-                            .unwrap_or_else(|| file_name.clone());
+                    let frontmatter = parse_simple_frontmatter(&content);
+                    let tier = frontmatter
+                        .get("tier")
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".into());
+                    let mem_type = frontmatter
+                        .get("type")
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".into());
+                    let title = frontmatter
+                        .get("title")
+                        .cloned()
+                        .unwrap_or_else(|| file_name.clone());
 
-                        // Apply filters
-                        if let Some(ref ft) = filter_tier {
-                            if tier.to_lowercase() != *ft {
-                                continue;
-                            }
-                        }
-                        if let Some(ref fty) = filter_type {
-                            if mem_type.to_lowercase() != *fty {
-                                continue;
-                            }
-                        }
-
-                        memories.push(json!({
-                            "file": file_name,
-                            "title": title,
-                            "tier": tier,
-                            "type": mem_type,
-                        }));
+                    // Apply filters
+                    if let Some(ref ft) = filter_tier
+                        && tier.to_lowercase() != *ft
+                    {
+                        continue;
                     }
+                    if let Some(ref fty) = filter_type
+                        && mem_type.to_lowercase() != *fty
+                    {
+                        continue;
+                    }
+
+                    memories.push(json!({
+                        "file": file_name,
+                        "title": title,
+                        "tier": tier,
+                        "type": mem_type,
+                    }));
                 }
             }
         }
@@ -612,12 +612,11 @@ impl Tool for MemoryRecentTool {
         if let Ok(entries) = fs::read_dir(&self.memory_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "md") {
-                    if let Ok(meta) = fs::metadata(&path) {
-                        if let Ok(modified) = meta.modified() {
-                            files.push((path, modified));
-                        }
-                    }
+                if path.extension().is_some_and(|e| e == "md")
+                    && let Ok(meta) = fs::metadata(&path)
+                    && let Ok(modified) = meta.modified()
+                {
+                    files.push((path, modified));
                 }
             }
         }

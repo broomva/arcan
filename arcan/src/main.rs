@@ -301,10 +301,10 @@ async fn resolve_session(
     }
 
     // Try the HTTP API if a daemon URL is available (avoids redb lock conflict).
-    if let Some(url) = base_url {
-        if let Some(session) = cli_run::resolve_session_via_api(url).await {
-            return session;
-        }
+    if let Some(url) = base_url
+        && let Some(session) = cli_run::resolve_session_via_api(url).await
+    {
+        return session;
     }
 
     "default".to_owned()

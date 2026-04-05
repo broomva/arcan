@@ -122,7 +122,7 @@ fn decay_unused_memories(memory_dir: &Path) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.extension().is_some_and(|e| e == "md") {
+        if path.extension().is_none_or(|e| e != "md") {
             continue;
         }
         // Skip the index file itself
@@ -181,10 +181,11 @@ fn extract_patterns(memory_dir: &Path) {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if name.starts_with("session_summary") && name.ends_with(".md") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                summaries.push(content);
-            }
+        if name.starts_with("session_summary")
+            && name.ends_with(".md")
+            && let Ok(content) = fs::read_to_string(&path)
+        {
+            summaries.push(content);
         }
     }
 
@@ -270,7 +271,7 @@ fn prune_low_importance(memory_dir: &Path) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.extension().is_some_and(|e| e == "md") {
+        if path.extension().is_none_or(|e| e != "md") {
             continue;
         }
         if path.file_name().is_some_and(|n| n == "MEMORY.md") {

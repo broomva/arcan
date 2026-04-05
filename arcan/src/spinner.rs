@@ -503,7 +503,7 @@ fn render_loop(state: &Arc<SpinnerState>, is_tool: bool) {
 
     while !state.stop.load(Ordering::Relaxed) {
         tick_count += 1;
-        if tick_count % frames_per_glyph == 0 {
+        if tick_count.is_multiple_of(frames_per_glyph) {
             frame = (frame + 1) % glyphs.len();
         }
 

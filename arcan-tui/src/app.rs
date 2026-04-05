@@ -303,17 +303,17 @@ impl App {
                 KeyCode::Enter => {
                     // If there's an exact match or single suggestion, accept it;
                     // otherwise fall through to normal submit
-                    if self.autocomplete.suggestions.len() == 1 {
-                        if let Some(command_name) = self.autocomplete.accept() {
-                            self.input_bar.clear();
-                            for ch in command_name.chars() {
-                                self.input_bar
-                                    .input(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
-                            }
+                    if self.autocomplete.suggestions.len() == 1
+                        && let Some(command_name) = self.autocomplete.accept()
+                    {
+                        self.input_bar.clear();
+                        for ch in command_name.chars() {
                             self.input_bar
-                                .input(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-                            return;
+                                .input(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
                         }
+                        self.input_bar
+                            .input(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                        return;
                     }
                     // Multiple suggestions: dismiss and submit as typed
                     self.autocomplete.dismiss();
@@ -572,16 +572,14 @@ impl App {
 
                     // If device flow, extract user code from captured stderr and
                     // send it as a separate alert so the user can see it in the TUI.
-                    if device {
-                        if let Some(ref captured) = captured {
-                            // Look for "Enter code: XXXX" in captured output
-                            for line in captured.lines() {
-                                if line.contains("Enter code:") || line.contains("visit:") {
-                                    let _ = tx.blocking_send(TuiEvent::OAuthResult {
-                                        provider: canonical.clone(),
-                                        result: Ok(line.trim().to_string()),
-                                    });
-                                }
+                    if device && let Some(ref captured) = captured {
+                        // Look for "Enter code: XXXX" in captured output
+                        for line in captured.lines() {
+                            if line.contains("Enter code:") || line.contains("visit:") {
+                                let _ = tx.blocking_send(TuiEvent::OAuthResult {
+                                    provider: canonical.clone(),
+                                    result: Ok(line.trim().to_string()),
+                                });
                             }
                         }
                     }
