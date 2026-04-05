@@ -130,7 +130,10 @@ impl MessageQueue {
 
     /// Enqueue a message. Returns error if queue is full.
     pub fn enqueue(&self, message: QueuedMessage) -> Result<(), QueueError> {
-        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         if inner.pending.len() >= self.config.max_queue_depth {
             return Err(QueueError::QueueFull {
                 depth: inner.pending.len(),
@@ -145,7 +148,10 @@ impl MessageQueue {
 
     /// Remove a specific queued message by ID.
     pub fn remove(&self, id: &str) -> Result<QueuedMessage, QueueError> {
-        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let pos = inner
             .pending
             .iter()
@@ -156,7 +162,10 @@ impl MessageQueue {
 
     /// Get a snapshot of the current queue state.
     pub fn status(&self) -> Result<QueueStatus, QueueError> {
-        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let oldest_age = inner
             .pending
             .front()
@@ -171,14 +180,20 @@ impl MessageQueue {
 
     /// Mark that an active run has started.
     pub fn set_active_run(&self, active: bool) -> Result<(), QueueError> {
-        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         inner.has_active_run = active;
         Ok(())
     }
 
     /// Whether there is an active run.
     pub fn has_active_run(&self) -> Result<bool, QueueError> {
-        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         Ok(inner.has_active_run)
     }
 
@@ -187,7 +202,10 @@ impl MessageQueue {
     /// Inspects the queue for `Interrupt` or `Steer` messages and returns
     /// the appropriate `SteeringAction`. Priority: interrupt > steer.
     pub fn check_preemption(&self) -> Result<SteeringAction, QueueError> {
-        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
 
         // Priority 1: Interrupt messages — abort immediately
         if let Some(pos) = inner
@@ -219,11 +237,14 @@ impl MessageQueue {
     /// Returns messages ordered: followup first (same context), then collect (fresh runs).
     /// Collect messages within the coalesce window are batched together.
     pub fn drain_after_run(&self) -> Result<Vec<QueuedMessage>, QueueError> {
-        let mut inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         inner.has_active_run = false;
 
         if inner.pending.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let mut followups = Vec::new();
@@ -247,7 +268,6 @@ impl MessageQueue {
             let (within_window, outside): (Vec<_>, Vec<_>) = collects
                 .into_iter()
                 .partition(|m| m.queued_at.is_some_and(|t| now.duration_since(t) <= window));
-            // Keep outside-window messages as individual items
             for msg in outside {
                 remaining.push_back(msg);
             }
@@ -256,17 +276,17 @@ impl MessageQueue {
 
         inner.pending = remaining;
 
-        // Return in priority order: followups first, then collects
         let mut result = followups;
         result.extend(collects);
         Ok(result)
     }
 
-    /// Check queue health for heartbeat integration (Phase 2.4).
-    ///
-    /// Returns warnings if queue depth exceeds threshold or messages are stale.
+    /// Check queue health for heartbeat integration.
     pub fn health_check(&self) -> Result<Vec<String>, QueueError> {
-        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         let mut warnings = Vec::new();
 
         let depth = inner.pending.len();
@@ -295,7 +315,10 @@ impl MessageQueue {
 
     /// Current queue depth.
     pub fn depth(&self) -> Result<usize, QueueError> {
-        let inner = self.inner.lock().map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| QueueError::LockPoisoned(e.to_string()))?;
         Ok(inner.pending.len())
     }
 
@@ -306,7 +329,7 @@ impl MessageQueue {
 }
 
 impl PreemptionCheck for MessageQueue {
-    fn check_preemption(&self) -> SteeringAction {
+    fn check_preemption(&self) -> Result<SteeringAction, QueueError> {
         self.check_preemption()
     }
 }
@@ -336,34 +359,36 @@ mod tests {
     #[test]
     fn collect_mode_queued_and_drained() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("q1", SteeringMode::Collect, "do this later"))
             .unwrap();
 
-        assert_eq!(queue.depth(), 1);
-        assert!(queue.has_active_run());
+        assert_eq!(queue.depth().unwrap(), 1);
+        assert!(queue.has_active_run().unwrap());
 
-        // Preemption check should return Continue (collect doesn't preempt)
-        assert!(matches!(queue.check_preemption(), SteeringAction::Continue));
+        assert!(matches!(
+            queue.check_preemption().unwrap(),
+            SteeringAction::Continue
+        ));
 
-        let drained = queue.drain_after_run();
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].id, "q1");
-        assert!(!queue.has_active_run());
+        assert!(!queue.has_active_run().unwrap());
     }
 
     #[test]
     fn steer_mode_preempts_at_tool_boundary() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("q1", SteeringMode::Steer, "do this instead"))
             .unwrap();
 
-        match queue.check_preemption() {
+        match queue.check_preemption().unwrap() {
             SteeringAction::CompleteAndSwitch(msg) => {
                 assert_eq!(msg.id, "q1");
                 assert_eq!(msg.content, "do this instead");
@@ -371,14 +396,13 @@ mod tests {
             other => panic!("expected CompleteAndSwitch, got {other:?}"),
         }
 
-        // Queue should be empty after steer consumed
-        assert_eq!(queue.depth(), 0);
+        assert_eq!(queue.depth().unwrap(), 0);
     }
 
     #[test]
     fn followup_inherits_context_order() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("c1", SteeringMode::Collect, "fresh run"))
@@ -387,8 +411,7 @@ mod tests {
             .enqueue(make_msg("f1", SteeringMode::Followup, "same context"))
             .unwrap();
 
-        let drained = queue.drain_after_run();
-        // Followup comes before Collect
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].id, "f1");
         assert_eq!(drained[1].id, "c1");
@@ -397,13 +420,13 @@ mod tests {
     #[test]
     fn interrupt_aborts_at_tool_boundary() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("i1", SteeringMode::Interrupt, "stop now"))
             .unwrap();
 
-        match queue.check_preemption() {
+        match queue.check_preemption().unwrap() {
             SteeringAction::Abort { reason } => {
                 assert!(reason.contains("i1"));
             }
@@ -436,17 +459,14 @@ mod tests {
 
     #[test]
     fn steer_timeout_falls_back_to_collect() {
-        // If no tool boundary occurs within timeout, steer messages
-        // are treated as collect messages when drained.
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("s1", SteeringMode::Steer, "should steer"))
             .unwrap();
 
-        // Simulate: we never call check_preemption, run finishes naturally
-        let drained = queue.drain_after_run();
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].id, "s1");
     }
@@ -454,13 +474,12 @@ mod tests {
     #[test]
     fn collect_messages_coalesced_within_window() {
         let config = QueueConfig {
-            collect_coalesce_window: Duration::from_secs(10), // large window
+            collect_coalesce_window: Duration::from_secs(10),
             ..Default::default()
         };
         let queue = MessageQueue::new(config);
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
-        // All messages queued close together
         queue
             .enqueue(make_msg("c1", SteeringMode::Collect, "a"))
             .unwrap();
@@ -471,15 +490,14 @@ mod tests {
             .enqueue(make_msg("c3", SteeringMode::Collect, "c"))
             .unwrap();
 
-        let drained = queue.drain_after_run();
-        // All should be drained together
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 3);
     }
 
     #[test]
     fn drain_order_interrupt_steer_followup_collect() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("c1", SteeringMode::Collect, "collect"))
@@ -494,20 +512,17 @@ mod tests {
             .enqueue(make_msg("s1", SteeringMode::Steer, "steer"))
             .unwrap();
 
-        // Preemption should pick up interrupt first (highest priority)
-        match queue.check_preemption() {
+        match queue.check_preemption().unwrap() {
             SteeringAction::Abort { .. } => {}
             other => panic!("expected Abort from interrupt, got {other:?}"),
         }
 
-        // Next preemption check should pick steer
-        match queue.check_preemption() {
+        match queue.check_preemption().unwrap() {
             SteeringAction::CompleteAndSwitch(msg) => assert_eq!(msg.id, "s1"),
             other => panic!("expected CompleteAndSwitch from steer, got {other:?}"),
         }
 
-        // Drain remaining: followup before collect
-        let drained = queue.drain_after_run();
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].id, "f1");
         assert_eq!(drained[1].id, "c1");
@@ -516,7 +531,10 @@ mod tests {
     #[test]
     fn preemption_returns_continue_on_empty_queue() {
         let queue = MessageQueue::new(QueueConfig::default());
-        assert!(matches!(queue.check_preemption(), SteeringAction::Continue));
+        assert!(matches!(
+            queue.check_preemption().unwrap(),
+            SteeringAction::Continue
+        ));
     }
 
     #[test]
@@ -531,21 +549,20 @@ mod tests {
 
         let removed = queue.remove("q1").unwrap();
         assert_eq!(removed.id, "q1");
-        assert_eq!(queue.depth(), 1);
+        assert_eq!(queue.depth().unwrap(), 1);
 
-        // Removing non-existent returns error
         assert!(queue.remove("q99").is_err());
     }
 
     #[test]
     fn status_snapshot() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
         queue
             .enqueue(make_msg("q1", SteeringMode::Collect, "test"))
             .unwrap();
 
-        let status = queue.status();
+        let status = queue.status().unwrap();
         assert_eq!(status.depth, 1);
         assert!(status.has_active_run);
         assert_eq!(status.pending.len(), 1);
@@ -560,14 +577,13 @@ mod tests {
         };
         let queue = MessageQueue::new(config);
 
-        // Fill past half
         for i in 0..3 {
             queue
                 .enqueue(make_msg(&format!("q{i}"), SteeringMode::Collect, "x"))
                 .unwrap();
         }
 
-        let warnings = queue.health_check();
+        let warnings = queue.health_check().unwrap();
         assert!(
             warnings
                 .iter()
@@ -583,13 +599,13 @@ mod tests {
         queue
             .enqueue(make_msg("q1", SteeringMode::Collect, "shared"))
             .unwrap();
-        assert_eq!(queue2.depth(), 1);
+        assert_eq!(queue2.depth().unwrap(), 1);
     }
 
     #[test]
     fn multiple_followups_preserved_in_order() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
+        queue.set_active_run(true).unwrap();
 
         queue
             .enqueue(make_msg("f1", SteeringMode::Followup, "first"))
@@ -601,7 +617,7 @@ mod tests {
             .enqueue(make_msg("f3", SteeringMode::Followup, "third"))
             .unwrap();
 
-        let drained = queue.drain_after_run();
+        let drained = queue.drain_after_run().unwrap();
         assert_eq!(drained.len(), 3);
         assert_eq!(drained[0].id, "f1");
         assert_eq!(drained[1].id, "f2");
@@ -611,8 +627,8 @@ mod tests {
     #[test]
     fn drain_empty_queue_returns_empty() {
         let queue = MessageQueue::new(QueueConfig::default());
-        queue.set_active_run(true);
-        let drained = queue.drain_after_run();
+        queue.set_active_run(true).unwrap();
+        let drained = queue.drain_after_run().unwrap();
         assert!(drained.is_empty());
     }
 }

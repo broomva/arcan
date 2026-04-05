@@ -636,6 +636,7 @@ dependencies = [
  "autonomic-core",
  "axum 0.8.8",
  "chrono",
+ "futures-util",
  "http-body-util",
  "jsonwebtoken",
  "life-vigil",
