@@ -111,6 +111,7 @@ pub fn build_system_prompt(
 ///
 /// Same as [`build_system_prompt()`] but accepts a [`PromptIdentity`] for
 /// persona injection into the cacheable section.
+#[allow(clippy::too_many_arguments)]
 pub fn build_system_prompt_with_identity(
     workspace: &Path,
     provider_name: &str,
