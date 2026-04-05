@@ -47,6 +47,7 @@ dirs = "6"
 
 # Platform
 libc = "0.2"
+fastrand = "2"
 
 # Domain Types
 aios-protocol = { workspace = true }

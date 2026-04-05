@@ -94,10 +94,12 @@ pub fn render(
         ]));
     }
 
-    // Busy indicator when no streaming text yet
+    // Animated thinking indicator when no streaming text yet
     if state.is_busy && state.streaming_text.is_none() {
+        let glyph = state.spinner.current();
+        let verb = state.spinner.verb();
         lines.push(Line::from(vec![Span::styled(
-            " Thinking...",
+            format!(" {glyph} {verb}\u{2026}"),
             theme.spinner,
         )]));
     }

@@ -586,7 +586,7 @@ mod tests {
 
         assert!(content.contains("You:"), "should show user message");
         assert!(
-            content.contains("Thinking"),
+            content.contains('\u{2026}'), // ellipsis from animated spinner verb
             "should show busy indicator: {content}"
         );
     }
