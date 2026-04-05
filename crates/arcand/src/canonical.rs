@@ -230,6 +230,10 @@ struct CanonicalState {
     /// Refreshed at most every 60 seconds to avoid running git on every request.
     /// BRO-374: Daemon injects git context into system prompt.
     cached_git_context: Arc<Mutex<Option<(Instant, String)>>>,
+    /// Consciousness registry for event-driven session actors (BRO-455).
+    /// When `ARCAN_CONSCIOUSNESS=true`, run_session pushes events to actors
+    /// instead of blocking on the tick loop.
+    consciousness_registry: Option<Arc<crate::consciousness::ConsciousnessRegistry>>,
 }
 
 /// Daemon-level Autonomic context regulation state.
@@ -692,6 +696,14 @@ pub fn create_canonical_router_with_skills(
         bare,
         autonomic: Arc::new(Mutex::new(AutonomicDaemonState::new(bare))),
         cached_git_context: Arc::new(Mutex::new(None)),
+        consciousness_registry: if crate::consciousness::is_consciousness_enabled() {
+            tracing::info!("Consciousness mode ENABLED (BRO-455)");
+            Some(Arc::new(crate::consciousness::ConsciousnessRegistry::new(
+                crate::consciousness::ConsciousnessConfig::default(),
+            )))
+        } else {
+            None
+        },
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -1577,6 +1589,72 @@ async fn run_session(
         tool_filter = ?combined_allowed_tools.as_ref().map(Vec::len),
         "running agent tick with identity"
     );
+
+    // ─── Consciousness dispatch (BRO-455) ────────────────────────────
+    // When ARCAN_CONSCIOUSNESS=true, push the message to the session's
+    // consciousness actor instead of blocking on the tick loop.
+    if let Some(ref registry) = state.consciousness_registry {
+        let handle =
+            registry.get_or_create(session_id.as_str(), branch.clone(), state.runtime.clone());
+
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let send_result = handle
+            .send(crate::consciousness::ConsciousnessEvent::UserMessage(
+                Box::new(crate::consciousness::UserMessageEvent {
+                    objective: objective.clone(),
+                    branch: branch.clone(),
+                    steering: aios_protocol::SteeringMode::Collect,
+                    ack: Some(ack_tx),
+                    run_context: crate::consciousness::RunContext {
+                        system_prompt: system_prompt.clone(),
+                        allowed_tools: combined_allowed_tools.clone(),
+                        proposed_tool: proposed_tool.clone(),
+                    },
+                }),
+            ))
+            .await;
+
+        if send_result.is_err() {
+            return Err(internal_error(format!(
+                "consciousness actor for session {} is not running",
+                session_id
+            )));
+        }
+
+        // Wait for acknowledgment (fast — actor responds immediately).
+        match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+            Ok(Ok(crate::consciousness::ConsciousnessAck::Accepted { queued })) => {
+                tracing::info!(
+                    session = %session_id,
+                    queued,
+                    "consciousness accepted message"
+                );
+                return Ok(Json(RunResponse {
+                    session_id,
+                    mode: OperatingMode::Execute,
+                    state: AgentStateVector::default(),
+                    events_emitted: 0,
+                    last_sequence: 0,
+                }));
+            }
+            Ok(Ok(crate::consciousness::ConsciousnessAck::Rejected { reason })) => {
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({ "error": "consciousness_rejected", "reason": reason })),
+                ));
+            }
+            Ok(Err(_)) => {
+                return Err(internal_error("consciousness actor dropped ack channel"));
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    Json(json!({ "error": "consciousness_timeout" })),
+                ));
+            }
+        }
+    }
+    // ─── End consciousness dispatch ──────────────────────────────────
 
     // BRO-217: For anonymous sessions, mark as ephemeral so that MemoryProposed /
     // MemoryCommitted events are discarded instead of persisted to Lago.

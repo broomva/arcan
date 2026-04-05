@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod prompt;
 pub mod protocol;
 pub mod protocol_bridge;
+pub mod queue;
 pub mod runtime;
 pub mod state;
 

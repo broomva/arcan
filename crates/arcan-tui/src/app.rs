@@ -855,16 +855,13 @@ impl App {
         }
 
         // Autonomic details
-        match self.client.get_autonomic().await {
-            Ok(info) => {
-                lines.push(format!(
-                    "  Autonomic: {} — quality {:.2}, pressure {:.0}%",
-                    info.ruling,
-                    info.quality_score,
-                    info.pressure * 100.0,
-                ));
-            }
-            Err(_) => {} // Already covered by context ruling
+        if let Ok(info) = self.client.get_autonomic().await {
+            lines.push(format!(
+                "  Autonomic: {} — quality {:.2}, pressure {:.0}%",
+                info.ruling,
+                info.quality_score,
+                info.pressure * 100.0,
+            ));
         }
 
         // Cost
