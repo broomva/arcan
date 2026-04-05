@@ -223,6 +223,184 @@ async fn query_status_returns_idle_mode() {
 }
 
 #[tokio::test]
+async fn non_blocking_cycle_completes() {
+    let runtime = build_runtime(unique_root("consciousness-nonblocking"));
+    let session_id = SessionId::from_string("test-nonblocking".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let registry = ConsciousnessRegistry::new(config);
+    let handle = registry.get_or_create("test-nonblocking", BranchId::main(), runtime);
+
+    // Give actor a moment to start.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send a message — should be accepted immediately (non-blocking).
+    let (ack_tx, ack_rx) = oneshot::channel();
+    handle
+        .send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: "Hello non-blocking".to_string(),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+
+    let ack = tokio::time::timeout(Duration::from_secs(5), ack_rx)
+        .await
+        .expect("should get ack quickly")
+        .expect("ack channel should not be dropped");
+
+    match ack {
+        ConsciousnessAck::Accepted { queued } => {
+            assert!(!queued, "should start immediately when idle");
+        }
+        ConsciousnessAck::Rejected { reason } => {
+            panic!("unexpected rejection: {reason}");
+        }
+    }
+
+    // Wait for the spawned cycle to complete and the actor to return to Idle.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            panic!("actor did not return to Idle within 10s");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some(status) = handle.query_status().await {
+            if status.mode == "Idle" && !status.has_active_run {
+                break;
+            }
+        }
+    }
+
+    // Final verification: should be Idle with empty queue.
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+    assert!(!status.has_active_run);
+
+    registry.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn cycle_completed_drains_queue() {
+    let runtime = build_runtime(unique_root("consciousness-drain-queue"));
+    let session_id = SessionId::from_string("test-drain".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let registry = ConsciousnessRegistry::new(config);
+    let handle = registry.get_or_create("test-drain", BranchId::main(), runtime);
+
+    // Give actor a moment to start.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send first message — starts immediately.
+    let (ack_tx1, ack_rx1) = oneshot::channel();
+    handle
+        .send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: "First message".to_string(),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx1),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+
+    let ack1 = tokio::time::timeout(Duration::from_secs(5), ack_rx1)
+        .await
+        .expect("should get ack")
+        .expect("channel should not be dropped");
+    assert!(
+        matches!(ack1, ConsciousnessAck::Accepted { queued: false }),
+        "first message should start immediately"
+    );
+
+    // Brief pause to let the first cycle start actively, then send second message.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let (ack_tx2, ack_rx2) = oneshot::channel();
+    handle
+        .send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: "Second message".to_string(),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx2),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+
+    let ack2 = tokio::time::timeout(Duration::from_secs(5), ack_rx2)
+        .await
+        .expect("should get ack")
+        .expect("channel should not be dropped");
+
+    // Second message should be accepted (queued or immediate depending on timing).
+    match ack2 {
+        ConsciousnessAck::Accepted { .. } => {} // queued or immediate — both OK
+        ConsciousnessAck::Rejected { reason } => {
+            panic!("second message rejected: {reason}");
+        }
+    }
+
+    // Wait for both cycles to complete — actor should eventually return to Idle.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            panic!("actor did not return to Idle within 15s");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(status) = handle.query_status().await {
+            if status.mode == "Idle" && !status.has_active_run && status.queue_depth == 0 {
+                break;
+            }
+        }
+    }
+
+    // Both messages were processed: actor is Idle, queue is empty.
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+    assert_eq!(status.queue_depth, 0);
+    assert!(!status.has_active_run);
+
+    registry.shutdown_all().await;
+}
+
+#[tokio::test]
 async fn multiple_messages_accepted_sequentially() {
     let runtime = build_runtime(unique_root("consciousness-multi-msg"));
     let session_id = SessionId::from_string("test-multi".to_string());
