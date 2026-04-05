@@ -274,3 +274,104 @@ async fn multiple_messages_accepted_sequentially() {
     tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
+
+// ─── Spaces integration tests (BRO-458) ────────────────────────────────────
+
+#[tokio::test]
+async fn spaces_message_handled_when_idle() {
+    let runtime = build_runtime(unique_root("consciousness-spaces-idle"));
+    let session_id = SessionId::from_string("test-spaces-idle".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+
+    // Give actor a moment to start and be in Idle state.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send a SpacesMessage while the actor is Idle.
+    tx.send(ConsciousnessEvent::SpacesMessage {
+        channel_id: "agent-logs".to_string(),
+        sender: "peer-agent-abc".to_string(),
+        content: "Hey, can you check the latest deployment?".to_string(),
+    })
+    .await
+    .unwrap();
+
+    // Give the actor time to process the message (it will trigger a deliberation cycle).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The actor should still be alive and operational after processing.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tx.send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
+        .await
+        .unwrap();
+
+    let status = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+        .await
+        .expect("should get status within 5s")
+        .expect("status channel should not be dropped");
+
+    // After processing the SpacesMessage (which triggers a run cycle), the actor
+    // should be back to Idle.
+    assert_eq!(status.mode, "Idle");
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+#[tokio::test]
+async fn own_spaces_messages_ignored() {
+    let runtime = build_runtime(unique_root("consciousness-spaces-self"));
+    let session_id_str = "test-spaces-self";
+    let session_id = SessionId::from_string(session_id_str.to_string());
+
+    let config = ConsciousnessConfig::default();
+    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+
+    // Give actor a moment to start.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send a SpacesMessage where sender matches the actor's own session_id.
+    // This should be silently ignored (no crash, no state change).
+    tx.send(ConsciousnessEvent::SpacesMessage {
+        channel_id: "agent-logs".to_string(),
+        sender: session_id_str.to_string(),
+        content: "I posted this myself".to_string(),
+    })
+    .await
+    .unwrap();
+
+    // Give the actor time to process.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Actor should still be Idle (own message was ignored, no run triggered).
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tx.send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
+        .await
+        .unwrap();
+
+    let status = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+        .await
+        .expect("should get status within 5s")
+        .expect("status channel should not be dropped");
+
+    assert_eq!(status.mode, "Idle");
+    assert!(!status.has_active_run);
+    assert_eq!(status.queue_depth, 0);
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}

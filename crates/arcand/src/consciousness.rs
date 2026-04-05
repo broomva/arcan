@@ -32,6 +32,10 @@ pub struct ConsciousnessConfig {
     pub max_agent_iterations: u32,
     /// Time before transitioning from Idle to Sleeping (default: 5min).
     pub idle_to_sleep: Duration,
+    /// Whether Spaces integration is enabled (default: false).
+    pub spaces_enabled: bool,
+    /// How often to poll Spaces for new messages (default: 10s).
+    pub spaces_poll_interval: Duration,
 }
 
 impl Default for ConsciousnessConfig {
@@ -42,6 +46,8 @@ impl Default for ConsciousnessConfig {
             idle_check_interval: Duration::from_secs(60),
             max_agent_iterations: 10,
             idle_to_sleep: Duration::from_secs(300),
+            spaces_enabled: false,
+            spaces_poll_interval: Duration::from_secs(10),
         }
     }
 }
@@ -57,6 +63,15 @@ pub enum ConsciousnessEvent {
     QueryStatus { reply: oneshot::Sender<ActorStatus> },
     /// Timer tick from internal intervals.
     TimerTick { tick_type: TimerTickType },
+    /// External stimulus from the Spaces distributed networking layer.
+    SpacesMessage {
+        /// The Spaces channel where the message originated.
+        channel_id: String,
+        /// Sender identity (hex string from SpacetimeDB).
+        sender: String,
+        /// Message content.
+        content: String,
+    },
     /// Graceful shutdown request.
     Shutdown,
 }
@@ -189,9 +204,11 @@ impl SessionConsciousness {
 
         let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
         let mut idle_check = tokio::time::interval(self.config.idle_check_interval);
+        let mut spaces_poll = tokio::time::interval(self.config.spaces_poll_interval);
         // Skip the immediate first tick (fires at interval creation).
         heartbeat.tick().await;
         idle_check.tick().await;
+        spaces_poll.tick().await;
 
         loop {
             let event = tokio::select! {
@@ -212,6 +229,19 @@ impl SessionConsciousness {
 
                 _ = idle_check.tick() => ConsciousnessEvent::TimerTick {
                     tick_type: TimerTickType::IdleCheck,
+                },
+
+                // Spaces polling: periodically check for new distributed messages.
+                // Guarded by config flag — does nothing when spaces_enabled is false.
+                _ = spaces_poll.tick(), if self.config.spaces_enabled => {
+                    // Stub: actual Spaces SDK integration requires SpacetimeDB client
+                    // which uses blocking I/O. Future work will use spawn_blocking
+                    // to poll SpacesPort::read_messages here.
+                    debug!(
+                        session = %self.state.session_id,
+                        "spaces polling tick (not yet connected)"
+                    );
+                    continue;
                 },
             };
 
@@ -237,6 +267,14 @@ impl SessionConsciousness {
                 }
                 ConsciousnessEvent::TimerTick { tick_type } => {
                     self.handle_timer_tick(tick_type).await;
+                }
+                ConsciousnessEvent::SpacesMessage {
+                    channel_id,
+                    sender,
+                    content,
+                } => {
+                    self.handle_spaces_message(channel_id, sender, content)
+                        .await;
                 }
             }
         }
@@ -518,6 +556,72 @@ impl SessionConsciousness {
                     );
                     self.state.mode = ConsciousnessMode::Sleeping;
                 }
+            }
+        }
+    }
+
+    /// Handle an incoming Spaces message (external distributed stimulus).
+    ///
+    /// If the actor is idle or sleeping, the message is re-injected as a
+    /// `UserMessage` to trigger a deliberation cycle. If active, the message
+    /// is logged as context. Own messages (matching the session_id) are ignored.
+    async fn handle_spaces_message(&mut self, channel_id: String, sender: String, content: String) {
+        // Filter out own messages to avoid feedback loops.
+        if sender == self.state.session_id.as_str() {
+            debug!(
+                session = %self.state.session_id,
+                %channel_id,
+                "ignoring own Spaces message"
+            );
+            return;
+        }
+
+        let content_preview = if content.len() > 80 {
+            format!("{}...", &content[..80])
+        } else {
+            content.clone()
+        };
+
+        info!(
+            session = %self.state.session_id,
+            %channel_id,
+            %sender,
+            content_preview,
+            "received Spaces message"
+        );
+
+        match self.state.mode {
+            ConsciousnessMode::Idle | ConsciousnessMode::Sleeping => {
+                // Re-inject as a user message to trigger a deliberation cycle.
+                info!(
+                    session = %self.state.session_id,
+                    mode = ?self.state.mode,
+                    "Spaces message triggering deliberation cycle"
+                );
+                let objective = format!("[spaces:{channel_id}] @{sender}: {content}");
+                self.handle_user_message(
+                    objective,
+                    self.state.branch.clone(),
+                    SteeringMode::Collect,
+                    None,
+                    RunContext::default(),
+                )
+                .await;
+            }
+            ConsciousnessMode::Active => {
+                // Don't interrupt the current run — log as context for future use.
+                debug!(
+                    session = %self.state.session_id,
+                    %channel_id,
+                    %sender,
+                    "Spaces message received during active run (logged as context)"
+                );
+            }
+            ConsciousnessMode::ShuttingDown => {
+                debug!(
+                    session = %self.state.session_id,
+                    "ignoring Spaces message during shutdown"
+                );
             }
         }
     }
