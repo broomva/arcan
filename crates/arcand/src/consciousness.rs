@@ -53,10 +53,30 @@ impl Default for ConsciousnessConfig {
 pub enum ConsciousnessEvent {
     /// User message from HTTP POST /runs or /messages.
     UserMessage(Box<UserMessageEvent>),
+    /// Query the actor's current status (mode + queue snapshot).
+    QueryStatus { reply: oneshot::Sender<ActorStatus> },
     /// Timer tick from internal intervals.
     TimerTick { tick_type: TimerTickType },
     /// Graceful shutdown request.
     Shutdown,
+}
+
+/// Snapshot of the actor's status for the GET /queue endpoint.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActorStatus {
+    pub mode: String,
+    pub queue_depth: usize,
+    pub queue_pending: Vec<PendingMessage>,
+    pub has_active_run: bool,
+    pub oldest_message_age_ms: Option<u64>,
+}
+
+/// A pending message in the queue (serializable for API responses).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingMessage {
+    pub id: String,
+    pub mode: String,
+    pub content: String,
 }
 
 /// Payload for a user message event (boxed to keep enum small).
@@ -210,6 +230,10 @@ impl SessionConsciousness {
                         msg.run_context,
                     )
                     .await;
+                }
+                ConsciousnessEvent::QueryStatus { reply } => {
+                    let status = self.build_status();
+                    let _ = reply.send(status);
                 }
                 ConsciousnessEvent::TimerTick { tick_type } => {
                     self.handle_timer_tick(tick_type).await;
@@ -497,6 +521,32 @@ impl SessionConsciousness {
             }
         }
     }
+
+    /// Build a status snapshot for the QueryStatus response.
+    fn build_status(&self) -> ActorStatus {
+        let queue_status = self.state.queue.status().ok();
+        let pending = queue_status
+            .as_ref()
+            .map(|s| {
+                s.pending
+                    .iter()
+                    .map(|m| PendingMessage {
+                        id: m.id.clone(),
+                        mode: format!("{:?}", m.mode),
+                        content: m.content.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ActorStatus {
+            mode: format!("{:?}", self.state.mode),
+            queue_depth: queue_status.as_ref().map(|s| s.depth).unwrap_or(0),
+            queue_pending: pending,
+            has_active_run: queue_status.as_ref().is_some_and(|s| s.has_active_run),
+            oldest_message_age_ms: queue_status.and_then(|s| s.oldest_message_age_ms),
+        }
+    }
 }
 
 // ─── Handle ─────────────────────────────────────────────────────────────────
@@ -532,6 +582,19 @@ impl ConsciousnessHandle {
         event: ConsciousnessEvent,
     ) -> Result<(), mpsc::error::SendError<ConsciousnessEvent>> {
         self.tx.send(event).await
+    }
+
+    /// Query the actor's current status (mode + queue snapshot).
+    pub async fn query_status(&self) -> Option<ActorStatus> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
+            .await
+            .ok()?;
+        tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .ok()?
+            .ok()
     }
 
     /// Send a shutdown event and wait for the actor to stop.
