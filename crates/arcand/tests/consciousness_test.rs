@@ -375,3 +375,97 @@ async fn own_spaces_messages_ignored() {
     tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
+
+#[tokio::test]
+async fn stall_detection_breaks_stuck_loop() {
+    let runtime = build_runtime(unique_root("consciousness-stall"));
+    let session_id = SessionId::from_string("test-stall".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 10,
+        ..Default::default()
+    };
+    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+
+    let (ack_tx, ack_rx) = oneshot::channel();
+    tx.send(ConsciousnessEvent::UserMessage(Box::new(
+        UserMessageEvent {
+            objective: "stall test".to_string(),
+            branch: BranchId::main(),
+            steering: SteeringMode::Collect,
+            ack: Some(ack_tx),
+            run_context: RunContext::default(),
+        },
+    )))
+    .await
+    .unwrap();
+
+    let ack = tokio::time::timeout(Duration::from_secs(10), ack_rx)
+        .await
+        .expect("should get ack within 10s")
+        .expect("ack channel should not be dropped");
+
+    match ack {
+        ConsciousnessAck::Accepted { .. } => {}
+        ConsciousnessAck::Rejected { reason } => panic!("unexpected rejection: {reason}"),
+    }
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (status_tx, status_rx) = oneshot::channel();
+    tx.send(ConsciousnessEvent::QueryStatus { reply: status_tx })
+        .await
+        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(5), status_rx)
+        .await
+        .expect("should get status")
+        .expect("status channel should not be dropped");
+    assert_eq!(status.mode, "Idle", "actor should return to Idle after run");
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}
+
+#[tokio::test]
+async fn autonomic_signal_sets_compaction_flag() {
+    let runtime = build_runtime(unique_root("consciousness-autonomic"));
+    let registry = ConsciousnessRegistry::new(ConsciousnessConfig::default());
+
+    let handle = registry.get_or_create("test-autonomic", BranchId::main(), runtime);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    handle
+        .send(ConsciousnessEvent::AutonomicSignal {
+            ruling: "Compress".to_string(),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+    assert!(!status.has_active_run);
+
+    handle
+        .send(ConsciousnessEvent::AutonomicSignal {
+            ruling: "Breathe".to_string(),
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+
+    registry.shutdown_all().await;
+}
