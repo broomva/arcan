@@ -1,0 +1,53 @@
+[package]
+name = "arcand"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Canonical session API router for the Arcan daemon"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+autonomic-core = { workspace = true }
+autonomic-controller = { workspace = true }
+arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
+arcan-lago = { path = "../arcan-lago", version = "0.3.0" }
+praxis-skills.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+uuid.workspace = true
+aios-protocol = { workspace = true }
+aios-runtime = { workspace = true }
+utoipa = { workspace = true }
+utoipa-scalar = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+jsonwebtoken.workspace = true
+nous-api.workspace = true
+nous-core.workspace = true
+life-vigil.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio-stream.workspace = true
+async-trait.workspace = true
+aios-events = { workspace = true }
+aios-policy = { workspace = true }
+aios-sandbox = { workspace = true }
+aios-tools = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

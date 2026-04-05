@@ -1,0 +1,1051 @@
+use arcan_core::error::CoreError;
+use arcan_core::protocol::{
+    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
+    ToolDefinition,
+};
+use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+use crate::credential::{ApiKeyCredential, Credential};
+
+/// Configuration for an OpenAI-compatible provider.
+///
+/// Works with: OpenAI, Ollama, Together, Groq, LM Studio, vLLM, and any
+/// server that implements the OpenAI chat completions API.
+pub struct OpenAiConfig {
+    /// Credential for API authentication (API key or OAuth token).
+    pub credential: Arc<dyn Credential>,
+    /// Model name (e.g., "gpt-4o", "llama3.1", "qwen2.5").
+    pub model: String,
+    /// Maximum tokens for model response.
+    pub max_tokens: u32,
+    /// Base URL for the API (e.g., "https://api.openai.com", "http://localhost:11434").
+    pub base_url: String,
+    /// Provider name for display/logging.
+    pub provider_name: String,
+    /// Enable streaming mode (`"stream": true`). Avoids timeouts for slow models.
+    pub enable_streaming: bool,
+    /// Extra body parameters merged into every request (e.g., `x_context_strategy`).
+    pub extra_body: Option<serde_json::Value>,
+    /// Context window size in tokens. Used for auto-compaction thresholds.
+    /// `None` means unknown (conservative defaults apply).
+    pub context_window: Option<u32>,
+}
+
+impl std::fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("credential", &self.credential.kind())
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("base_url", &self.base_url)
+            .field("provider_name", &self.provider_name)
+            .finish()
+    }
+}
+
+impl OpenAiConfig {
+    /// Create config for OpenAI from environment variables.
+    pub fn openai_from_env() -> Result<Self, CoreError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            CoreError::Provider("OPENAI_API_KEY environment variable not set".to_string())
+        })?;
+
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+        let max_tokens = std::env::var("OPENAI_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        let base_url = std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com".to_string());
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(api_key)),
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "openai".to_string(),
+            enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
+        })
+    }
+
+    /// Create config for Ollama from environment variables.
+    /// Defaults to localhost:11434 with no API key. Streaming enabled by default.
+    pub fn ollama_from_env() -> Result<Self, CoreError> {
+        let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string());
+        let max_tokens = std::env::var("OLLAMA_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+        let base_url = std::env::var("OLLAMA_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "ollama".to_string(),
+            enable_streaming: true,
+            extra_body: None,
+            context_window: None,
+        })
+    }
+
+    /// Create OpenAI config from resolved CLI settings.
+    pub fn openai_from_resolved(
+        model_override: Option<&str>,
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<Self, CoreError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            CoreError::Provider("OPENAI_API_KEY environment variable not set".to_string())
+        })?;
+
+        let model = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("OPENAI_MODEL").ok())
+            .unwrap_or_else(|| "gpt-4o".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("OPENAI_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(4096);
+
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
+            .unwrap_or_else(|| "https://api.openai.com".to_string());
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(api_key)),
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "openai".to_string(),
+            enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
+        })
+    }
+
+    /// Create Ollama config from resolved CLI settings.
+    pub fn ollama_from_resolved(
+        model_override: Option<&str>,
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+        enable_streaming_override: Option<bool>,
+    ) -> Result<Self, CoreError> {
+        let model = model_override
+            .map(String::from)
+            .or_else(|| std::env::var("OLLAMA_MODEL").ok())
+            .unwrap_or_else(|| "llama3.2".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("OLLAMA_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(4096);
+
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("OLLAMA_BASE_URL").ok())
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model,
+            max_tokens,
+            base_url,
+            provider_name: "ollama".to_string(),
+            enable_streaming: enable_streaming_override.unwrap_or(true),
+            extra_body: None,
+            context_window: None,
+        })
+    }
+
+    /// Create config for Apple's on-device model via apfel.
+    /// Defaults to localhost:11435 with no API key, streaming enabled.
+    pub fn apfel_from_env() -> Result<Self, CoreError> {
+        let base_url = std::env::var("APFEL_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11435".to_string());
+        let max_tokens = std::env::var("APFEL_MAX_TOKENS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3584); // Reserve tokens for output within 4096 context
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model: "apple-foundationmodel".to_string(),
+            max_tokens,
+            base_url,
+            provider_name: "apfel".to_string(),
+            enable_streaming: true,
+            // Tell apfel to trim old messages if context overflows (safety net).
+            extra_body: Some(serde_json::json!({
+                "x_context_strategy": "newest-first"
+            })),
+            context_window: Some(4096),
+        })
+    }
+
+    /// Create apfel config from resolved CLI settings.
+    pub fn apfel_from_resolved(
+        base_url_override: Option<&str>,
+        max_tokens_override: Option<u32>,
+    ) -> Result<Self, CoreError> {
+        let base_url = base_url_override
+            .map(String::from)
+            .or_else(|| std::env::var("APFEL_BASE_URL").ok())
+            .unwrap_or_else(|| "http://localhost:11435".to_string());
+
+        let max_tokens = max_tokens_override
+            .or_else(|| {
+                std::env::var("APFEL_MAX_TOKENS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(3584);
+
+        Ok(Self {
+            credential: Arc::new(ApiKeyCredential::new(String::new())),
+            model: "apple-foundationmodel".to_string(),
+            max_tokens,
+            base_url,
+            provider_name: "apfel".to_string(),
+            enable_streaming: true,
+            // Tell apfel to trim old messages if context overflows (safety net).
+            extra_body: Some(serde_json::json!({
+                "x_context_strategy": "newest-first"
+            })),
+            context_window: Some(4096),
+        })
+    }
+
+    /// Create config with an OAuth credential.
+    pub fn from_oauth(credential: Arc<dyn Credential>, model: String) -> Self {
+        Self {
+            credential,
+            model,
+            max_tokens: 4096,
+            base_url: "https://api.openai.com".to_string(),
+            provider_name: "openai".to_string(),
+            enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
+        }
+    }
+}
+
+/// Provider implementation for any OpenAI-compatible chat completions API.
+///
+/// Supports tool calling via the `tools` parameter with `function` type.
+/// Works with OpenAI, Ollama, Together, Groq, LM Studio, vLLM, etc.
+pub struct OpenAiCompatibleProvider {
+    config: OpenAiConfig,
+    client: reqwest::blocking::Client,
+}
+
+impl OpenAiCompatibleProvider {
+    pub fn new(config: OpenAiConfig) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
+        Self { config, client }
+    }
+
+    fn build_messages(&self, messages: &[ChatMessage]) -> Vec<ApiMessage> {
+        messages
+            .iter()
+            .map(|msg| {
+                let (role, tool_call_id) = match msg.role {
+                    Role::System => ("system", None),
+                    Role::User => ("user", None),
+                    Role::Assistant => ("assistant", None),
+                    Role::Tool => ("tool", msg.tool_call_id.clone()),
+                };
+                ApiMessage {
+                    role: role.to_string(),
+                    content: Some(msg.content.clone()),
+                    tool_call_id,
+                    tool_calls: None,
+                }
+            })
+            .collect()
+    }
+
+    fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<ApiTool> {
+        tools
+            .iter()
+            .map(|t| ApiTool {
+                r#type: "function".to_string(),
+                function: ApiFunction {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.input_schema.clone(),
+                    strict: Some(true),
+                },
+            })
+            .collect()
+    }
+
+    fn parse_response(&self, response: ApiResponse) -> Result<ModelTurn, CoreError> {
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Provider("OpenAI response had no choices".to_string()))?;
+
+        let mut directives = Vec::new();
+
+        // Handle text content
+        if let Some(content) = &choice.message.content {
+            if !content.is_empty() {
+                directives.push(ModelDirective::Text {
+                    delta: content.clone(),
+                });
+            }
+        }
+
+        // Handle tool calls
+        if let Some(tool_calls) = &choice.message.tool_calls {
+            for tc in tool_calls {
+                let input: Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
+                directives.push(ModelDirective::ToolCall {
+                    call: ToolCall {
+                        call_id: tc.id.clone(),
+                        tool_name: tc.function.name.clone(),
+                        input,
+                    },
+                });
+            }
+        }
+
+        let stop_reason = match choice.finish_reason.as_deref() {
+            Some("stop") => ModelStopReason::EndTurn,
+            Some("tool_calls") => ModelStopReason::ToolUse,
+            Some("length") => ModelStopReason::MaxTokens,
+            Some("content_filter") => ModelStopReason::Safety,
+            _ => ModelStopReason::Unknown,
+        };
+
+        let usage = response.usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        });
+
+        Ok(ModelTurn {
+            directives,
+            stop_reason,
+            usage,
+        })
+    }
+
+    /// Execute with retry logic for transient errors (429, 5xx).
+    /// On 401 Unauthorized, attempts to refresh the credential once before failing.
+    fn execute_with_retry(
+        &self,
+        body: &Value,
+        url: &str,
+        max_retries: u32,
+    ) -> Result<String, CoreError> {
+        let mut last_error = None;
+        let base_delay = std::time::Duration::from_millis(200);
+        let mut refreshed_on_401 = false;
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let delay = base_delay * 2u32.pow(attempt - 1);
+                std::thread::sleep(delay);
+            }
+
+            let mut request = self
+                .client
+                .post(url)
+                .header("content-type", "application/json");
+
+            // Use credential for auth header (supports API keys, OAuth tokens, etc.)
+            if let Ok(header_value) = self.config.credential.auth_header() {
+                request = request.header("authorization", header_value);
+            }
+
+            let response = match request.json(body).send() {
+                Ok(resp) => resp,
+                Err(e) if e.is_timeout() && attempt < max_retries => {
+                    last_error = Some(format!("timeout: {e}"));
+                    continue;
+                }
+                Err(e) => return Err(CoreError::Provider(format!("HTTP request failed: {e}"))),
+            };
+
+            let status = response.status();
+            let response_text = response
+                .text()
+                .map_err(|e| CoreError::Provider(format!("failed to read response: {e}")))?;
+
+            // On 401, try refreshing the credential once.
+            if status.as_u16() == 401
+                && !refreshed_on_401
+                && self.config.credential.needs_refresh()
+                && self.config.credential.refresh().is_ok()
+            {
+                refreshed_on_401 = true;
+                continue;
+            }
+
+            // Retry on transient errors
+            if (status.as_u16() == 429 || status.is_server_error()) && attempt < max_retries {
+                last_error = Some(format!("{status}: {response_text}"));
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(CoreError::Provider(format!(
+                    "{} API returned {status}: {response_text}",
+                    self.config.provider_name
+                )));
+            }
+
+            return Ok(response_text);
+        }
+
+        Err(CoreError::Provider(format!(
+            "{} API failed after {} retries: {}",
+            self.config.provider_name,
+            max_retries,
+            last_error.unwrap_or_default()
+        )))
+    }
+}
+
+impl OpenAiCompatibleProvider {
+    /// Execute a streaming request, calling `on_delta` for each content delta.
+    /// Accumulates the full response and returns the assembled `ModelTurn`.
+    fn execute_streaming(
+        &self,
+        request: &ProviderRequest,
+        on_delta: &dyn Fn(StreamEvent<'_>),
+    ) -> Result<ModelTurn, CoreError> {
+        let api_messages = self.build_messages(&request.messages);
+        let api_tools = self.convert_tools(&request.tools);
+
+        let mut body = serde_json::json!({
+            "model": self.config.model,
+            "messages": api_messages,
+            "max_tokens": self.config.max_tokens,
+            "stream": true,
+        });
+
+        // Merge extra body parameters (e.g., x_context_strategy for apfel).
+        if let Some(extra) = &self.config.extra_body {
+            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&api_tools)
+                .map_err(|e| CoreError::Provider(format!("failed to serialize tools: {e}")))?;
+        }
+
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
+
+        let mut http_request = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json");
+
+        // Add authorization header from credential (API key or OAuth token)
+        if let Ok(auth_header) = self.config.credential.auth_header() {
+            http_request = http_request.header("authorization", auth_header);
+        }
+
+        let response = http_request
+            .json(&body)
+            .send()
+            .map_err(|e| CoreError::Provider(format!("streaming HTTP request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response
+                .text()
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            return Err(CoreError::Provider(format!(
+                "{} streaming API returned {status}: {body_text}",
+                self.config.provider_name
+            )));
+        }
+
+        let reader = std::io::BufReader::new(response);
+        let mut accumulated_text = String::new();
+        // tool_calls accumulator: index → (id, name, arguments)
+        let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
+            std::collections::BTreeMap::new();
+        let mut finish_reason: Option<String> = None;
+        let mut usage: Option<ApiUsage> = None;
+
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let line =
+                line.map_err(|e| CoreError::Provider(format!("streaming read error: {e}")))?;
+
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+
+            if data == "[DONE]" {
+                break;
+            }
+
+            let chunk: StreamChunk = match serde_json::from_str(data) {
+                Ok(c) => c,
+                Err(_) => continue, // skip unparseable lines
+            };
+
+            if let Some(u) = chunk.usage {
+                usage = Some(u);
+            }
+
+            for choice in chunk.choices {
+                if let Some(reason) = choice.finish_reason {
+                    finish_reason = Some(reason);
+                }
+
+                if let Some(content) = &choice.delta.content {
+                    if !content.is_empty() {
+                        on_delta(StreamEvent::Text(content));
+                        accumulated_text.push_str(content);
+                    }
+                }
+
+                // Handle reasoning/thinking tokens from models like gemma4
+                if let Some(reasoning) = &choice.delta.reasoning {
+                    if !reasoning.is_empty() {
+                        on_delta(StreamEvent::Reasoning(reasoning));
+                    }
+                }
+
+                if let Some(tcs) = &choice.delta.tool_calls {
+                    for tc in tcs {
+                        let entry = tool_calls
+                            .entry(tc.index)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
+
+                        if let Some(ref id) = tc.id {
+                            entry.0.clone_from(id);
+                        }
+                        if let Some(ref func) = tc.function {
+                            if let Some(ref name) = func.name {
+                                entry.1.clone_from(name);
+                            }
+                            if let Some(ref args) = func.arguments {
+                                entry.2.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build directives from accumulated data
+        let mut directives = Vec::new();
+
+        if !accumulated_text.is_empty() {
+            directives.push(ModelDirective::Text {
+                delta: accumulated_text,
+            });
+        }
+
+        for (_index, (id, name, arguments)) in tool_calls {
+            let input: serde_json::Value =
+                serde_json::from_str(&arguments).unwrap_or_else(|_| serde_json::json!({}));
+            directives.push(ModelDirective::ToolCall {
+                call: ToolCall {
+                    call_id: id,
+                    tool_name: name,
+                    input,
+                },
+            });
+        }
+
+        let stop_reason = match finish_reason.as_deref() {
+            Some("stop") => ModelStopReason::EndTurn,
+            Some("tool_calls") => ModelStopReason::ToolUse,
+            Some("length") => ModelStopReason::MaxTokens,
+            Some("content_filter") => ModelStopReason::Safety,
+            _ => ModelStopReason::Unknown,
+        };
+
+        let token_usage = usage.map(|u| TokenUsage {
+            input_tokens: u.prompt_tokens,
+            output_tokens: u.completion_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+        });
+
+        Ok(ModelTurn {
+            directives,
+            stop_reason,
+            usage: token_usage,
+        })
+    }
+}
+
+impl Provider for OpenAiCompatibleProvider {
+    fn name(&self) -> &str {
+        &self.config.model
+    }
+
+    fn context_window(&self) -> Option<u32> {
+        self.config.context_window
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.config.enable_streaming
+    }
+
+    fn complete_streaming(
+        &self,
+        request: &ProviderRequest,
+        on_delta: &dyn Fn(StreamEvent<'_>),
+    ) -> Result<ModelTurn, CoreError> {
+        self.execute_streaming(request, on_delta)
+    }
+
+    fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
+        let api_messages = self.build_messages(&request.messages);
+        let api_tools = self.convert_tools(&request.tools);
+
+        let mut body = json!({
+            "model": self.config.model,
+            "messages": api_messages,
+            "max_tokens": self.config.max_tokens,
+        });
+
+        // Merge extra body parameters (e.g., x_context_strategy for apfel).
+        if let Some(extra) = &self.config.extra_body {
+            if let (Some(base), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&api_tools)
+                .map_err(|e| CoreError::Provider(format!("failed to serialize tools: {e}")))?;
+        }
+
+        let url = format!("{}/v1/chat/completions", self.config.base_url);
+        let response_text = self.execute_with_retry(&body, &url, 3)?;
+
+        let api_response: ApiResponse = serde_json::from_str(&response_text).map_err(|e| {
+            CoreError::Provider(format!(
+                "failed to parse {} response: {e}\nBody: {}",
+                self.config.provider_name,
+                &response_text[..response_text.len().min(500)]
+            ))
+        })?;
+
+        self.parse_response(api_response)
+    }
+}
+
+// ─── OpenAI-compatible API types ────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct ApiMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ApiToolCallRef>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiTool {
+    r#type: String,
+    function: ApiFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiFunction {
+    name: String,
+    description: String,
+    parameters: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApiToolCallRef {
+    id: String,
+    r#type: String,
+    function: ApiToolCallFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApiToolCallFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiResponse {
+    choices: Vec<ApiChoice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiChoice {
+    message: ApiChoiceMessage,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiChoiceMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ApiToolCallRef>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+}
+
+// ─── Streaming response types ───────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StreamChunk {
+    choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamChoice {
+    delta: StreamDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    /// Reasoning/thinking tokens (Ollama sends `reasoning`, some providers use `reasoning_content`).
+    #[serde(default, alias = "reasoning_content")]
+    reasoning: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCall {
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamToolCallFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamToolCallFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn test_config() -> OpenAiConfig {
+        OpenAiConfig {
+            credential: Arc::new(ApiKeyCredential::new("test-key".to_string())),
+            model: "gpt-4o".to_string(),
+            max_tokens: 4096,
+            base_url: "http://localhost:8080".to_string(),
+            provider_name: "test".to_string(),
+            enable_streaming: false,
+            extra_body: None,
+            context_window: Some(128_000),
+        }
+    }
+
+    #[test]
+    fn builds_messages_correctly() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there!"),
+        ];
+
+        let api_msgs = provider.build_messages(&messages);
+        assert_eq!(api_msgs.len(), 3);
+        assert_eq!(api_msgs[0].role, "system");
+        assert_eq!(api_msgs[1].role, "user");
+        assert_eq!(api_msgs[2].role, "assistant");
+    }
+
+    #[test]
+    fn builds_tool_messages_with_call_id() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let messages = vec![ChatMessage::tool_result("call-1", "result data")];
+
+        let api_msgs = provider.build_messages(&messages);
+        assert_eq!(api_msgs.len(), 1);
+        assert_eq!(api_msgs[0].role, "tool");
+        assert_eq!(api_msgs[0].tool_call_id, Some("call-1".to_string()));
+    }
+
+    #[test]
+    fn converts_tools_to_api_format() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let tools = vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            title: None,
+            output_schema: None,
+            annotations: None,
+            category: None,
+            tags: vec![],
+            timeout_secs: None,
+        }];
+
+        let api_tools = provider.convert_tools(&tools);
+        assert_eq!(api_tools.len(), 1);
+        assert_eq!(api_tools[0].r#type, "function");
+        assert_eq!(api_tools[0].function.name, "read_file");
+        assert_eq!(api_tools[0].function.strict, Some(true));
+    }
+
+    #[test]
+    fn parses_text_response() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let response = ApiResponse {
+            choices: vec![ApiChoice {
+                message: ApiChoiceMessage {
+                    content: Some("Hello!".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(ApiUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+            }),
+        };
+
+        let turn = provider.parse_response(response).unwrap();
+        assert_eq!(turn.stop_reason, ModelStopReason::EndTurn);
+        assert_eq!(turn.directives.len(), 1);
+        assert!(matches!(&turn.directives[0], ModelDirective::Text { delta } if delta == "Hello!"));
+        let usage = turn.usage.unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 5);
+    }
+
+    #[test]
+    fn parses_tool_call_response() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let response = ApiResponse {
+            choices: vec![ApiChoice {
+                message: ApiChoiceMessage {
+                    content: Some("Let me read that.".to_string()),
+                    tool_calls: Some(vec![ApiToolCallRef {
+                        id: "call_abc123".to_string(),
+                        r#type: "function".to_string(),
+                        function: ApiToolCallFunction {
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"test.rs"}"#.to_string(),
+                        },
+                    }]),
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: None,
+        };
+
+        let turn = provider.parse_response(response).unwrap();
+        assert_eq!(turn.stop_reason, ModelStopReason::ToolUse);
+        assert_eq!(turn.directives.len(), 2); // text + tool call
+        assert!(matches!(&turn.directives[0], ModelDirective::Text { .. }));
+        assert!(
+            matches!(&turn.directives[1], ModelDirective::ToolCall { call } if call.tool_name == "read_file")
+        );
+    }
+
+    #[test]
+    fn parses_empty_choices_returns_error() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let response = ApiResponse {
+            choices: vec![],
+            usage: None,
+        };
+
+        let result = provider.parse_response(response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_max_tokens_stop_reason() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let response = ApiResponse {
+            choices: vec![ApiChoice {
+                message: ApiChoiceMessage {
+                    content: Some("truncated...".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: Some("length".to_string()),
+            }],
+            usage: None,
+        };
+
+        let turn = provider.parse_response(response).unwrap();
+        assert_eq!(turn.stop_reason, ModelStopReason::MaxTokens);
+    }
+
+    #[test]
+    fn parses_content_filter_stop_reason() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        let response = ApiResponse {
+            choices: vec![ApiChoice {
+                message: ApiChoiceMessage {
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("content_filter".to_string()),
+            }],
+            usage: None,
+        };
+
+        let turn = provider.parse_response(response).unwrap();
+        assert_eq!(turn.stop_reason, ModelStopReason::Safety);
+    }
+
+    #[test]
+    fn ollama_config_defaults() {
+        // This just tests the config structure, not actual env vars
+        let cred = ApiKeyCredential::new(String::new());
+        let config = OpenAiConfig {
+            credential: Arc::new(cred),
+            model: "llama3.2".to_string(),
+            max_tokens: 4096,
+            base_url: "http://localhost:11434".to_string(),
+            provider_name: "ollama".to_string(),
+            enable_streaming: true,
+            extra_body: None,
+            context_window: None,
+        };
+        // Empty credential returns error on auth_header (expected for local servers)
+        assert!(config.credential.auth_header().is_err());
+        assert_eq!(config.base_url, "http://localhost:11434");
+        assert!(config.enable_streaming);
+    }
+
+    #[test]
+    fn provider_name_returns_model() {
+        let provider = OpenAiCompatibleProvider::new(test_config());
+        assert_eq!(provider.name(), "gpt-4o");
+    }
+
+    #[test]
+    fn api_message_serialization() {
+        let msg = ApiMessage {
+            role: "user".to_string(),
+            content: Some("hello".to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"content\":\"hello\""));
+        // tool_call_id should be skipped
+        assert!(!json.contains("tool_call_id"));
+    }
+
+    #[test]
+    fn api_response_deserialization() {
+        let json = r#"{
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 9,
+                "completion_tokens": 12,
+                "total_tokens": 21
+            }
+        }"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.choices.len(), 1);
+        assert_eq!(
+            response.choices[0].message.content,
+            Some("Hello!".to_string())
+        );
+        assert_eq!(response.usage.unwrap().prompt_tokens, 9);
+    }
+
+    #[test]
+    fn tool_call_response_deserialization() {
+        let json = r#"{
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"location\":\"Paris\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20}
+        }"#;
+        let response: ApiResponse = serde_json::from_str(json).unwrap();
+        let tc = response.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].function.name, "get_weather");
+        assert!(tc[0].function.arguments.contains("Paris"));
+    }
+}

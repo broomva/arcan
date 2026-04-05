@@ -1,0 +1,8 @@
+---
+source: crates/arcan-tui/src/widgets/input_bar.rs
+assertion_line: 391
+expression: output
+---
+┌ Input ───────────────────────────────┐
+│❯ hello world                         │
+└──────────────────────────────────────┘

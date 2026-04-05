@@ -1,0 +1,33 @@
+[package]
+name = "arcan-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Provider-agnostic SandboxProvider trait and core protocol types for Arcan"
+
+[dependencies]
+aios-protocol.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+hex.workspace = true
+bitflags.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

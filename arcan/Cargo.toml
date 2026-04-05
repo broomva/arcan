@@ -1,0 +1,94 @@
+[package]
+name = "arcan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust agent runtime with streaming, tool execution, and event-sourced persistence"
+readme = "../../README.md"
+
+[[bin]]
+name = "arcan"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = ["console"]
+console = ["dep:arcan-console"]
+spaces = ["dep:arcan-spaces", "arcan-spaces/spacetimedb"]
+praxis = []
+
+[dependencies]
+arcan-console = { path = "../arcan-console", version = "0.3.0", optional = true }
+arcan-spaces = { path = "../arcan-spaces", version = "0.3.0", optional = true }
+arcan-commands = { path = "../arcan-commands", version = "0.3.0" }
+arcan-praxis = { path = "../arcan-praxis", version = "0.3.0" }
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+autonomic-core.workspace = true
+autonomic-controller.workspace = true
+arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
+arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
+praxis-core.workspace = true
+praxis-tools.workspace = true
+praxis-skills.workspace = true
+praxis-mcp-bridge.workspace = true
+arcan-provider = { path = "../arcan-provider", version = "0.3.0" }
+arcan-sandbox.workspace = true
+arcan-provider-vercel.workspace = true
+arcan-provider-local.workspace = true
+arcan-provider-bubblewrap.workspace = true
+arcand = { path = "../arcand", version = "0.3.0" }
+arcan-lago = { path = "../arcan-lago", version = "0.3.0" }
+arcan-tui = { path = "../arcan-tui", version = "0.3.0" }
+aios-protocol.workspace = true
+aios-runtime.workspace = true
+lago-core.workspace = true
+lago-fs.workspace = true
+lago-aios-eventstore-adapter.workspace = true
+lago-journal.workspace = true
+lago-lance.workspace = true
+lago-policy.workspace = true
+lago-store.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+clap.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+reqwest-eventsource.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender = "0.2"
+life-vigil.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+nous-api.workspace = true
+nous-core.workspace = true
+nous-heuristics.workspace = true
+nous-judge.workspace = true
+nous-lago.workspace = true
+nous-middleware.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+chrono.workspace = true
+nix = { version = "0.31.2", features = ["signal", "term"] }
+fastrand = "2"
+crossterm = "0.29"
+
+[dev-dependencies]
+tempfile = "3"
+filetime = "0.2"

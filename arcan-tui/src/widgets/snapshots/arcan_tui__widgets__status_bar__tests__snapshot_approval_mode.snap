@@ -1,0 +1,5 @@
+---
+source: crates/arcan-tui/src/widgets/status_bar.rs
+expression: output
+---
+ ● ? │ ⎇ main │ 0% │ — │ — │ approval │ sess-004

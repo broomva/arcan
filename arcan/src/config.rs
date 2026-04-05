@@ -1,0 +1,753 @@
+//! Persistent CLI configuration with layered resolution.
+//!
+//! Resolution order: hardcoded defaults → global config → project-local config → env vars → CLI flags.
+
+use arcan_core::hooks::{HookConfig, HookRegistry};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Top-level TOML configuration file structure.
+///
+/// All fields use `Option<T>` to allow partial configs and clean merging.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArcanConfig {
+    pub defaults: DefaultsConfig,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub providers: HashMap<String, ProviderConfig>,
+    pub agent: AgentConfig,
+    #[serde(default)]
+    pub spaces: SpacesConfig,
+    #[serde(default)]
+    pub skills: SkillsConfig,
+    /// User-configurable hooks that fire on agent lifecycle events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DefaultsConfig {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub port: Option<u16>,
+    pub autonomic_url: Option<String>,
+    pub spaces_backend: Option<String>,
+    /// Bare mode: minimal prompt and core tools only (for small-context models).
+    pub bare: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpacesConfig {
+    pub host: Option<String>,
+    pub database_id: Option<String>,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub enable_streaming: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentConfig {
+    pub max_iterations: Option<u32>,
+    pub approval_timeout: Option<u64>,
+}
+
+/// Skills discovery configuration.
+///
+/// Controls where Arcan scans for SKILL.md files during startup.
+/// Directories are scanned in order; later entries can override earlier ones.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Directories to scan for SKILL.md files.
+    /// Supports `~` expansion. Defaults if empty:
+    /// `[".arcan/skills", ".agents/skills", "~/.agents/skills"]`
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// Whether skill discovery is enabled on startup (default: true).
+    pub enabled: Option<bool>,
+    /// Whether to write a registry cache to `.arcan/skills/registry.json` (default: true).
+    pub write_registry: Option<bool>,
+}
+
+/// Fully resolved configuration with concrete values (no Options).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ResolvedConfig {
+    pub provider: String,
+    pub model: Option<String>,
+    pub port: u16,
+    pub max_iterations: u32,
+    pub approval_timeout: u64,
+    pub provider_config: Option<ProviderConfig>,
+    pub autonomic_url: Option<String>,
+    pub spaces_backend: String,
+    pub spaces_host: Option<String>,
+    pub spaces_database_id: Option<String>,
+    pub spaces_token: Option<String>,
+    /// Resolved skill discovery directories (absolute paths, ~ expanded).
+    pub skill_dirs: Vec<std::path::PathBuf>,
+    /// Whether skill discovery is enabled.
+    pub skills_enabled: bool,
+    /// Whether to write the skill registry cache.
+    pub skills_write_registry: bool,
+    /// Hook registry built from config.
+    pub hook_registry: HookRegistry,
+    /// Bare mode: minimal prompt and core tools only (for small-context models).
+    pub bare: bool,
+}
+
+impl ArcanConfig {
+    /// Merge `other` on top of `self`. Non-None values in `other` win.
+    pub fn merge(&mut self, other: &ArcanConfig) {
+        if other.defaults.provider.is_some() {
+            self.defaults.provider.clone_from(&other.defaults.provider);
+        }
+        if other.defaults.model.is_some() {
+            self.defaults.model.clone_from(&other.defaults.model);
+        }
+        if other.defaults.port.is_some() {
+            self.defaults.port = other.defaults.port;
+        }
+        if other.defaults.autonomic_url.is_some() {
+            self.defaults
+                .autonomic_url
+                .clone_from(&other.defaults.autonomic_url);
+        }
+        if other.defaults.spaces_backend.is_some() {
+            self.defaults
+                .spaces_backend
+                .clone_from(&other.defaults.spaces_backend);
+        }
+        if other.defaults.bare.is_some() {
+            self.defaults.bare = other.defaults.bare;
+        }
+        if other.spaces.host.is_some() {
+            self.spaces.host.clone_from(&other.spaces.host);
+        }
+        if other.spaces.database_id.is_some() {
+            self.spaces
+                .database_id
+                .clone_from(&other.spaces.database_id);
+        }
+        if other.spaces.token.is_some() {
+            self.spaces.token.clone_from(&other.spaces.token);
+        }
+        if other.agent.max_iterations.is_some() {
+            self.agent.max_iterations = other.agent.max_iterations;
+        }
+        if other.agent.approval_timeout.is_some() {
+            self.agent.approval_timeout = other.agent.approval_timeout;
+        }
+        for (name, pc) in &other.providers {
+            let entry = self.providers.entry(name.clone()).or_default();
+            if pc.model.is_some() {
+                entry.model.clone_from(&pc.model);
+            }
+            if pc.base_url.is_some() {
+                entry.base_url.clone_from(&pc.base_url);
+            }
+            if pc.max_tokens.is_some() {
+                entry.max_tokens = pc.max_tokens;
+            }
+            if pc.enable_streaming.is_some() {
+                entry.enable_streaming = pc.enable_streaming;
+            }
+        }
+
+        // Skills: non-empty dirs override, options merge
+        if !other.skills.dirs.is_empty() {
+            self.skills.dirs.clone_from(&other.skills.dirs);
+        }
+        if other.skills.enabled.is_some() {
+            self.skills.enabled = other.skills.enabled;
+        }
+        if other.skills.write_registry.is_some() {
+            self.skills.write_registry = other.skills.write_registry;
+        }
+
+        // Hooks: append (both global and local hooks fire)
+        if !other.hooks.is_empty() {
+            self.hooks.extend(other.hooks.iter().cloned());
+        }
+    }
+
+    /// Set a key using dotted notation. Shortcut keys:
+    /// `provider` → `defaults.provider`, `model` → `defaults.model`, `port` → `defaults.port`.
+    pub fn set_key(&mut self, key: &str, value: &str) -> Result<(), String> {
+        match key {
+            "provider" | "defaults.provider" => {
+                self.defaults.provider = Some(value.to_owned());
+            }
+            "model" | "defaults.model" => {
+                self.defaults.model = Some(value.to_owned());
+            }
+            "port" | "defaults.port" => {
+                let port: u16 = value
+                    .parse()
+                    .map_err(|e| format!("invalid port value: {e}"))?;
+                self.defaults.port = Some(port);
+            }
+            "autonomic_url" | "defaults.autonomic_url" => {
+                self.defaults.autonomic_url = Some(value.to_owned());
+            }
+            "spaces_backend" | "defaults.spaces_backend" => {
+                self.defaults.spaces_backend = Some(value.to_owned());
+            }
+            "bare" | "defaults.bare" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid bare value: {e}"))?;
+                self.defaults.bare = Some(v);
+            }
+            "spaces.host" => {
+                self.spaces.host = Some(value.to_owned());
+            }
+            "spaces.database_id" => {
+                self.spaces.database_id = Some(value.to_owned());
+            }
+            "spaces.token" => {
+                self.spaces.token = Some(value.to_owned());
+            }
+            "agent.max_iterations" | "max_iterations" => {
+                let v: u32 = value
+                    .parse()
+                    .map_err(|e| format!("invalid max_iterations: {e}"))?;
+                self.agent.max_iterations = Some(v);
+            }
+            "agent.approval_timeout" | "approval_timeout" => {
+                let v: u64 = value
+                    .parse()
+                    .map_err(|e| format!("invalid approval_timeout: {e}"))?;
+                self.agent.approval_timeout = Some(v);
+            }
+            "skills.enabled" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid skills.enabled: {e}"))?;
+                self.skills.enabled = Some(v);
+            }
+            "skills.write_registry" => {
+                let v: bool = value
+                    .parse()
+                    .map_err(|e| format!("invalid skills.write_registry: {e}"))?;
+                self.skills.write_registry = Some(v);
+            }
+            _ if key.starts_with("providers.") => {
+                // e.g. providers.ollama.base_url
+                let rest = &key["providers.".len()..];
+                let parts: Vec<&str> = rest.splitn(2, '.').collect();
+                if parts.len() != 2 {
+                    return Err(format!(
+                        "invalid provider key: {key} (expected providers.<name>.<field>)"
+                    ));
+                }
+                let provider_name = parts[0];
+                let field = parts[1];
+                let entry = self.providers.entry(provider_name.to_owned()).or_default();
+                match field {
+                    "model" => entry.model = Some(value.to_owned()),
+                    "base_url" => entry.base_url = Some(value.to_owned()),
+                    "max_tokens" => {
+                        let v: u32 = value
+                            .parse()
+                            .map_err(|e| format!("invalid max_tokens: {e}"))?;
+                        entry.max_tokens = Some(v);
+                    }
+                    "enable_streaming" => {
+                        let v: bool = value
+                            .parse()
+                            .map_err(|e| format!("invalid enable_streaming: {e}"))?;
+                        entry.enable_streaming = Some(v);
+                    }
+                    _ => return Err(format!("unknown provider field: {field}")),
+                }
+            }
+            _ => return Err(format!("unknown config key: {key}")),
+        }
+        Ok(())
+    }
+
+    /// Get a value by key. Returns None if unset.
+    pub fn get_key(&self, key: &str) -> Option<String> {
+        match key {
+            "provider" | "defaults.provider" => self.defaults.provider.clone(),
+            "model" | "defaults.model" => self.defaults.model.clone(),
+            "port" | "defaults.port" => self.defaults.port.map(|p| p.to_string()),
+            "autonomic_url" | "defaults.autonomic_url" => self.defaults.autonomic_url.clone(),
+            "spaces_backend" | "defaults.spaces_backend" => self.defaults.spaces_backend.clone(),
+            "bare" | "defaults.bare" => self.defaults.bare.map(|v| v.to_string()),
+            "spaces.host" => self.spaces.host.clone(),
+            "spaces.database_id" => self.spaces.database_id.clone(),
+            "spaces.token" => self.spaces.token.clone(),
+            "agent.max_iterations" | "max_iterations" => {
+                self.agent.max_iterations.map(|v| v.to_string())
+            }
+            "agent.approval_timeout" | "approval_timeout" => {
+                self.agent.approval_timeout.map(|v| v.to_string())
+            }
+            "skills.enabled" => self.skills.enabled.map(|v| v.to_string()),
+            "skills.write_registry" => self.skills.write_registry.map(|v| v.to_string()),
+            "skills.dirs" => {
+                if self.skills.dirs.is_empty() {
+                    None
+                } else {
+                    Some(self.skills.dirs.join(", "))
+                }
+            }
+            _ if key.starts_with("providers.") => {
+                let rest = &key["providers.".len()..];
+                let parts: Vec<&str> = rest.splitn(2, '.').collect();
+                if parts.len() != 2 {
+                    return None;
+                }
+                let pc = self.providers.get(parts[0])?;
+                match parts[1] {
+                    "model" => pc.model.clone(),
+                    "base_url" => pc.base_url.clone(),
+                    "max_tokens" => pc.max_tokens.map(|v| v.to_string()),
+                    "enable_streaming" => pc.enable_streaming.map(|v| v.to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Global config path: `~/.config/arcan/config.toml`
+pub fn global_config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("arcan").join("config.toml"))
+}
+
+/// Project-local config path: `<data_dir>/config.toml`
+pub fn local_config_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("config.toml")
+}
+
+/// Load and merge config from global + local files.
+pub fn load_config(data_dir: &Path) -> ArcanConfig {
+    let mut config = ArcanConfig::default();
+
+    // Layer 1: global config
+    if let Some(global_path) = global_config_path() {
+        if let Some(global) = load_config_file(&global_path) {
+            config.merge(&global);
+        }
+    }
+
+    // Layer 2: project-local config
+    let local_path = local_config_path(data_dir);
+    if let Some(local) = load_config_file(&local_path) {
+        config.merge(&local);
+    }
+
+    config
+}
+
+/// Load a single TOML config file. Returns None if file doesn't exist or is invalid.
+fn load_config_file(path: &Path) -> Option<ArcanConfig> {
+    let content = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&content).ok()
+}
+
+/// Save config to the project-local config file.
+pub fn save_config(data_dir: &Path, config: &ArcanConfig) -> anyhow::Result<()> {
+    let path = local_config_path(data_dir);
+    std::fs::create_dir_all(data_dir)?;
+    let content = toml::to_string_pretty(config)
+        .map_err(|e| anyhow::anyhow!("failed to serialize config: {e}"))?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+/// Resolve the final config by applying env vars and CLI overrides on top.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve(
+    config: &ArcanConfig,
+    cli_provider: Option<&str>,
+    cli_model: Option<&str>,
+    cli_port: Option<u16>,
+    cli_max_iterations: Option<u32>,
+    cli_approval_timeout: Option<u64>,
+    cli_autonomic_url: Option<&str>,
+    cli_spaces_backend: Option<&str>,
+    cli_spaces_token: Option<&str>,
+    cli_bare: bool,
+) -> ResolvedConfig {
+    // Provider: CLI > env > config > ""
+    let provider = cli_provider
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_PROVIDER").ok())
+        .or_else(|| config.defaults.provider.clone())
+        .unwrap_or_else(|| "anthropic".to_string());
+
+    // Model: CLI > env > provider-specific config > defaults config > None
+    let model = cli_model
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_MODEL").ok())
+        .or_else(|| {
+            config
+                .providers
+                .get(&provider)
+                .and_then(|pc| pc.model.clone())
+        })
+        .or_else(|| config.defaults.model.clone());
+
+    // Port: CLI > env > config > 3000
+    let port = cli_port
+        .or_else(|| {
+            std::env::var("ARCAN_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
+        .or(config.defaults.port)
+        .unwrap_or(3000);
+
+    // Max iterations: CLI > config > 10
+    let max_iterations = cli_max_iterations
+        .or(config.agent.max_iterations)
+        .unwrap_or(10);
+
+    // Approval timeout: CLI > config > 300
+    let approval_timeout = cli_approval_timeout
+        .or(config.agent.approval_timeout)
+        .unwrap_or(300);
+
+    // Autonomic URL: CLI > env > config > None
+    let autonomic_url = cli_autonomic_url
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_AUTONOMIC_URL").ok())
+        .or_else(|| config.defaults.autonomic_url.clone());
+
+    // Provider-specific config section
+    let provider_config = config.providers.get(&provider).cloned();
+
+    // Spaces backend: CLI > env > config > "mock"
+    let spaces_backend = cli_spaces_backend
+        .map(String::from)
+        .or_else(|| std::env::var("ARCAN_SPACES_BACKEND").ok())
+        .or_else(|| config.defaults.spaces_backend.clone())
+        .unwrap_or_else(|| "mock".to_string());
+
+    // Spaces connection details (resolved further in SpacetimeDbConfig::resolve)
+    let spaces_host = config.spaces.host.clone();
+    let spaces_database_id = config.spaces.database_id.clone();
+    let spaces_token = cli_spaces_token
+        .map(String::from)
+        .or_else(|| config.spaces.token.clone());
+
+    // Skills: resolve directories with ~ expansion and defaults
+    let skill_dirs = resolve_skill_dirs(&config.skills.dirs);
+    let skills_enabled = config.skills.enabled.unwrap_or(true);
+    let skills_write_registry = config.skills.write_registry.unwrap_or(true);
+
+    // Hooks: build registry from config
+    let hook_registry = HookRegistry::from_configs(config.hooks.clone());
+
+    // Bare mode: CLI > env > config > false
+    let bare = if cli_bare {
+        true
+    } else {
+        std::env::var("ARCAN_BARE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(config.defaults.bare)
+            .unwrap_or(false)
+    };
+
+    ResolvedConfig {
+        provider,
+        model,
+        port,
+        max_iterations,
+        approval_timeout,
+        provider_config,
+        autonomic_url,
+        spaces_backend,
+        spaces_host,
+        spaces_database_id,
+        spaces_token,
+        skill_dirs,
+        skills_enabled,
+        skills_write_registry,
+        hook_registry,
+        bare,
+    }
+}
+
+/// Resolve skill discovery directories from config, applying defaults and ~ expansion.
+fn resolve_skill_dirs(configured: &[String]) -> Vec<std::path::PathBuf> {
+    let dirs = if configured.is_empty() {
+        // Default discovery directories (project-local → global)
+        vec![
+            ".arcan/skills".to_string(),
+            ".agents/skills".to_string(),
+            "~/.agents/skills".to_string(),
+        ]
+    } else {
+        configured.to_vec()
+    };
+
+    dirs.iter().map(|d| expand_tilde(d)).collect()
+}
+
+/// Expand `~` prefix to the user's home directory.
+fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// Generate default config TOML content.
+pub fn default_config_content() -> String {
+    r#"# Arcan CLI Configuration
+# Precedence: defaults < config file < env vars < CLI flags
+
+[defaults]
+# provider = "anthropic"  # anthropic, openai, ollama, mock
+# model = "claude-sonnet-4-5-20250929"
+# port = 3000
+# spaces_backend = "mock"  # mock, spacetimedb
+
+[agent]
+# max_iterations = 10
+# approval_timeout = 300
+
+# [providers.anthropic]
+# model = "claude-sonnet-4-5-20250929"
+# max_tokens = 4096
+
+# [providers.ollama]
+# model = "llama3.2"
+# base_url = "http://localhost:11434"
+# max_tokens = 4096
+# enable_streaming = true
+
+# [providers.openai]
+# model = "gpt-4o"
+# max_tokens = 4096
+
+# [spaces]
+# host = "https://maincloud.spacetimedb.com"
+# database_id = "your-database-identity"
+# token = ""  # or set SPACETIMEDB_TOKEN env var
+
+[skills]
+# enabled = true
+# write_registry = true
+# dirs = [".arcan/skills", ".agents/skills", "~/.agents/skills"]
+
+# [[hooks]]
+# event = "pre_tool_use"
+# matcher = "bash"
+# command = "echo 'About to run bash: {tool_name}'"
+# timeout_secs = 5
+# blocking = true
+
+# [[hooks]]
+# event = "run_end"
+# command = "curl -s http://localhost:8080/webhook"
+"#
+    .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_overrides_non_none() {
+        let mut base = ArcanConfig::default();
+        base.defaults.provider = Some("mock".into());
+        base.defaults.port = Some(3000);
+
+        let overlay = ArcanConfig {
+            defaults: DefaultsConfig {
+                provider: Some("ollama".into()),
+                model: Some("llama3.2".into()),
+                port: None,
+                autonomic_url: None,
+                spaces_backend: None,
+                bare: None,
+            },
+            ..Default::default()
+        };
+
+        base.merge(&overlay);
+        assert_eq!(base.defaults.provider.as_deref(), Some("ollama"));
+        assert_eq!(base.defaults.model.as_deref(), Some("llama3.2"));
+        assert_eq!(base.defaults.port, Some(3000)); // preserved
+    }
+
+    #[test]
+    fn set_and_get_shortcut_keys() {
+        let mut config = ArcanConfig::default();
+        config.set_key("provider", "ollama").unwrap();
+        config.set_key("model", "gpt-oss:20b").unwrap();
+        config.set_key("port", "3001").unwrap();
+
+        assert_eq!(config.get_key("provider").as_deref(), Some("ollama"));
+        assert_eq!(config.get_key("model").as_deref(), Some("gpt-oss:20b"));
+        assert_eq!(config.get_key("port").as_deref(), Some("3001"));
+    }
+
+    #[test]
+    fn set_and_get_dotted_provider_keys() {
+        let mut config = ArcanConfig::default();
+        config
+            .set_key("providers.ollama.base_url", "http://localhost:11434")
+            .unwrap();
+        config
+            .set_key("providers.ollama.max_tokens", "8192")
+            .unwrap();
+        config
+            .set_key("providers.ollama.enable_streaming", "true")
+            .unwrap();
+
+        assert_eq!(
+            config.get_key("providers.ollama.base_url").as_deref(),
+            Some("http://localhost:11434")
+        );
+        assert_eq!(
+            config.get_key("providers.ollama.max_tokens").as_deref(),
+            Some("8192")
+        );
+        assert_eq!(
+            config
+                .get_key("providers.ollama.enable_streaming")
+                .as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn set_key_rejects_invalid() {
+        let mut config = ArcanConfig::default();
+        assert!(config.set_key("port", "not-a-number").is_err());
+        assert!(config.set_key("unknown_key", "value").is_err());
+        assert!(config.set_key("providers.ollama.unknown", "v").is_err());
+    }
+
+    #[test]
+    fn get_key_returns_none_for_unset() {
+        let config = ArcanConfig::default();
+        assert!(config.get_key("provider").is_none());
+        assert!(config.get_key("providers.ollama.model").is_none());
+    }
+
+    #[test]
+    fn resolve_defaults() {
+        let config = ArcanConfig::default();
+        let resolved = resolve(
+            &config, None, None, None, None, None, None, None, None, false,
+        );
+        assert_eq!(resolved.provider, "anthropic");
+        assert!(resolved.model.is_none());
+        assert_eq!(resolved.port, 3000);
+        assert_eq!(resolved.max_iterations, 10);
+        assert_eq!(resolved.approval_timeout, 300);
+        assert!(resolved.autonomic_url.is_none());
+        assert_eq!(resolved.spaces_backend, "mock");
+    }
+
+    #[test]
+    fn resolve_cli_overrides_config() {
+        let mut config = ArcanConfig::default();
+        config.defaults.provider = Some("ollama".into());
+        config.defaults.model = Some("llama3.2".into());
+        config.defaults.port = Some(3001);
+
+        let resolved = resolve(
+            &config,
+            Some("anthropic"),
+            Some("claude-3"),
+            Some(4000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert_eq!(resolved.provider, "anthropic");
+        assert_eq!(resolved.model.as_deref(), Some("claude-3"));
+        assert_eq!(resolved.port, 4000);
+    }
+
+    #[test]
+    fn resolve_uses_provider_specific_model() {
+        let mut config = ArcanConfig::default();
+        config.defaults.provider = Some("ollama".into());
+        let pc = ProviderConfig {
+            model: Some("special-model".into()),
+            ..Default::default()
+        };
+        config.providers.insert("ollama".into(), pc);
+
+        let resolved = resolve(
+            &config, None, None, None, None, None, None, None, None, false,
+        );
+        assert_eq!(resolved.model.as_deref(), Some("special-model"));
+    }
+
+    #[test]
+    fn roundtrip_toml_serialization() {
+        let mut config = ArcanConfig::default();
+        config.defaults.provider = Some("ollama".into());
+        config.defaults.port = Some(3001);
+        let pc = ProviderConfig {
+            model: Some("llama3.2".into()),
+            ..Default::default()
+        };
+        config.providers.insert("ollama".into(), pc);
+
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let parsed: ArcanConfig = toml::from_str(&toml_str).expect("parse");
+        assert_eq!(parsed.defaults.provider.as_deref(), Some("ollama"));
+        assert_eq!(parsed.defaults.port, Some(3001));
+        assert_eq!(
+            parsed
+                .providers
+                .get("ollama")
+                .and_then(|p| p.model.as_deref()),
+            Some("llama3.2")
+        );
+    }
+
+    #[test]
+    fn save_and_load_config_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "arcan-config-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = ArcanConfig::default();
+        config.set_key("provider", "ollama").unwrap();
+        config.set_key("model", "test-model").unwrap();
+        save_config(&dir, &config).unwrap();
+
+        let loaded = load_config(&dir);
+        assert_eq!(loaded.defaults.provider.as_deref(), Some("ollama"));
+        assert_eq!(loaded.defaults.model.as_deref(), Some("test-model"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

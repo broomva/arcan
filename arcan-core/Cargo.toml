@@ -1,0 +1,29 @@
+[package]
+name = "arcan-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core traits, protocol types, and state management for the Arcan agent runtime"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+aios-protocol.workspace = true
+chrono.workspace = true
+json-patch.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wait-timeout.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,33 @@
+[package]
+name = "arcan-praxis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bridge crate: configures and registers Praxis canonical tools into Arcan's runtime"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
+arcan-sandbox.workspace = true
+arcan-provider-bubblewrap.workspace = true
+arcan-provider-local.workspace = true
+arcan-provider-vercel.workspace = true
+aios-protocol.workspace = true
+praxis-core.workspace = true
+praxis-tools.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+aios-protocol.workspace = true
+serde_json.workspace = true
+tempfile = "3"

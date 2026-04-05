@@ -1,0 +1,32 @@
+[package]
+name = "arcan-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Embedded web admin console for the Arcan agent runtime"
+
+[lints]
+workspace = true
+
+[features]
+default = ["embed"]
+embed = ["dep:rust-embed"]
+
+[dependencies]
+axum.workspace = true
+tracing.workspace = true
+mime_guess = "2"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[dependencies.rust-embed]
+version = "8"
+features = ["mime-guess"]
+optional = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5", features = ["util"] }

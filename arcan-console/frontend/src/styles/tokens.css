@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+/* ── ArcanBG Design System Tokens ────────────────────────────────────────── */
+
+@theme {
+  --color-ai-blue: #0066FF;
+  --color-web3-green: #00CC66;
+  --color-bg-light: #12121A;
+  --color-bg-dark: #001F3F;
+  --color-alert-red: #FF3B30;
+  --color-success-green: #34C759;
+  --color-surface: #1A1A2E;
+  --color-surface-hover: #252540;
+  --color-border: #2A2A45;
+  --color-text-primary: #F0F0F5;
+  --color-text-secondary: #8888AA;
+  --color-text-muted: #555570;
+
+  --font-sans: "Poppins", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --shadow-card: 0 8px 16px rgba(0, 0, 0, 0.2);
+  --shadow-elevated: 0 20px 40px rgba(0, 0, 0, 0.3);
+
+  --ease-smooth: cubic-bezier(0.33, 1, 0.68, 1);
+  --transition-smooth: 0.3s var(--ease-smooth);
+  --transition-slow: 0.8s var(--ease-smooth);
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: linear-gradient(145deg, var(--color-bg-dark), var(--color-bg-light));
+  color: var(--color-text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* ── Code highlight theme ─────────────────────────────────────────────────── */
+
+pre code.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.hljs {
+  background: transparent !important;
+}
+
+/* ── Streaming cursor animation ───────────────────────────────────────────── */
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.streaming-cursor::after {
+  content: "▊";
+  animation: blink 1s step-end infinite;
+  color: var(--color-ai-blue);
+  margin-left: 2px;
+}
+
+/* ── Tool status pulse ────────────────────────────────────────────────────── */
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.tool-running::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 2px solid var(--color-ai-blue);
+  animation: pulse-ring 1.5s ease-out infinite;
+}

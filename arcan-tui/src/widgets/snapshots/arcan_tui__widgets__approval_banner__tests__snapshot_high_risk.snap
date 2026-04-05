@@ -1,0 +1,13 @@
+---
+source: crates/arcan-tui/src/widgets/approval_banner.rs
+assertion_line: 130
+expression: output
+---
+┌ Pending Approval ────────────────────────────────────────┐
+│ ⚠ Approval Required   Risk: high                         │
+│Tool: shell.exec  ID: ap-42                               │
+│Args: {"cmd":"rm -rf /tmp/test"}                          │
+│ /approve <id> yes | /approve <id> no                     │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘

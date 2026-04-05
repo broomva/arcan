@@ -1,0 +1,26 @@
+[package]
+name = "arcan-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Append-only JSONL session persistence for Arcan agent events"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

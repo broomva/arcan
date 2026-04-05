@@ -1,0 +1,27 @@
+[package]
+name = "arcan-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Tool harness bridge: adapts Praxis canonical tools for the Arcan runtime"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+aios-protocol.workspace = true
+praxis-core.workspace = true
+praxis-tools.workspace = true
+praxis-skills.workspace = true
+praxis-mcp-bridge.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"

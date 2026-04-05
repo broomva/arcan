@@ -1,0 +1,32 @@
+[package]
+name = "arcan-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "LLM provider implementations (Anthropic Claude) for the Arcan agent runtime"
+readme = "../../README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+base64 = "0.22"
+dirs = "6"
+open = "5"
+rand = "0.9"
+reqwest.workspace = true
+rig-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url = "2"
+uuid.workspace = true
