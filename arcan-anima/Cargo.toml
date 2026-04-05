@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Bridge between Arcan agent runtime and Anima identity/self layer"
-readme = "../../README.md"
 
 [lints]
 workspace = true

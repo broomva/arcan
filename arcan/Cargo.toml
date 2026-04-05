@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Rust agent runtime with streaming, tool execution, and event-sourced persistence"
-readme = "../../README.md"
 
 [[bin]]
 name = "arcan"

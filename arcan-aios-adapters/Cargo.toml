@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Arcan adapters implementing aiOS protocol ports"
-readme = "../../README.md"
 
 [features]
 default = []

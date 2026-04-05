@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Bridge crate: configures and registers Praxis canonical tools into Arcan's runtime"
-readme = "../../README.md"
 
 [lints]
 workspace = true

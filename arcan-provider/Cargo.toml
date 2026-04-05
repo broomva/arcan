@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "LLM provider implementations (Anthropic Claude) for the Arcan agent runtime"
-readme = "../../README.md"
 
 [lints]
 workspace = true

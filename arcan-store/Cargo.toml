@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Append-only JSONL session persistence for Arcan agent events"
-readme = "../../README.md"
 
 [lints]
 workspace = true

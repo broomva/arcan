@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Terminal UI for the Arcan agent runtime"
-readme = "../../README.md"
 
 [lib]
 name = "arcan_tui"

@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Tool harness bridge: adapts Praxis canonical tools for the Arcan runtime"
-readme = "../../README.md"
 
 [lints]
 workspace = true

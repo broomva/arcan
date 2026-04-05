@@ -9,7 +9,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Canonical session API router for the Arcan daemon"
-readme = "../../README.md"
 
 [lints]
 workspace = true
