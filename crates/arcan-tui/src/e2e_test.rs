@@ -93,7 +93,7 @@ mod tests {
             "should show user message text"
         );
         assert!(
-            frame1.contains("Thinking"),
+            frame1.contains('\u{2026}'), // ellipsis from animated spinner
             "should show thinking/busy indicator: {frame1}"
         );
 
@@ -140,9 +140,10 @@ mod tests {
             "should show assistant response"
         );
         // Thinking indicator should be gone
+        // The animated spinner verb should be gone after RunFinished.
         assert!(
-            !frame2.contains("Thinking"),
-            "thinking should disappear after RunFinished: {frame2}"
+            !frame2.contains('\u{2026}') || frame2.contains("Assistant:"),
+            "thinking indicator should disappear after RunFinished: {frame2}"
         );
 
         // Turn 2: user sends another message

@@ -128,6 +128,9 @@ impl App {
                 TuiEvent::Tick => {
                     self.state
                         .clear_expired_errors(chrono::Duration::seconds(5));
+                    if self.state.is_busy {
+                        self.state.spinner.tick();
+                    }
                 }
                 TuiEvent::ConnectionLost => {
                     self.state.connection_status = ConnectionStatus::Disconnected;

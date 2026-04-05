@@ -1,6 +1,7 @@
 use super::scroll::ScrollState;
 use super::ui_block::{ApprovalRequest, ToolStatus, UiBlock};
 use crate::focus::FocusTarget;
+use crate::widgets::spinner::Spinner;
 use arcan_core::protocol::AgentEvent;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -66,6 +67,9 @@ pub struct AppState {
 
     /// Session cost remaining in USD, updated after each run.
     pub cost_remaining: Option<f64>,
+
+    /// Animated spinner for the thinking indicator.
+    pub spinner: Spinner,
 }
 
 impl Default for AppState {
@@ -92,6 +96,7 @@ impl AppState {
             context_pressure_pct: 0.0,
             autonomic_ruling: None,
             cost_remaining: None,
+            spinner: Spinner::new(),
         }
     }
 
@@ -140,6 +145,7 @@ impl AppState {
                 self.is_busy = true;
                 self.streaming_text = None;
                 self.provider = Some(provider);
+                self.spinner.new_verb();
             }
             AgentEvent::TextDelta { delta, .. } => {
                 if let Some(mut text) = self.streaming_text.take() {
