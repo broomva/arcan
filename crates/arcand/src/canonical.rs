@@ -359,6 +359,48 @@ struct ProviderResponse {
     available: Vec<String>,
 }
 
+// ─── Consciousness endpoints (BRO-456) ──────────────────────────────────────
+
+/// Request body for POST /sessions/{id}/messages — lightweight message push.
+#[derive(Debug, Deserialize, ToSchema)]
+struct PushMessageRequest {
+    /// The message content to send.
+    message: String,
+    /// How this message should interact with an active run (default: Collect).
+    steering: Option<String>,
+}
+
+/// Response for POST /sessions/{id}/messages.
+#[derive(Debug, Serialize, ToSchema)]
+struct PushMessageResponse {
+    #[schema(value_type = String)]
+    session_id: SessionId,
+    queued: bool,
+    queue_position: Option<usize>,
+}
+
+/// Response for GET /sessions/{id}/queue.
+#[derive(Debug, Serialize, ToSchema)]
+struct QueueStatusResponse {
+    #[schema(value_type = String)]
+    session_id: SessionId,
+    mode: String,
+    queue_depth: usize,
+    has_active_run: bool,
+    oldest_message_age_ms: Option<u64>,
+    pending: Vec<QueuePendingEntry>,
+}
+
+/// A single pending entry in the queue response.
+#[derive(Debug, Serialize, ToSchema)]
+struct QueuePendingEntry {
+    id: String,
+    steering_mode: String,
+    content: String,
+}
+
+// ─── End consciousness types ─────────────────────────────────────────────────
+
 #[derive(Debug, Serialize, ToSchema)]
 struct RunResponse {
     #[schema(value_type = String, example = "sess-abc123")]
@@ -452,6 +494,8 @@ struct ErrorResponse {
         get_context,
         get_cost,
         list_mcp_servers,
+        push_message,
+        get_queue_status,
     ),
     components(schemas(
         // Request / response types
@@ -477,6 +521,11 @@ struct ErrorResponse {
         AutonomicResponse,
         ContextResponse,
         CostResponse,
+        // Consciousness endpoint types (BRO-456)
+        PushMessageRequest,
+        PushMessageResponse,
+        QueueStatusResponse,
+        QueuePendingEntry,
         // Mirror schemas for external aios-protocol types
         OperatingModeSchema,
         AgentStateVectorSchema,
@@ -499,6 +548,7 @@ struct ErrorResponse {
         (name = "provider", description = "Live provider switching"),
         (name = "autonomic", description = "Autonomic context regulation and homeostatic state"),
         (name = "mcp", description = "MCP server registry"),
+        (name = "consciousness", description = "Consciousness session management and message queue"),
     )
 )]
 struct ApiDoc;
@@ -739,6 +789,15 @@ pub fn create_canonical_router_with_skills(
         .route(
             "/sessions/{session_id}/approvals/{approval_id}",
             post(resolve_approval),
+        )
+        // BRO-456: Consciousness message push and queue introspection.
+        .route(
+            "/sessions/{session_id}/messages",
+            post(push_message),
+        )
+        .route(
+            "/sessions/{session_id}/queue",
+            get(get_queue_status),
         )
         .route("/provider", get(get_provider).put(set_provider))
         .route("/autonomic", get(get_autonomic))
@@ -2639,6 +2698,141 @@ async fn get_cost(State(state): State<CanonicalState>) -> Json<CostResponse> {
         tokens_remaining: guard.homeostatic.cognitive.tokens_remaining,
         uptime_seconds: uptime,
     })
+}
+
+// ─── Consciousness endpoints (BRO-456) ──────────────────────────────────────
+
+/// Push a message to an active consciousness session.
+///
+/// Lightweight alternative to `POST /runs` for follow-ups, interrupts, or steers.
+/// Requires consciousness mode (`ARCAN_CONSCIOUSNESS=true`).
+#[utoipa::path(
+    post,
+    path = "/sessions/{session_id}/messages",
+    tag = "consciousness",
+    params(("session_id" = String, Path, description = "Session identifier")),
+    request_body = PushMessageRequest,
+    responses(
+        (status = 202, description = "Message accepted", body = PushMessageResponse),
+        (status = 404, description = "Session not found or consciousness disabled", body = ErrorResponse),
+        (status = 503, description = "Message rejected", body = ErrorResponse)
+    )
+)]
+async fn push_message(
+    Path(session_id): Path<String>,
+    State(state): State<CanonicalState>,
+    Json(request): Json<PushMessageRequest>,
+) -> Result<(StatusCode, Json<PushMessageResponse>), (StatusCode, Json<serde_json::Value>)> {
+    let registry = state.consciousness_registry.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "consciousness mode is not enabled" })),
+        )
+    })?;
+
+    let handle = registry.get(&session_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no active consciousness session", "session_id": session_id })),
+        )
+    })?;
+
+    let steering = match request.steering.as_deref() {
+        Some("steer" | "Steer") => aios_protocol::SteeringMode::Steer,
+        Some("interrupt" | "Interrupt") => aios_protocol::SteeringMode::Interrupt,
+        Some("followup" | "Followup") => aios_protocol::SteeringMode::Followup,
+        _ => aios_protocol::SteeringMode::Collect,
+    };
+
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let send_result = handle
+        .send(crate::consciousness::ConsciousnessEvent::UserMessage(
+            Box::new(crate::consciousness::UserMessageEvent {
+                objective: request.message,
+                branch: BranchId::main(),
+                steering,
+                ack: Some(ack_tx),
+                run_context: crate::consciousness::RunContext::default(),
+            }),
+        ))
+        .await;
+
+    if send_result.is_err() {
+        return Err(internal_error(format!(
+            "consciousness actor for session {} is not running",
+            session_id
+        )));
+    }
+
+    let sid = SessionId::from_string(session_id);
+    match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+        Ok(Ok(crate::consciousness::ConsciousnessAck::Accepted { queued })) => Ok((
+            StatusCode::ACCEPTED,
+            Json(PushMessageResponse {
+                session_id: sid,
+                queued,
+                queue_position: if queued { Some(1) } else { None },
+            }),
+        )),
+        Ok(Ok(crate::consciousness::ConsciousnessAck::Rejected { reason })) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "rejected", "reason": reason })),
+        )),
+        _ => Err(internal_error("consciousness actor did not respond")),
+    }
+}
+
+/// Get the queue status for a consciousness session.
+#[utoipa::path(
+    get,
+    path = "/sessions/{session_id}/queue",
+    tag = "consciousness",
+    params(("session_id" = String, Path, description = "Session identifier")),
+    responses(
+        (status = 200, description = "Queue status", body = QueueStatusResponse),
+        (status = 404, description = "Session not found or consciousness disabled", body = ErrorResponse)
+    )
+)]
+async fn get_queue_status(
+    Path(session_id): Path<String>,
+    State(state): State<CanonicalState>,
+) -> Result<Json<QueueStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let registry = state.consciousness_registry.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "consciousness mode is not enabled" })),
+        )
+    })?;
+
+    let handle = registry.get(&session_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no active consciousness session", "session_id": session_id })),
+        )
+    })?;
+
+    let status = handle
+        .query_status()
+        .await
+        .ok_or_else(|| internal_error("consciousness actor did not respond to status query"))?;
+
+    let sid = SessionId::from_string(session_id);
+    Ok(Json(QueueStatusResponse {
+        session_id: sid,
+        mode: status.mode,
+        queue_depth: status.queue_depth,
+        has_active_run: status.has_active_run,
+        oldest_message_age_ms: status.oldest_message_age_ms,
+        pending: status
+            .queue_pending
+            .into_iter()
+            .map(|m| QueuePendingEntry {
+                id: m.id,
+                steering_mode: m.mode,
+                content: m.content,
+            })
+            .collect(),
+    }))
 }
 
 // ─── Error helpers ───────────────────────────────────────────────────────────

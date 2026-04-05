@@ -22,6 +22,7 @@ use arcand::consciousness::{
     SessionConsciousness, UserMessageEvent,
 };
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 use aios_protocol::{BranchId, SessionId};
 
@@ -201,4 +202,75 @@ async fn channel_close_stops_actor() {
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "actor should stop when channel closes");
+}
+
+#[tokio::test]
+async fn query_status_returns_idle_mode() {
+    let runtime = build_runtime(unique_root("consciousness-status"));
+    let registry = ConsciousnessRegistry::new(ConsciousnessConfig::default());
+
+    let handle = registry.get_or_create("test-status", BranchId::main(), runtime);
+
+    // Give actor a moment to start.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+    assert_eq!(status.queue_depth, 0);
+    assert!(!status.has_active_run);
+
+    registry.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn multiple_messages_accepted_sequentially() {
+    let runtime = build_runtime(unique_root("consciousness-multi-msg"));
+    let session_id = SessionId::from_string("test-multi".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+
+    // Send two messages — both should be accepted (either queued or immediate).
+    for i in 0..2 {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        tx.send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: format!("message {i}"),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+
+        let ack = tokio::time::timeout(Duration::from_secs(10), ack_rx)
+            .await
+            .expect("should get ack")
+            .expect("channel should not be dropped");
+
+        match ack {
+            ConsciousnessAck::Accepted { .. } => {} // queued or immediate — both OK
+            ConsciousnessAck::Rejected { reason } => {
+                panic!("message {i} rejected: {reason}");
+            }
+        }
+    }
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
 }
