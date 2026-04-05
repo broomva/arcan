@@ -1,0 +1,55 @@
+# cargo-release configuration
+# https://github.com/crate-ci/cargo-release
+
+[workspace]
+allow-branch = ["main"]
+shared-version = true
+consolidate-commits = true
+pre-release-commit-message = "chore: release v{{version}}"
+tag-message = "v{{version}}"
+tag-name = "v{{version}}"
+publish = true
+push = true
+pre-release-hook = ["cargo", "test", "--workspace"]
+
+# Publish order: dependencies first, then dependents
+# Tier 1: no Arcan-internal deps
+[[groups]]
+name = "tier-1"
+members = [
+  "arcan-core",
+  "arcan-commands",
+  "arcan-console",
+  "arcan-sandbox",
+  "arcan-provider-bubblewrap",
+  "arcan-provider-local",
+  "arcan-provider-vercel",
+]
+
+# Tier 2: depends on tier-1
+[[groups]]
+name = "tier-2"
+members = [
+  "arcan-aios-adapters",
+  "arcan-anima",
+  "arcan-fleet",
+  "arcan-harness",
+  "arcan-provider",
+  "arcan-spaces",
+  "arcan-store",
+]
+
+# Tier 3: depends on tier-2
+[[groups]]
+name = "tier-3"
+members = ["arcan-praxis", "arcan-tui", "arcan-lago"]
+
+# Tier 4: depends on tier-3
+[[groups]]
+name = "tier-4"
+members = ["arcand"]
+
+# Tier 5: depends on everything
+[[groups]]
+name = "tier-5"
+members = ["arcan"]
