@@ -17,6 +17,22 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{Instrument, debug, error, info, warn};
 
+// ─── Spaces client port ────────────────────────────────────────────────────
+
+/// Minimal port trait for Spaces polling from the consciousness actor.
+///
+/// This is a local abstraction so `arcand` does not take a hard dependency
+/// on `arcan-spaces`. Concrete implementations (e.g. the SpacetimeDB SDK
+/// client) should wrap blocking I/O in `spawn_blocking`.
+pub trait SpacesClient: Send + Sync {
+    /// Read recent messages from a channel (blocking-safe).
+    fn read_recent(
+        &self,
+        channel_id: u64,
+        limit: u32,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 /// Configuration for the consciousness actor.
@@ -74,6 +90,17 @@ pub enum ConsciousnessEvent {
     },
     /// Autonomic context-pressure signal (e.g. Breathe/Compress/Emergency).
     AutonomicSignal { ruling: String },
+    /// An approval gate was resolved (approved or rejected).
+    ApprovalResolved {
+        approval_id: String,
+        approved: bool,
+        actor: String,
+    },
+    /// External signal from an HTTP endpoint or integration.
+    ExternalSignal {
+        signal_type: String,
+        data: serde_json::Value,
+    },
     /// Graceful shutdown request.
     Shutdown,
     /// A tool execution completed successfully (future per-tool async).
@@ -164,6 +191,13 @@ pub enum ConsciousnessMode {
     WaitingForTools,
 }
 
+/// Tracking info for a running background tool (future per-tool async execution).
+#[derive(Debug, Clone)]
+pub struct RunningToolInfo {
+    pub tool_name: String,
+    pub started_at: Instant,
+}
+
 /// Per-session mutable state owned by the consciousness actor.
 struct ConsciousnessState {
     session_id: SessionId,
@@ -174,6 +208,9 @@ struct ConsciousnessState {
     /// Set by AutonomicSignal when a Compress or Emergency ruling is received.
     /// Cleared after being consumed by the next `run_agent_cycle`.
     needs_compaction: bool,
+    /// Running background tools (for future per-tool async execution).
+    #[allow(dead_code)]
+    running_tools: HashMap<String, RunningToolInfo>,
 }
 
 impl ConsciousnessState {
@@ -185,6 +222,7 @@ impl ConsciousnessState {
             queue: MessageQueue::new(QueueConfig::default()),
             last_activity: Instant::now(),
             needs_compaction: false,
+            running_tools: HashMap::new(),
         }
     }
 }
@@ -204,6 +242,10 @@ pub struct SessionConsciousness {
     state: ConsciousnessState,
     runtime: Arc<KernelRuntime>,
     config: ConsciousnessConfig,
+    /// Optional Spaces client for polling distributed messages.
+    /// When `None`, the spaces poll timer logs a debug stub.
+    #[allow(dead_code)]
+    spaces_client: Option<Arc<dyn SpacesClient>>,
 }
 
 impl SessionConsciousness {
@@ -224,6 +266,7 @@ impl SessionConsciousness {
             state: ConsciousnessState::new(session_id, branch),
             runtime,
             config,
+            spaces_client: None,
         };
         let handle = tokio::spawn(actor.run().instrument(span));
         (handle, tx)
@@ -265,12 +308,10 @@ impl SessionConsciousness {
                 // Spaces polling: periodically check for new distributed messages.
                 // Guarded by config flag — does nothing when spaces_enabled is false.
                 _ = spaces_poll.tick(), if self.config.spaces_enabled => {
-                    // Stub: actual Spaces SDK integration requires SpacetimeDB client
-                    // which uses blocking I/O. Future work will use spawn_blocking
-                    // to poll SpacesPort::read_messages here.
                     debug!(
                         session = %self.state.session_id,
-                        "spaces polling tick (not yet connected)"
+                        has_client = self.spaces_client.is_some(),
+                        "spaces poll: SpacetimeDB subscription not yet wired (requires spawn_blocking + SDK client)"
                     );
                     continue;
                 },
@@ -316,6 +357,42 @@ impl SessionConsciousness {
                     self.state.last_activity = Instant::now();
                     self.state.queue.set_active_run(false).ok();
                     self.drain_queue_after_run().await;
+                }
+                ConsciousnessEvent::ApprovalResolved {
+                    approval_id,
+                    approved,
+                    actor,
+                } => {
+                    info!(approval_id, approved, actor, "approval resolved");
+                    // If approved and we were waiting, resume the agent cycle.
+                    // The approval gate in aios-runtime handles the actual state transition.
+                    // Here we just log it — the next tick_on_branch will see the resolved approval.
+                    if approved && self.state.mode == ConsciousnessMode::Idle {
+                        info!(session = %self.state.session_id, "approval granted, ready for next run");
+                    }
+                }
+                ConsciousnessEvent::ExternalSignal { signal_type, data } => {
+                    info!(signal_type, "external signal received");
+                    // If idle/sleeping and the signal is actionable, trigger a deliberation cycle.
+                    if matches!(
+                        self.state.mode,
+                        ConsciousnessMode::Idle | ConsciousnessMode::Sleeping
+                    ) {
+                        let objective = format!(
+                            "[external:{signal_type}] {}",
+                            data.get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("signal received")
+                        );
+                        self.handle_user_message(
+                            objective,
+                            self.state.branch.clone(),
+                            SteeringMode::Collect,
+                            None,
+                            RunContext::default(),
+                        )
+                        .await;
+                    }
                 }
                 ConsciousnessEvent::ToolResult { call_id, .. } => {
                     debug!(

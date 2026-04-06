@@ -647,3 +647,119 @@ async fn autonomic_signal_sets_compaction_flag() {
 
     registry.shutdown_all().await;
 }
+
+// ─── Approval & Signal tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn approval_resolved_handled() {
+    let runtime = build_runtime(unique_root("consciousness-approval"));
+    let registry = ConsciousnessRegistry::new(ConsciousnessConfig::default());
+
+    let handle = registry.get_or_create("test-approval", BranchId::main(), runtime);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send an ApprovalResolved event — the actor should handle it without crashing.
+    handle
+        .send(ConsciousnessEvent::ApprovalResolved {
+            approval_id: "approv-001".to_string(),
+            approved: true,
+            actor: "test-user".to_string(),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Actor should still be alive and Idle after processing the approval.
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+    assert!(!status.has_active_run);
+
+    // Send a rejected approval too — should also be handled gracefully.
+    handle
+        .send(ConsciousnessEvent::ApprovalResolved {
+            approval_id: "approv-002".to_string(),
+            approved: false,
+            actor: "api".to_string(),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = handle.query_status().await.expect("should get status");
+    assert_eq!(status.mode, "Idle");
+
+    registry.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn external_signal_triggers_run_when_idle() {
+    let runtime = build_runtime(unique_root("consciousness-signal"));
+    let session_id = SessionId::from_string("test-signal".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+
+    // Give actor a moment to start and be in Idle state.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Send an ExternalSignal while the actor is Idle — should trigger a deliberation cycle.
+    tx.send(ConsciousnessEvent::ExternalSignal {
+        signal_type: "webhook".to_string(),
+        data: serde_json::json!({ "message": "deployment completed" }),
+    })
+    .await
+    .unwrap();
+
+    // Wait for the cycle to process.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            panic!("actor did not return to Idle within 10s after signal");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if tx
+            .send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
+            .await
+            .is_ok()
+        {
+            if let Ok(status) = tokio::time::timeout(Duration::from_secs(2), reply_rx).await {
+                if let Ok(s) = status {
+                    if s.mode == "Idle" && !s.has_active_run {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Final verification: actor processed the signal and returned to Idle.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tx.send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
+        .await
+        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(5), reply_rx)
+        .await
+        .expect("should get status")
+        .expect("status channel ok");
+    assert_eq!(status.mode, "Idle");
+    assert!(!status.has_active_run);
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+}

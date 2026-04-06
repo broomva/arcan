@@ -391,6 +391,23 @@ struct QueueStatusResponse {
     pending: Vec<QueuePendingEntry>,
 }
 
+/// Request body for POST /sessions/{id}/signal — external signal push.
+#[derive(Debug, Deserialize, ToSchema)]
+struct PushSignalRequest {
+    /// Type of signal (e.g. "webhook", "cron", "spaces", "custom").
+    signal_type: String,
+    /// Arbitrary JSON payload for the signal.
+    data: serde_json::Value,
+}
+
+/// Response for POST /sessions/{id}/signal.
+#[derive(Debug, Serialize, ToSchema)]
+struct PushSignalResponse {
+    #[schema(value_type = String)]
+    session_id: SessionId,
+    accepted: bool,
+}
+
 /// A single pending entry in the queue response.
 #[derive(Debug, Serialize, ToSchema)]
 struct QueuePendingEntry {
@@ -411,6 +428,9 @@ struct RunResponse {
     state: AgentStateVector,
     events_emitted: u64,
     last_sequence: u64,
+    /// True when the run was dispatched to a consciousness actor (non-blocking).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    queued: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -495,6 +515,7 @@ struct ErrorResponse {
         get_cost,
         list_mcp_servers,
         push_message,
+        push_signal,
         get_queue_status,
     ),
     components(schemas(
@@ -524,6 +545,8 @@ struct ErrorResponse {
         // Consciousness endpoint types (BRO-456)
         PushMessageRequest,
         PushMessageResponse,
+        PushSignalRequest,
+        PushSignalResponse,
         QueueStatusResponse,
         QueuePendingEntry,
         // Mirror schemas for external aios-protocol types
@@ -790,8 +813,9 @@ pub fn create_canonical_router_with_skills(
             "/sessions/{session_id}/approvals/{approval_id}",
             post(resolve_approval),
         )
-        // BRO-456: Consciousness message push and queue introspection.
+        // BRO-456: Consciousness message push, signal push, and queue introspection.
         .route("/sessions/{session_id}/messages", post(push_message))
+        .route("/sessions/{session_id}/signal", post(push_signal))
         .route("/sessions/{session_id}/queue", get(get_queue_status))
         .route("/provider", get(get_provider).put(set_provider))
         .route("/autonomic", get(get_autonomic))
@@ -1688,6 +1712,7 @@ async fn run_session(
                     state: AgentStateVector::default(),
                     events_emitted: 0,
                     last_sequence: 0,
+                    queued: true,
                 }));
             }
             Ok(Ok(crate::consciousness::ConsciousnessAck::Rejected { reason })) => {
@@ -1852,6 +1877,7 @@ async fn run_session(
         state: tick.state,
         events_emitted: tick.events_emitted,
         last_sequence: tick.last_sequence,
+        queued: false,
     }))
 }
 
@@ -2435,9 +2461,22 @@ async fn resolve_approval(
 
     state
         .runtime
-        .resolve_approval(&session_id, parsed, request.approved, actor)
+        .resolve_approval(&session_id, parsed, request.approved, actor.clone())
         .await
         .map_err(internal_error)?;
+
+    // Push to consciousness actor if enabled, so the actor logs the resolution.
+    if let Some(ref registry) = state.consciousness_registry
+        && let Some(handle) = registry.get(session_id.as_str())
+    {
+        let _ = handle
+            .send(crate::consciousness::ConsciousnessEvent::ApprovalResolved {
+                approval_id: approval_id.clone(),
+                approved: request.approved,
+                actor,
+            })
+            .await;
+    }
 
     Ok((StatusCode::NO_CONTENT, Json(json!({}))))
 }
@@ -2821,6 +2860,65 @@ async fn get_queue_status(
             })
             .collect(),
     }))
+}
+
+/// Push an external signal to a consciousness session.
+///
+/// Triggers a deliberation cycle if the session is idle or sleeping.
+/// Requires consciousness mode (`ARCAN_CONSCIOUSNESS=true`).
+#[utoipa::path(
+    post,
+    path = "/sessions/{session_id}/signal",
+    tag = "consciousness",
+    params(("session_id" = String, Path, description = "Session identifier")),
+    request_body = PushSignalRequest,
+    responses(
+        (status = 202, description = "Signal accepted", body = PushSignalResponse),
+        (status = 404, description = "Session not found or consciousness disabled", body = ErrorResponse),
+        (status = 500, description = "Internal error", body = ErrorResponse)
+    )
+)]
+async fn push_signal(
+    Path(session_id): Path<String>,
+    State(state): State<CanonicalState>,
+    Json(request): Json<PushSignalRequest>,
+) -> Result<(StatusCode, Json<PushSignalResponse>), (StatusCode, Json<serde_json::Value>)> {
+    let registry = state.consciousness_registry.as_ref().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "consciousness mode is not enabled" })),
+        )
+    })?;
+
+    let handle = registry.get(&session_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no active consciousness session", "session_id": session_id })),
+        )
+    })?;
+
+    let send_result = handle
+        .send(crate::consciousness::ConsciousnessEvent::ExternalSignal {
+            signal_type: request.signal_type,
+            data: request.data,
+        })
+        .await;
+
+    if send_result.is_err() {
+        return Err(internal_error(format!(
+            "consciousness actor for session {} is not running",
+            session_id
+        )));
+    }
+
+    let sid = SessionId::from_string(session_id);
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(PushSignalResponse {
+            session_id: sid,
+            accepted: true,
+        }),
+    ))
 }
 
 // ─── Error helpers ───────────────────────────────────────────────────────────
