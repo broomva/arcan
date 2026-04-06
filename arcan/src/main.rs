@@ -9,6 +9,8 @@ mod markdown;
 mod memory_observer;
 mod memory_tools;
 mod nous_observer;
+#[cfg(feature = "opsis")]
+mod opsis_observer;
 mod prompt;
 mod sandbox_router;
 mod shell;
@@ -619,6 +621,34 @@ fn run_serve(
         arcan_spaces::register_spaces_tools(&mut registry, spaces_port);
     }
 
+    // --- Opsis world state bridge (opt-in via OPSIS_URL env var) ---
+    #[cfg(feature = "opsis")]
+    let opsis_client: Option<Arc<arcan_opsis::OpsisClient>> = if !resolved.bare {
+        match std::env::var("OPSIS_URL") {
+            Ok(url) => {
+                let agent_id = format!("arcan-agent:{}", fastrand::u32(..));
+                match arcan_opsis::OpsisClient::new(&url, agent_id) {
+                    Ok(client) => {
+                        let client = Arc::new(client);
+                        let injector = arcan_opsis::WorldStateInjector::new(&url)
+                            .map_err(|e| anyhow::anyhow!("opsis world state injector: {e}"))?;
+                        let snapshot = injector.snapshot_handle();
+                        arcan_opsis::register_opsis_tools(&mut registry, client.clone(), snapshot);
+                        tracing::info!(url = %url, "Opsis bridge enabled (3 tools registered)");
+                        Some(client)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Opsis client init failed — running without opsis");
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     // --- Provider ---
     let provider = build_provider(resolved)?;
 
@@ -775,6 +805,14 @@ fn run_serve(
                 sandbox_provider.clone(),
                 Arc::clone(&sandbox_store),
                 SubscriptionTier::Anonymous,
+            )));
+        }
+
+        // Opsis world state observer — forwards tool events as ambient observations.
+        #[cfg(feature = "opsis")]
+        if let Some(ref client) = opsis_client {
+            run_observers.push(Arc::new(opsis_observer::OpsisToolObserver::new(
+                client.clone(),
             )));
         }
 

@@ -1,0 +1,29 @@
+[package]
+name = "arcan-opsis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bridge between Arcan agent runtime and Opsis world state engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+arcan-core = { path = "../arcan-core", version = "0.3.0" }
+opsis-core = { path = "../../opsis/opsis-core" }
+chrono.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
