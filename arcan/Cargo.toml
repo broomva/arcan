@@ -27,7 +27,7 @@ praxis = []
 [dependencies]
 arcan-console = { path = "../arcan-console", version = "0.3.0", optional = true }
 arcan-opsis = { path = "../arcan-opsis", version = "0.3.0", optional = true }
-opsis-core = { path = "../../opsis/opsis-core", optional = true }
+opsis-core = { path = "../../opsis/opsis-core", version = "0.3.0", optional = true }
 arcan-spaces = { path = "../arcan-spaces", version = "0.3.0", optional = true }
 arcan-commands = { path = "../arcan-commands", version = "0.3.0" }
 arcan-praxis = { path = "../arcan-praxis", version = "0.3.0" }
