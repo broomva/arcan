@@ -369,9 +369,18 @@ impl ModelProviderPort for ArcanProviderAdapter {
             total_tokens: usage.total() as u32,
         });
 
-        // Record token usage on the chat span.
+        // Record token usage on the chat span (attributes + event for OTel bridge reliability).
         if let Some(ref usage) = usage {
             life_vigil::spans::record_token_usage(&chat_span, usage);
+            // Also emit as span event — events propagate more reliably through
+            // tracing-opentelemetry → LangSmith than record() on Empty fields.
+            let _enter = chat_span.enter();
+            life_vigil::spans::record_usage_event(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                &provider_name,
+                reason_str,
+            );
         }
 
         // Record GenAI metrics (token usage + operation duration) on shared instruments.
