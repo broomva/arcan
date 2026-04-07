@@ -1764,6 +1764,13 @@ async fn run_session(
     const MAX_AGENT_ITERATIONS: u32 = 10;
 
     let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
+
+    // Record the user objective as root-level input for LangSmith trace list view.
+    {
+        let _enter = agent_span.enter();
+        life_vigil::spans::record_prompt_content(&request.objective);
+    }
+
     let mut tick_result = state
         .runtime
         .tick_on_branch(
@@ -1823,6 +1830,31 @@ async fn run_session(
     }
 
     let tick = tick_result.map_err(internal_error)?;
+
+    // Record response as root-level output for LangSmith trace list view.
+    // Extract assistant text from session events (same logic as extract_run_context).
+    {
+        if let Ok(events) = state.runtime.read_events(&session_id, 0, 1000).await {
+            let mut output_text = String::new();
+            for record in &events {
+                match &record.kind {
+                    aios_protocol::event::EventKind::TextDelta { delta, .. } => {
+                        output_text.push_str(delta);
+                    }
+                    aios_protocol::event::EventKind::Message { content, role, .. }
+                        if role == "assistant" =>
+                    {
+                        output_text = content.clone();
+                    }
+                    _ => {}
+                }
+            }
+            if !output_text.is_empty() {
+                let _enter = agent_span.enter();
+                life_vigil::spans::record_completion_content(&output_text);
+            }
+        }
+    }
 
     // Evaluate Autonomic context regulation after each run.
     {
