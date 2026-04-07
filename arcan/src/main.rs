@@ -261,13 +261,32 @@ async fn shutdown_signal() {
     tracing::info!("Shutting down gracefully, draining connections...");
 }
 
+/// Resolve the effective data directory.
+///
+/// Priority:
+/// 1. Explicit `--data-dir` override (anything other than the default `.arcan`)
+/// 2. `.life/arcan/` if a `.life/` project root is found (new convention)
+/// 3. Fall back to `.arcan/` relative to cwd (legacy convention)
 fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {
     let workspace_root = std::env::current_dir()?;
-    Ok(if data_dir.is_relative() {
-        workspace_root.join(data_dir)
-    } else {
-        data_dir.clone()
-    })
+    let default_legacy = PathBuf::from(".arcan");
+
+    // If user explicitly passed a non-default path, honour it.
+    if *data_dir != default_legacy {
+        return Ok(if data_dir.is_relative() {
+            workspace_root.join(data_dir)
+        } else {
+            data_dir.clone()
+        });
+    }
+
+    // New convention: use .life/arcan/ when a .life/ project root exists.
+    if let Some(project_root) = life_paths::find_project_root() {
+        return Ok(project_root.join(".life").join("arcan"));
+    }
+
+    // Legacy fallback: .arcan/ relative to cwd.
+    Ok(workspace_root.join(data_dir))
 }
 
 fn read_last_session_hint(data_dir: &Path) -> Option<String> {
