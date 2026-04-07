@@ -1831,6 +1831,10 @@ async fn run_session(
 
     let tick = tick_result.map_err(internal_error)?;
 
+    // Re-enter agent span so autonomic eval + response extraction are children
+    // of `invoke_agent` rather than appearing as orphaned root traces.
+    let _agent_guard = agent_span.enter();
+
     // Record response as root-level output for LangSmith trace list view.
     // Extract assistant text from session events (same logic as extract_run_context).
     {
@@ -1850,7 +1854,6 @@ async fn run_session(
                 }
             }
             if !output_text.is_empty() {
-                let _enter = agent_span.enter();
                 life_vigil::spans::record_completion_content(&output_text);
             }
         }
