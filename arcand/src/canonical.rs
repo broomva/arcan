@@ -1858,6 +1858,14 @@ async fn run_session(
 
     // Evaluate Autonomic context regulation after each run.
     {
+        let autonomic_span = tracing::info_span!(
+            "autonomic.evaluate",
+            "autonomic.economic_mode" = tracing::field::Empty,
+            "autonomic.ruling" = tracing::field::Empty,
+            "autonomic.pressure" = tracing::field::Empty,
+        );
+        let _enter = autonomic_span.enter();
+
         let mut autonomic = state
             .autonomic
             .lock()
@@ -1865,6 +1873,13 @@ async fn run_session(
         autonomic.evaluate_after_run(&tick.state);
 
         if let Some(ref advice) = autonomic.last_ruling {
+            autonomic_span.record(
+                "autonomic.economic_mode",
+                tracing::field::debug(&autonomic.homeostatic.economic.mode),
+            );
+            autonomic_span.record("autonomic.ruling", tracing::field::debug(&advice.ruling));
+            autonomic_span.record("autonomic.pressure", f64::from(advice.pressure));
+
             tracing::debug!(
                 ruling = ?advice.ruling,
                 pressure = advice.pressure,
