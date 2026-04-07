@@ -197,7 +197,7 @@ struct CanonicalState {
     data_dir: Arc<std::path::PathBuf>,
     /// Workspace root (cwd at daemon startup) — used for git context and project instructions.
     workspace_root: Arc<std::path::PathBuf>,
-    /// Cached project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml).
+    /// Cached project instructions (CLAUDE.md, AGENTS.md, docs/, .life/control/policy.yaml).
     /// Loaded once at startup; project instructions rarely change during a session.
     cached_project_instructions: Option<String>,
     /// Shared skill registry for activation and tool filtering.

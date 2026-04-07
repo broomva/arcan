@@ -5,7 +5,7 @@
 //! **Cacheable** (stable across turns — Anthropic auto-caches matching prefixes):
 //! 1. Role definition
 //! 2. Environment info (OS, shell, date, model)
-//! 3. Project instructions (CLAUDE.md, AGENTS.md, docs/, .control/policy.yaml)
+//! 3. Project instructions (CLAUDE.md, AGENTS.md, docs/, .life/control/policy.yaml)
 //! 4. Guidelines
 //!
 //! **Dynamic** (changes per turn — appended after cacheable prefix):
@@ -276,7 +276,7 @@ pub fn build_git_section(workspace: &Path) -> Option<String> {
 /// 8. `<workspace>/docs/ROADMAP.md` — Development roadmap
 ///
 /// **Control metalayer** (if present):
-/// 9. `<workspace>/.control/policy.yaml` — Enforceable policy constraints
+/// 9. `<workspace>/.life/control/policy.yaml` — Enforceable policy constraints
 ///
 /// Returns the concatenated content, or `None` if nothing was found.
 pub fn load_project_instructions(workspace: &Path) -> Option<String> {
@@ -340,14 +340,14 @@ pub fn load_project_instructions(workspace: &Path) -> Option<String> {
 
     // --- Control metalayer ---
 
-    // .control/policy.yaml — machine-readable policy constraints
-    let policy_path = workspace.join(".control/policy.yaml");
+    // .life/control/policy.yaml — machine-readable policy constraints
+    let policy_path = workspace.join(".life/control/policy.yaml");
     if policy_path.exists()
         && let Ok(content) = std::fs::read_to_string(&policy_path)
         && !content.trim().is_empty()
     {
         contents.push(format!(
-            "<!-- Control policy (.control/policy.yaml) -->\n```yaml\n{}\n```",
+            "<!-- Control policy (.life/control/policy.yaml) -->\n```yaml\n{}\n```",
             content.trim()
         ));
     }
