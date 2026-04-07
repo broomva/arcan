@@ -800,7 +800,7 @@ mod tests {
     fn test_load_control_policy() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path();
-        let control_dir = workspace.join(".control");
+        let control_dir = workspace.join(".life/control");
         fs::create_dir_all(&control_dir).unwrap();
         fs::write(
             control_dir.join("policy.yaml"),
@@ -917,7 +917,7 @@ mod tests {
         let docs = workspace.join("docs");
         fs::create_dir_all(&docs).unwrap();
         fs::write(docs.join("STATUS.md"), "All green.").unwrap();
-        let control = workspace.join(".control");
+        let control = workspace.join(".life/control");
         fs::create_dir_all(&control).unwrap();
         fs::write(control.join("policy.yaml"), "version: 1").unwrap();
 
