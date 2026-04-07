@@ -31,6 +31,8 @@ pub struct ArcanProviderAdapter {
     economic_handle: Option<EconomicGateHandle>,
     /// System prompt to prepend to every provider call (skill catalog, persona, etc.).
     system_prompt: Option<Arc<String>>,
+    /// Shared GenAI metrics instruments (created once, reused across calls).
+    genai_metrics: Arc<life_vigil::GenAiMetrics>,
 }
 
 impl ArcanProviderAdapter {
@@ -47,6 +49,7 @@ impl ArcanProviderAdapter {
             streaming_sender,
             economic_handle: None,
             system_prompt: None,
+            genai_metrics: Arc::new(life_vigil::GenAiMetrics::new("arcan")),
         }
     }
 
@@ -62,6 +65,7 @@ impl ArcanProviderAdapter {
             streaming_sender,
             economic_handle: None,
             system_prompt: None,
+            genai_metrics: Arc::new(life_vigil::GenAiMetrics::new("arcan")),
         }
     }
 
@@ -177,6 +181,18 @@ impl ModelProviderPort for ArcanProviderAdapter {
             }
         }
 
+        // Check if prompt/completion content capture is enabled (privacy-sensitive).
+        let capture_content = std::env::var("VIGIL_CAPTURE_CONTENT")
+            .map(|v| matches!(v.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+
+        // Snapshot objective before it's moved into messages (needed for prompt event).
+        let objective_snapshot = if capture_content && !request.objective.is_empty() {
+            Some(request.objective.clone())
+        } else {
+            None
+        };
+
         // Build messages: system prompt(s), conversation history, then current objective.
         let mut messages = Vec::new();
 
@@ -232,8 +248,20 @@ impl ModelProviderPort for ArcanProviderAdapter {
         let session_id = request.session_id.clone();
         let branch_id = request.branch_id.clone();
 
-        // Create a GenAI chat span for this provider call.
-        let chat_span = life_vigil::spans::chat_span(&provider_name, &provider_name, None, None);
+        // Create a GenAI chat span for this provider call (with session.id for thread grouping).
+        let chat_span = life_vigil::spans::chat_span(
+            &provider_name,
+            &provider_name,
+            None,
+            None,
+            session_id.as_str(),
+        );
+
+        // Record prompt content as span event (input capture for LangSmith/Langfuse).
+        if let Some(ref objective) = objective_snapshot {
+            let _enter = chat_span.enter();
+            life_vigil::spans::record_prompt_content(objective);
+        }
 
         // Measure wall-clock duration of the provider call for GenAI metrics.
         let call_start = Instant::now();
@@ -280,6 +308,23 @@ impl ModelProviderPort for ArcanProviderAdapter {
             ModelStopReason::Other(s) => s.as_str(),
         };
         life_vigil::spans::record_finish_reason(&chat_span, reason_str);
+
+        // Record completion content as span event (output capture for LangSmith/Langfuse).
+        if capture_content {
+            let completion_text: String = turn
+                .directives
+                .iter()
+                .filter_map(|d| match d {
+                    ArcanDirective::Text { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if !completion_text.is_empty() {
+                let _enter = chat_span.enter();
+                life_vigil::spans::record_completion_content(&completion_text);
+            }
+        }
 
         let mut directives = Vec::new();
         let mut final_answer = None;
@@ -329,12 +374,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
             life_vigil::spans::record_token_usage(&chat_span, usage);
         }
 
-        // Record GenAI metrics (token usage + operation duration).
-        let genai_metrics = life_vigil::metrics::GenAiMetrics::new("arcan");
+        // Record GenAI metrics (token usage + operation duration) on shared instruments.
         let call_duration = call_start.elapsed();
-        genai_metrics.record_operation_duration(&provider_name, "chat", call_duration);
+        self.genai_metrics
+            .record_operation_duration(&provider_name, "chat", call_duration);
         if let Some(ref usage) = usage {
-            genai_metrics.record_token_usage(
+            self.genai_metrics.record_token_usage(
                 &provider_name,
                 "chat",
                 usage.prompt_tokens as u64,

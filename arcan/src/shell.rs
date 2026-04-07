@@ -1910,8 +1910,13 @@ fn run_agent_loop(
 
         // Phase 8: Vigil span for provider call (BRO-372, BRO-373)
         // Uses Vigil's chat_span with GenAI semantic conventions
-        let provider_span =
-            life_vigil::spans::chat_span(&cmd_ctx.model_name, &cmd_ctx.provider_name, None, None);
+        let provider_span = life_vigil::spans::chat_span(
+            &cmd_ctx.model_name,
+            &cmd_ctx.provider_name,
+            None,
+            None,
+            session_id,
+        );
         let _provider_guard = provider_span.enter();
 
         let spinner = crate::spinner::ShellSpinner::start();
