@@ -52,6 +52,12 @@ pub struct ConsciousnessConfig {
     pub spaces_enabled: bool,
     /// How often to poll Spaces for new messages (default: 10s).
     pub spaces_poll_interval: Duration,
+    /// Optional path to a wiki directory for knowledge context injection.
+    /// When set, a knowledge context block (L0+L1) is built at spawn time
+    /// and prepended to every agent cycle's system prompt.
+    pub wiki_dir: Option<std::path::PathBuf>,
+    /// Token budget for the knowledge context block (default: 600).
+    pub knowledge_token_budget: usize,
 }
 
 impl Default for ConsciousnessConfig {
@@ -64,6 +70,8 @@ impl Default for ConsciousnessConfig {
             idle_to_sleep: Duration::from_secs(300),
             spaces_enabled: false,
             spaces_poll_interval: Duration::from_secs(10),
+            wiki_dir: None,
+            knowledge_token_budget: 600,
         }
     }
 }
@@ -211,6 +219,9 @@ struct ConsciousnessState {
     /// Running background tools (for future per-tool async execution).
     #[allow(dead_code)]
     running_tools: HashMap<String, RunningToolInfo>,
+    /// Pre-built knowledge context block (L0+L1), injected into every run's system prompt.
+    /// Built once at spawn from the wiki_dir if configured. `None` if no knowledge available.
+    knowledge_context: Option<String>,
 }
 
 impl ConsciousnessState {
@@ -223,6 +234,7 @@ impl ConsciousnessState {
             last_activity: Instant::now(),
             needs_compaction: false,
             running_tools: HashMap::new(),
+            knowledge_context: None,
         }
     }
 }
@@ -260,10 +272,30 @@ impl SessionConsciousness {
     ) -> (JoinHandle<()>, mpsc::Sender<ConsciousnessEvent>) {
         let (tx, rx) = mpsc::channel(config.channel_buffer);
         let span = tracing::info_span!("consciousness", session = %session_id);
+
+        // Build knowledge context block if wiki_dir is configured.
+        let knowledge_context = config.wiki_dir.as_ref().and_then(|wiki_dir| {
+            let block = arcan_lago::knowledge_context::build_knowledge_block(
+                wiki_dir,
+                config.knowledge_token_budget,
+            );
+            if let Some(ref b) = block {
+                info!(
+                    session = %session_id,
+                    tokens = b.content.len() / 4,
+                    "knowledge context block injected"
+                );
+            }
+            block.map(|b| b.content)
+        });
+
+        let mut state = ConsciousnessState::new(session_id, branch);
+        state.knowledge_context = knowledge_context;
+
         let actor = Self {
             rx,
             self_tx: tx.downgrade(),
-            state: ConsciousnessState::new(session_id, branch),
+            state,
             runtime,
             config,
             spaces_client: None,
@@ -502,6 +534,18 @@ impl SessionConsciousness {
     /// to the actor via `self_tx` when done. Queue state management
     /// (set_active_run, drain) stays in the actor event loop.
     fn spawn_agent_cycle(&self, objective: String, branch: BranchId, run_context: RunContext) {
+        // Inject knowledge context into the system prompt if available.
+        let run_context = if let Some(ref knowledge) = self.state.knowledge_context {
+            let mut ctx = run_context;
+            ctx.system_prompt = Some(match ctx.system_prompt {
+                Some(existing) => format!("{knowledge}\n\n{existing}"),
+                None => knowledge.clone(),
+            });
+            ctx
+        } else {
+            run_context
+        };
+
         let run_id = uuid::Uuid::new_v4().to_string();
         let runtime = self.runtime.clone();
         let weak_tx = self.self_tx.clone();
