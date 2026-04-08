@@ -22,6 +22,7 @@ lago-core.workspace = true
 lago-fs.workspace = true
 lago-journal.workspace = true
 lago-store.workspace = true
+lago-knowledge.workspace = true
 lago-api.workspace = true
 lago-policy.workspace = true
 praxis-core.workspace = true

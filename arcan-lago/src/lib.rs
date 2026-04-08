@@ -1,6 +1,9 @@
 pub mod approval_gate;
 pub mod ephemeral;
 pub mod event_map;
+pub mod knowledge_context;
+pub mod knowledge_events;
+pub mod knowledge_tools;
 pub mod learning;
 pub mod memory_projection;
 pub mod memory_scope;
@@ -19,6 +22,8 @@ pub mod state_projection;
 pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
+pub use knowledge_context::{build_index_from_dir, build_knowledge_block};
+pub use knowledge_tools::{WikiLintTool, WikiSearchTool};
 // Re-export the traits that ApprovalGate implements, for convenience
 pub use arcan_core::runtime::{ApprovalGateHook, ApprovalResolver};
 pub use ephemeral::{EphemeralJournal, SessionJournalSelector};
