@@ -904,8 +904,10 @@ impl SessionConsciousness {
 
     /// Handle an autonomic context-pressure signal.
     ///
-    /// If the ruling indicates Compress or Emergency, set the `needs_compaction`
-    /// flag so the next `run_agent_cycle` injects a compaction hint.
+    /// If the ruling indicates Compress, Emergency, or knowledge regulation,
+    /// set the `needs_compaction` flag so the next `run_agent_cycle` injects
+    /// a compaction hint. Knowledge regulation signals (memory bloat, stale
+    /// index, degraded health) are treated as compression triggers.
     fn handle_autonomic_signal(&mut self, ruling: &str) {
         info!(
             session = %self.state.session_id,
@@ -913,7 +915,10 @@ impl SessionConsciousness {
             "received autonomic signal"
         );
 
-        if ruling.contains("Compress") || ruling.contains("Emergency") {
+        if ruling.contains("Compress")
+            || ruling.contains("Emergency")
+            || ruling.contains("knowledge regulation")
+        {
             self.state.needs_compaction = true;
             warn!(
                 session = %self.state.session_id,
