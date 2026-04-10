@@ -274,19 +274,51 @@ impl SessionConsciousness {
         let span = tracing::info_span!("consciousness", session = %session_id);
 
         // Build knowledge context block if wiki_dir is configured.
+        let runtime_for_knowledge = runtime.clone();
         let knowledge_context = config.wiki_dir.as_ref().and_then(|wiki_dir| {
-            let block = arcan_lago::knowledge_context::build_knowledge_block(
+            let assembly = arcan_lago::knowledge_context::build_knowledge_block_with_stats(
                 wiki_dir,
                 config.knowledge_token_budget,
             );
-            if let Some(ref b) = block {
+            if let Some(ref knowledge) = assembly {
                 info!(
                     session = %session_id,
-                    tokens = b.content.len() / 4,
+                    notes = knowledge.note_count,
+                    tokens = knowledge.context_tokens,
                     "knowledge context block injected"
                 );
+                let runtime = runtime_for_knowledge.clone();
+                let session_id = session_id.clone();
+                let branch = branch.clone();
+                let note_count = knowledge.note_count;
+                let context_tokens = knowledge.context_tokens;
+                let event_span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        if let Err(error) = runtime
+                            .record_external_event_on_branch(
+                                &session_id,
+                                &branch,
+                                EventKind::KnowledgeRetrieved {
+                                    note_count,
+                                    context_tokens,
+                                    source: "wake_up".to_owned(),
+                                },
+                            )
+                            .await
+                        {
+                            warn!(
+                                session = %session_id,
+                                branch = %branch,
+                                error = %error,
+                                "failed to record knowledge wake-up event"
+                            );
+                        }
+                    }
+                    .instrument(event_span),
+                );
             }
-            block.map(|b| b.content)
+            assembly.map(|knowledge| knowledge.block.content)
         });
 
         let mut state = ConsciousnessState::new(session_id, branch);

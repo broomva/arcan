@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use arcan_aios_adapters::tools::ToolHarnessObserver;
+use arcan_aios_adapters::tools::{RunCompletionContext, ToolHarnessObserver};
 
 use aios_protocol::{
     AgentIdentityProvider, AgentStateVector, BasicIdentity, BranchId, BranchInfo,
@@ -1900,25 +1900,23 @@ async fn run_session(
     if !state.run_observers.is_empty() {
         let observers = state.run_observers.clone();
         let sid = tick.session_id.as_str().to_owned();
-        let obj = Some(request.objective.clone());
         let runtime_for_events = state.runtime.clone();
         let tick_session = tick.session_id.clone();
-        tokio::spawn(async move {
-            // Query recent events to extract final answer and assistant text.
-            let (final_answer, assistant_messages) =
-                extract_run_context(&runtime_for_events, &tick_session).await;
+        let objective = Some(request.objective.clone());
+        let observer_span = tracing::info_span!("run_observer.notify", session_id = %sid);
+        tokio::spawn(
+            async move {
+                // Query recent events to extract final answer, executed tool summary,
+                // and knowledge evidence for the async judge evaluators.
+                let mut context = extract_run_context(&runtime_for_events, &tick_session).await;
+                context.objective = objective;
 
-            for observer in &observers {
-                observer
-                    .on_run_finished(
-                        sid.clone(),
-                        obj.clone(),
-                        final_answer.clone(),
-                        assistant_messages.clone(),
-                    )
-                    .await;
+                for observer in &observers {
+                    observer.on_run_finished(sid.clone(), context.clone()).await;
+                }
             }
-        });
+            .instrument(observer_span),
+        );
     }
 
     Ok(Json(RunResponse {
@@ -1931,22 +1929,38 @@ async fn run_session(
     }))
 }
 
-/// Extract final answer and assistant messages from the most recent run events.
+/// Extract run-completion evaluation context from the most recent session events.
 ///
 /// Queries the session's event history and collects `Message` and `TextDelta`
-/// events to reconstruct what the agent said. Returns `(final_answer, assistant_messages)`.
+/// events to reconstruct what the agent said, plus tool execution and knowledge
+/// evidence for async run-level evaluators.
 async fn extract_run_context(
     runtime: &KernelRuntime,
     session_id: &SessionId,
-) -> (Option<String>, Option<String>) {
+) -> RunCompletionContext {
     let Ok(events) = runtime.read_events(session_id, 0, 1000).await else {
-        return (None, None);
+        return RunCompletionContext::default();
     };
+
+    summarize_run_context(&events)
+}
+
+fn summarize_run_context(events: &[EventRecord]) -> RunCompletionContext {
+    const MAX_ASSISTANT_CHARS: usize = 8_000;
+    const MAX_TOOL_SUMMARY_CHARS: usize = 2_000;
+    const MAX_KNOWLEDGE_CHARS: usize = 4_000;
 
     let mut assistant_texts = Vec::new();
     let mut final_answer = None;
+    let mut tool_summaries = Vec::new();
+    let mut tool_call_count = 0_u32;
+    let mut tool_error_count = 0_u32;
+    let mut knowledge_context = None;
+    let mut knowledge_query = None;
+    let mut knowledge_retrieved_count = None;
+    let mut knowledge_top_relevance = None;
 
-    for record in &events {
+    for record in events {
         match &record.kind {
             aios_protocol::event::EventKind::Message { content, role, .. }
                 if role == "assistant" =>
@@ -1964,17 +1978,138 @@ async fn extract_run_context(
             } => {
                 final_answer = Some(fa.clone());
             }
+            aios_protocol::event::EventKind::ToolCallCompleted {
+                tool_name,
+                result,
+                duration_ms,
+                status,
+                ..
+            } => {
+                tool_call_count = tool_call_count.saturating_add(1);
+                if *status != aios_protocol::SpanStatus::Ok {
+                    tool_error_count = tool_error_count.saturating_add(1);
+                }
+                tool_summaries.push(summarize_tool_call(
+                    tool_name,
+                    *status,
+                    *duration_ms,
+                    result,
+                ));
+
+                if tool_name == "wiki_search"
+                    && let Some(results) = result.get("results").and_then(serde_json::Value::as_str)
+                    && !results.is_empty()
+                {
+                    knowledge_context = Some(truncate_for_eval(results, MAX_KNOWLEDGE_CHARS));
+                    knowledge_query = result
+                        .get("query")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned);
+                    knowledge_retrieved_count = result
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|count| u32::try_from(count).ok());
+                    knowledge_top_relevance = result
+                        .get("top_relevance")
+                        .and_then(serde_json::Value::as_f64);
+                }
+            }
+            aios_protocol::event::EventKind::ToolCallFailed {
+                tool_name, error, ..
+            } => {
+                tool_call_count = tool_call_count.saturating_add(1);
+                tool_error_count = tool_error_count.saturating_add(1);
+                tool_summaries.push(format!("- {tool_name} [error] | error={error}"));
+            }
             _ => {}
         }
     }
 
-    let messages = if assistant_texts.is_empty() {
+    let assistant_messages = if assistant_texts.is_empty() {
         None
     } else {
-        Some(assistant_texts.join("\n"))
+        Some(truncate_for_eval(
+            &assistant_texts.join("\n"),
+            MAX_ASSISTANT_CHARS,
+        ))
     };
 
-    (final_answer, messages)
+    let tool_calls_summary = if tool_summaries.is_empty() {
+        None
+    } else {
+        Some(truncate_for_eval(
+            &tool_summaries.join("\n"),
+            MAX_TOOL_SUMMARY_CHARS,
+        ))
+    };
+
+    RunCompletionContext {
+        objective: None,
+        final_answer,
+        assistant_messages,
+        tool_calls_summary,
+        tool_call_count: Some(tool_call_count),
+        tool_error_count: Some(tool_error_count),
+        knowledge_context,
+        knowledge_query,
+        knowledge_retrieved_count,
+        knowledge_top_relevance,
+    }
+}
+
+fn summarize_tool_call(
+    tool_name: &str,
+    status: aios_protocol::SpanStatus,
+    duration_ms: u64,
+    result: &serde_json::Value,
+) -> String {
+    let mut parts = vec![
+        format!("- {tool_name} [{}]", span_status_label(status)),
+        format!("duration_ms={duration_ms}"),
+    ];
+
+    if let Some(query) = result.get("query").and_then(serde_json::Value::as_str) {
+        parts.push(format!("query={query}"));
+    }
+    if let Some(count) = result.get("count").and_then(serde_json::Value::as_u64) {
+        parts.push(format!("count={count}"));
+    }
+    if let Some(top) = result
+        .get("top_relevance")
+        .and_then(serde_json::Value::as_f64)
+    {
+        parts.push(format!("top_relevance={top:.3}"));
+    }
+    if let Some(error) = result.get("error").and_then(serde_json::Value::as_str) {
+        parts.push(format!("error={error}"));
+    } else if let Some(keys) = result
+        .as_object()
+        .map(|map| map.keys().take(4).cloned().collect::<Vec<_>>())
+        .filter(|keys| !keys.is_empty())
+    {
+        parts.push(format!("keys={}", keys.join(",")));
+    }
+
+    parts.join(" | ")
+}
+
+fn span_status_label(status: aios_protocol::SpanStatus) -> &'static str {
+    match status {
+        aios_protocol::SpanStatus::Ok => "ok",
+        aios_protocol::SpanStatus::Error => "error",
+        aios_protocol::SpanStatus::Timeout => "timeout",
+        aios_protocol::SpanStatus::Cancelled => "cancelled",
+    }
+}
+
+fn truncate_for_eval(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3121,8 +3256,98 @@ async fn migrate_memory_to_pro(
 mod tests {
     use super::*;
     use crate::auth::{IdentityClaims, TenantRole, Tier};
+    use aios_protocol::{BranchId, EventRecord, SessionId, SpanStatus, ToolRunId};
+    use serde_json::json;
 
     // ─── policy_from_identity_claims tests (BRO-221 / BRO-222) ───────────────
+
+    fn event_record(sequence: u64, kind: EventKind) -> EventRecord {
+        EventRecord::new(
+            SessionId::from_string("sess-1"),
+            BranchId::from_string("main"),
+            sequence,
+            kind,
+        )
+    }
+
+    #[test]
+    fn summarize_run_context_collects_reasoning_inputs() {
+        let events = vec![
+            event_record(
+                1,
+                EventKind::ToolCallCompleted {
+                    tool_run_id: ToolRunId::default(),
+                    call_id: Some("call-1".into()),
+                    tool_name: "wiki_search".into(),
+                    result: json!({
+                        "query": "temporal validity",
+                        "results": "1. temporal-validity.md [score: 0.93]\n   grounded note",
+                        "count": 1,
+                        "top_relevance": 0.93
+                    }),
+                    duration_ms: 12,
+                    status: SpanStatus::Ok,
+                },
+            ),
+            event_record(
+                2,
+                EventKind::ToolCallFailed {
+                    call_id: "call-2".into(),
+                    tool_name: "bash".into(),
+                    error: "permission denied".into(),
+                },
+            ),
+            event_record(
+                3,
+                EventKind::TextDelta {
+                    delta: "Reasoned answer".into(),
+                    index: Some(0),
+                },
+            ),
+            event_record(
+                4,
+                EventKind::RunFinished {
+                    reason: "done".into(),
+                    total_iterations: 1,
+                    final_answer: Some("Final answer".into()),
+                    usage: None,
+                },
+            ),
+        ];
+
+        let context = summarize_run_context(&events);
+        assert_eq!(context.final_answer.as_deref(), Some("Final answer"));
+        assert_eq!(
+            context.assistant_messages.as_deref(),
+            Some("Reasoned answer")
+        );
+        assert_eq!(context.tool_call_count, Some(2));
+        assert_eq!(context.tool_error_count, Some(1));
+        assert_eq!(
+            context.knowledge_query.as_deref(),
+            Some("temporal validity")
+        );
+        assert_eq!(context.knowledge_retrieved_count, Some(1));
+        assert_eq!(context.knowledge_top_relevance, Some(0.93));
+        assert!(
+            context
+                .tool_calls_summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("wiki_search [ok]"))
+        );
+        assert!(
+            context
+                .knowledge_context
+                .as_deref()
+                .is_some_and(|knowledge| knowledge.contains("temporal-validity.md"))
+        );
+    }
+
+    #[test]
+    fn truncate_for_eval_appends_ellipsis() {
+        let truncated = truncate_for_eval("abcdef", 4);
+        assert_eq!(truncated, "abcd...");
+    }
 
     fn make_claims(
         tier: Tier,

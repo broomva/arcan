@@ -5,23 +5,35 @@
 
 use std::sync::Arc;
 
+use aios_protocol::{
+    BranchId as KernelBranchId, EventKind, EventRecord, SessionId as KernelSessionId, SpanStatus,
+    ToolRunId,
+};
 use arcan_core::protocol::{
     AgentEvent, RunStopReason, StatePatch, StatePatchFormat, StatePatchSource, ToolCall,
     ToolResultSummary,
 };
-use arcan_lago::{AppStateProjection, LagoPolicyMiddleware, LagoSessionRepository};
+use arcan_lago::{
+    AppStateProjection, LagoPolicyMiddleware, LagoSessionRepository, derive_knowledge_records,
+};
 use arcan_store::session::{AppendEvent, SessionRepository};
 use lago_core::event::PolicyDecisionKind;
-use lago_core::{Journal, Projection};
+use lago_core::{Journal, Projection, protocol_bridge};
 use lago_journal::RedbJournal;
 use lago_policy::engine::PolicyEngine;
 use lago_policy::rule::{MatchCondition, Rule};
+use serde_json::json;
 
 fn open_journal() -> Arc<RedbJournal> {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("e2e-test.redb");
     std::mem::forget(dir);
     Arc::new(RedbJournal::open(db_path).unwrap())
+}
+
+async fn append_protocol_record(journal: &dyn Journal, record: EventRecord) {
+    let envelope = protocol_bridge::from_protocol(&record.to_envelope()).unwrap();
+    journal.append(envelope).await.unwrap();
 }
 
 /// Full agent session lifecycle: start → tool call → tool result → state patch → finish.
@@ -408,4 +420,148 @@ async fn multiple_sessions_isolated() {
     .await
     .unwrap();
     assert_eq!(records_b.len(), 1, "session-b should have 1 event");
+}
+
+#[tokio::test]
+async fn reasoning_trace_can_be_reconstructed_from_trace_id() {
+    let journal = open_journal();
+    let session_id = KernelSessionId::from_string("trace-session");
+    let branch_id = KernelBranchId::from_string("main");
+    let trace_id = "trace-reasoning-123";
+
+    let mut wake_up = EventRecord::new(
+        session_id.clone(),
+        branch_id.clone(),
+        1,
+        EventKind::KnowledgeRetrieved {
+            note_count: 8,
+            context_tokens: 600,
+            source: "wake_up".into(),
+        },
+    );
+    wake_up.trace_id = Some(trace_id.into());
+    wake_up.span_id = Some("span-wake".into());
+    append_protocol_record(journal.as_ref(), wake_up).await;
+
+    let mut search_source = EventRecord::new(
+        session_id.clone(),
+        branch_id.clone(),
+        2,
+        EventKind::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some("call-search".into()),
+            tool_name: "wiki_search".into(),
+            result: json!({
+                "status": "success",
+                "output": {
+                    "query": "temporal validity",
+                    "results": "1. temporal-validity.md [score: 0.93]\n   grounded note",
+                    "count": 1,
+                    "top_relevance": 0.93,
+                    "duration_ms": 15,
+                    "context_tokens": 40
+                }
+            }),
+            duration_ms: 15,
+            status: SpanStatus::Ok,
+        },
+    );
+    search_source.trace_id = Some(trace_id.into());
+    search_source.span_id = Some("span-search".into());
+    append_protocol_record(journal.as_ref(), search_source.clone()).await;
+    for record in derive_knowledge_records(&search_source, 3) {
+        append_protocol_record(journal.as_ref(), record).await;
+    }
+
+    let mut eval_event = EventRecord::new(
+        session_id.clone(),
+        branch_id.clone(),
+        5,
+        EventKind::Custom {
+            event_type: "eval.AsyncCompleted".into(),
+            data: json!({
+                "evaluator": "reasoning_coherence",
+                "score": 0.82,
+                "label": "good",
+                "layer": "reasoning"
+            }),
+        },
+    );
+    eval_event.trace_id = Some(trace_id.into());
+    eval_event.span_id = Some("span-eval".into());
+    append_protocol_record(journal.as_ref(), eval_event).await;
+
+    let mut lint_source = EventRecord::new(
+        session_id.clone(),
+        branch_id.clone(),
+        6,
+        EventKind::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some("call-lint".into()),
+            tool_name: "wiki_lint".into(),
+            result: json!({
+                "status": "success",
+                "output": {
+                    "health_score": 0.82,
+                    "note_count": 64,
+                    "contradictions": 0,
+                    "missing_pages": 2,
+                    "orphans": 1
+                }
+            }),
+            duration_ms: 11,
+            status: SpanStatus::Ok,
+        },
+    );
+    lint_source.trace_id = Some(trace_id.into());
+    lint_source.span_id = Some("span-lint".into());
+    append_protocol_record(journal.as_ref(), lint_source.clone()).await;
+    for record in derive_knowledge_records(&lint_source, 7) {
+        append_protocol_record(journal.as_ref(), record).await;
+    }
+
+    let query = lago_core::EventQuery::new()
+        .session(lago_core::SessionId::from_string("trace-session"))
+        .branch(lago_core::BranchId::from_string("main"));
+    let trace_events: Vec<_> = journal
+        .read(query)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|envelope| envelope.to_protocol())
+        .filter(|event| event.trace_id.as_deref() == Some(trace_id))
+        .collect();
+
+    let kinds: Vec<_> = trace_events
+        .iter()
+        .map(|event| match &event.kind {
+            EventKind::KnowledgeRetrieved { source, .. } if source == "wake_up" => "wake_up",
+            EventKind::KnowledgeSearched { .. } => "searched",
+            EventKind::Custom { event_type, .. } if event_type == "eval.AsyncCompleted" => "eval",
+            EventKind::KnowledgeEvaluated { .. } => "evaluated",
+            EventKind::ToolCallCompleted { tool_name, .. } if tool_name == "wiki_search" => {
+                "search_source"
+            }
+            EventKind::ToolCallCompleted { tool_name, .. } if tool_name == "wiki_lint" => {
+                "lint_source"
+            }
+            EventKind::KnowledgeRetrieved { source, .. } if source == "tool_search" => {
+                "tool_retrieval"
+            }
+            _ => "other",
+        })
+        .collect();
+
+    assert_eq!(
+        kinds,
+        vec![
+            "wake_up",
+            "search_source",
+            "searched",
+            "tool_retrieval",
+            "eval",
+            "lint_source",
+            "evaluated",
+        ]
+    );
 }

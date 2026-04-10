@@ -22,7 +22,11 @@ pub mod state_projection;
 pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
-pub use knowledge_context::{build_index_from_dir, build_knowledge_block};
+pub use knowledge_context::{
+    KnowledgeBlockAssembly, build_index_from_dir, build_knowledge_block,
+    build_knowledge_block_with_stats,
+};
+pub use knowledge_events::{KnowledgeEventMiddleware, derive_knowledge_records};
 pub use knowledge_tools::{WikiLintTool, WikiSearchTool};
 // Re-export the traits that ApprovalGate implements, for convenience
 pub use arcan_core::runtime::{ApprovalGateHook, ApprovalResolver};

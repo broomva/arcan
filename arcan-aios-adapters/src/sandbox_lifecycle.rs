@@ -22,7 +22,7 @@ use std::sync::Arc;
 use aios_protocol::SubscriptionTier;
 use arcan_sandbox::{InMemorySessionStore, SandboxProvider, SandboxSessionStore};
 
-use crate::tools::ToolHarnessObserver;
+use crate::tools::{RunCompletionContext, ToolHarnessObserver};
 use async_trait::async_trait;
 
 /// Tier-aware sandbox lifecycle observer.
@@ -69,13 +69,7 @@ impl ToolHarnessObserver for SandboxLifecycleObserver {
         // No-op: lifecycle is managed at run granularity, not tool granularity.
     }
 
-    async fn on_run_finished(
-        &self,
-        session_id: String,
-        _objective: Option<String>,
-        _final_answer: Option<String>,
-        _assistant_messages: Option<String>,
-    ) {
+    async fn on_run_finished(&self, session_id: String, _context: RunCompletionContext) {
         let Some(sandbox_id) = self.store.lookup(&session_id) else {
             return; // no sandbox registered for this session
         };
@@ -149,7 +143,7 @@ mod tests {
     use chrono::Utc;
 
     use super::SandboxLifecycleObserver;
-    use crate::tools::ToolHarnessObserver;
+    use crate::tools::{RunCompletionContext, ToolHarnessObserver};
 
     // ── MockProvider ─────────────────────────────────────────────────────────
 
@@ -293,7 +287,7 @@ mod tests {
             "sbx-1",
         );
 
-        obs.on_run_finished("sess-anon".into(), None, None, None)
+        obs.on_run_finished("sess-anon".into(), RunCompletionContext::default())
             .await;
 
         let log = log.lock().unwrap();
@@ -325,7 +319,7 @@ mod tests {
             store.lookup("sess-remove").is_some(),
             "entry should exist before run end"
         );
-        obs.on_run_finished("sess-remove".into(), None, None, None)
+        obs.on_run_finished("sess-remove".into(), RunCompletionContext::default())
             .await;
         assert!(
             store.lookup("sess-remove").is_none(),
@@ -343,7 +337,7 @@ mod tests {
         // Note: no sandbox registered in store.
         let obs = SandboxLifecycleObserver::new(provider, store, SubscriptionTier::Anonymous);
 
-        obs.on_run_finished("sess-missing".into(), None, None, None)
+        obs.on_run_finished("sess-missing".into(), RunCompletionContext::default())
             .await;
 
         let log = log.lock().unwrap();
@@ -368,7 +362,7 @@ mod tests {
             "sbx-3",
         );
 
-        obs.on_run_finished("sess-free".into(), None, None, None)
+        obs.on_run_finished("sess-free".into(), RunCompletionContext::default())
             .await;
 
         let log = log.lock().unwrap();
@@ -402,7 +396,7 @@ mod tests {
             "sbx-4",
         );
 
-        obs.on_run_finished("sess-pro-fail".into(), None, None, None)
+        obs.on_run_finished("sess-pro-fail".into(), RunCompletionContext::default())
             .await;
 
         let log = log.lock().unwrap();
@@ -431,7 +425,7 @@ mod tests {
             "sbx-5",
         );
 
-        obs.on_run_finished("sess-enterprise".into(), None, None, None)
+        obs.on_run_finished("sess-enterprise".into(), RunCompletionContext::default())
             .await;
 
         let log = log.lock().unwrap();

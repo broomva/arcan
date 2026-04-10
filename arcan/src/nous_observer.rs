@@ -4,19 +4,19 @@
 //! Optionally persists eval scores to the Lago journal via `LivePublisher`.
 //!
 //! When an async judge provider is configured, `on_run_finished` runs LLM-as-judge
-//! evaluators (PlanQuality, TaskCompletion, PlanAdherence) in a background task,
-//! then publishes the EGRI outcome event.
+//! evaluators from `registry_with_reasoning()` in a background task, then
+//! publishes the EGRI outcome event.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use arcan_aios_adapters::tools::ToolHarnessObserver;
+use arcan_aios_adapters::tools::{RunCompletionContext, ToolHarnessObserver};
 use async_trait::async_trait;
 use lago_core::Journal;
 use nous_api::ScoreStore;
 use nous_core::events::NousEvent;
 use nous_core::score::EvalResult;
-use nous_core::{EvalContext, EvalHook, EvalScore, EvaluatorRegistry, NousEvaluator};
+use nous_core::{EvalContext, EvalHook, EvalScore, EvaluatorRegistry};
 use nous_judge::JudgeProvider;
 use nous_lago::LivePublisher;
 use tracing::debug;
@@ -27,8 +27,8 @@ pub struct NousToolObserver {
     scores: Mutex<Vec<EvalScore>>,
     publisher: Option<LivePublisher>,
     score_store: Option<ScoreStore>,
-    /// Optional async judge provider for LLM-as-judge evaluation on run completion.
-    judge_provider: Option<Arc<dyn JudgeProvider>>,
+    /// Optional async judge registry for run-completion evaluation.
+    run_finished_registry: Option<EvaluatorRegistry>,
 }
 
 impl NousToolObserver {
@@ -39,7 +39,7 @@ impl NousToolObserver {
             scores: Mutex::new(Vec::new()),
             publisher: None,
             score_store: None,
-            judge_provider: None,
+            run_finished_registry: None,
         }
     }
 
@@ -56,7 +56,7 @@ impl NousToolObserver {
             scores: Mutex::new(Vec::new()),
             publisher: Some(LivePublisher::new(journal, session_id, agent_id)),
             score_store: None,
-            judge_provider: None,
+            run_finished_registry: None,
         }
     }
 
@@ -68,12 +68,28 @@ impl NousToolObserver {
         agent_id: &str,
         judge_provider: Option<Arc<dyn JudgeProvider>>,
     ) -> Self {
+        let run_finished_registry =
+            judge_provider
+                .as_ref()
+                .and_then(
+                    |provider| match nous_judge::registry_with_reasoning(provider.clone()) {
+                        Ok(registry) => Some(registry),
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                "failed to initialize async reasoning judge registry"
+                            );
+                            None
+                        }
+                    },
+                );
+
         Self {
             registry,
             scores: Mutex::new(Vec::new()),
             publisher: Some(LivePublisher::new(journal, session_id, agent_id)),
             score_store: None,
-            judge_provider,
+            run_finished_registry,
         }
     }
 
@@ -98,7 +114,7 @@ impl NousToolObserver {
     /// Whether async judges are available.
     #[allow(dead_code)]
     pub fn has_judge_provider(&self) -> bool {
-        self.judge_provider.is_some()
+        self.run_finished_registry.is_some()
     }
 }
 
@@ -171,14 +187,8 @@ impl ToolHarnessObserver for NousToolObserver {
         }
     }
 
-    async fn on_run_finished(
-        &self,
-        session_id: String,
-        objective: Option<String>,
-        final_answer: Option<String>,
-        assistant_messages: Option<String>,
-    ) {
-        let Some(ref provider) = self.judge_provider else {
+    async fn on_run_finished(&self, session_id: String, context: RunCompletionContext) {
+        let Some(registry) = self.run_finished_registry.as_ref() else {
             return;
         };
 
@@ -191,42 +201,41 @@ impl ToolHarnessObserver for NousToolObserver {
 
         // Build evaluation context with run metadata.
         let mut ctx = EvalContext::new(&session_id);
-        if let Some(ref obj) = objective {
+        ctx.tool_call_count = context.tool_call_count;
+        ctx.tool_error_count = context.tool_error_count;
+        ctx.knowledge_query = context.knowledge_query.clone();
+        ctx.knowledge_retrieved_count = context.knowledge_retrieved_count;
+        ctx.knowledge_top_relevance = context.knowledge_top_relevance;
+
+        if let Some(ref obj) = context.objective {
             ctx.metadata.insert("objective".into(), obj.clone());
         }
-        if let Some(ref ans) = final_answer {
+        if let Some(ref ans) = context.final_answer {
             ctx.metadata.insert("final_answer".into(), ans.clone());
         }
-        if let Some(ref msgs) = assistant_messages {
+        if let Some(ref msgs) = context.assistant_messages {
             ctx.metadata
                 .insert("assistant_messages".into(), msgs.clone());
         }
-
-        // Create judge evaluators — each is moved into a spawn_blocking task.
-        let judge_specs: Vec<(&str, Box<dyn NousEvaluator>)> = vec![
-            (
-                "plan_quality",
-                Box::new(nous_judge::PlanQuality::new(provider.clone())),
-            ),
-            (
-                "task_completion",
-                Box::new(nous_judge::TaskCompletion::new(provider.clone())),
-            ),
-            (
-                "plan_adherence",
-                Box::new(nous_judge::PlanAdherence::new(provider.clone())),
-            ),
-        ];
+        if let Some(ref summary) = context.tool_calls_summary {
+            ctx.metadata
+                .insert("tool_calls_summary".into(), summary.clone());
+        }
+        if let Some(ref knowledge) = context.knowledge_context {
+            ctx.metadata
+                .insert("knowledge_context".into(), knowledge.clone());
+        }
 
         let mut all_scores: Vec<EvalScore> = Vec::new();
         let metrics = life_vigil::GenAiMetrics::new("arcan");
 
-        for (eval_name, eval) in judge_specs {
+        for evaluator in registry.evaluators_for(EvalHook::OnRunFinished) {
             let eval_ctx = ctx.clone();
-            let eval_name = eval_name.to_owned();
+            let evaluator = evaluator.clone();
+            let eval_name = evaluator.name().to_owned();
 
             // JudgeProvider::judge() is blocking (HTTP) — run in spawn_blocking.
-            let result = tokio::task::spawn_blocking(move || eval.evaluate(&eval_ctx)).await;
+            let result = tokio::task::spawn_blocking(move || evaluator.evaluate(&eval_ctx)).await;
 
             match result {
                 Ok(Ok(scores)) => {
@@ -343,5 +352,71 @@ impl ToolHarnessObserver for NousToolObserver {
                 "async judge evaluation produced no scores (insufficient context)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nous_judge::MockJudgeProvider;
+
+    #[tokio::test]
+    async fn run_completion_uses_reasoning_registry() {
+        let observer = NousToolObserver {
+            registry: EvaluatorRegistry::new(),
+            scores: Mutex::new(Vec::new()),
+            publisher: None,
+            score_store: None,
+            run_finished_registry: Some(
+                nous_judge::registry_with_reasoning(Arc::new(MockJudgeProvider {
+                    response: "0.71".into(),
+                }))
+                .unwrap(),
+            ),
+        };
+
+        assert_eq!(
+            observer
+                .run_finished_registry
+                .as_ref()
+                .unwrap()
+                .evaluators_for(EvalHook::OnRunFinished)
+                .len(),
+            5
+        );
+
+        observer
+            .on_run_finished(
+                "sess-1".into(),
+                RunCompletionContext {
+                    objective: Some("Answer from the retrieved knowledge".into()),
+                    final_answer: Some("Here is the grounded answer.".into()),
+                    assistant_messages: Some("I searched the wiki and used the result.".into()),
+                    tool_calls_summary: Some(
+                        "- wiki_search [ok] | duration_ms=12 | query=grounding".into(),
+                    ),
+                    tool_call_count: Some(1),
+                    tool_error_count: Some(0),
+                    knowledge_context: Some(
+                        "1. grounding.md [score: 0.71]\n   retrieved note".into(),
+                    ),
+                    knowledge_query: Some("grounding".into()),
+                    knowledge_retrieved_count: Some(1),
+                    knowledge_top_relevance: Some(0.71),
+                },
+            )
+            .await;
+
+        let scores = observer.scores();
+        assert!(
+            scores
+                .iter()
+                .any(|score| score.evaluator == "reasoning_coherence")
+        );
+        assert!(
+            scores
+                .iter()
+                .any(|score| score.evaluator == "knowledge_utilization")
+        );
     }
 }

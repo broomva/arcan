@@ -5,7 +5,7 @@
 //! moving memory extraction from the shell's dedicated writer thread into
 //! the daemon's observer pattern.
 
-use arcan_aios_adapters::tools::ToolHarnessObserver;
+use arcan_aios_adapters::tools::{RunCompletionContext, ToolHarnessObserver};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
@@ -27,13 +27,14 @@ impl ToolHarnessObserver for MemoryExtractionObserver {
         // No per-tool action needed for memory extraction.
     }
 
-    async fn on_run_finished(
-        &self,
-        session_id: String,
-        objective: Option<String>,
-        final_answer: Option<String>,
-        assistant_messages: Option<String>,
-    ) {
+    async fn on_run_finished(&self, session_id: String, context: RunCompletionContext) {
+        let RunCompletionContext {
+            objective,
+            final_answer,
+            assistant_messages,
+            ..
+        } = context;
+
         // Combine all available text for extraction.
         let text = match (&final_answer, &assistant_messages) {
             (Some(fa), Some(am)) => format!("{fa}\n{am}"),

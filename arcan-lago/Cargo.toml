@@ -18,6 +18,7 @@ arcan-core = { path = "../arcan-core", version = "0.3.0" }
 arcan-sandbox = { path = "../arcan-sandbox", version = "0.3.0" }
 arcan-store = { path = "../arcan-store", version = "0.3.0" }
 aios-protocol.workspace = true
+aios-runtime.workspace = true
 lago-core.workspace = true
 lago-fs.workspace = true
 lago-journal.workspace = true
@@ -38,7 +39,9 @@ reqwest.workspace = true
 reqwest-eventsource.workspace = true
 futures-util.workspace = true
 sqlx.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+life-vigil.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 tempfile = "3"

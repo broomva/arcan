@@ -9,6 +9,24 @@ use arcan_core::runtime::{ToolContext, ToolRegistry};
 use async_trait::async_trait;
 use tracing::Instrument;
 
+/// Structured context captured when a run completes.
+///
+/// This gives observers a stable, typed seam for async post-run work
+/// without forcing each observer to reconstruct the session history.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RunCompletionContext {
+    pub objective: Option<String>,
+    pub final_answer: Option<String>,
+    pub assistant_messages: Option<String>,
+    pub tool_calls_summary: Option<String>,
+    pub tool_call_count: Option<u32>,
+    pub tool_error_count: Option<u32>,
+    pub knowledge_context: Option<String>,
+    pub knowledge_query: Option<String>,
+    pub knowledge_retrieved_count: Option<u32>,
+    pub knowledge_top_relevance: Option<f64>,
+}
+
 #[async_trait]
 pub trait ToolHarnessObserver: Send + Sync {
     async fn post_execute(&self, session_id: String, tool_name: String, is_error: bool);
@@ -17,14 +35,7 @@ pub trait ToolHarnessObserver: Send + Sync {
     ///
     /// Receives the session context so observers can run async evaluations
     /// (e.g. LLM-as-judge) without blocking the HTTP response.
-    async fn on_run_finished(
-        &self,
-        _session_id: String,
-        _objective: Option<String>,
-        _final_answer: Option<String>,
-        _assistant_messages: Option<String>,
-    ) {
-    }
+    async fn on_run_finished(&self, _session_id: String, _context: RunCompletionContext) {}
 }
 
 #[derive(Clone)]

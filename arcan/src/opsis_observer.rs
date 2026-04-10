@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use arcan_aios_adapters::tools::ToolHarnessObserver;
+use arcan_aios_adapters::tools::{RunCompletionContext, ToolHarnessObserver};
 use arcan_opsis::OpsisClient;
 use async_trait::async_trait;
 
@@ -50,14 +50,8 @@ impl ToolHarnessObserver for OpsisToolObserver {
         });
     }
 
-    async fn on_run_finished(
-        &self,
-        session_id: String,
-        _objective: Option<String>,
-        final_answer: Option<String>,
-        _assistant_messages: Option<String>,
-    ) {
-        let insight = match &final_answer {
+    async fn on_run_finished(&self, session_id: String, context: RunCompletionContext) {
+        let insight = match &context.final_answer {
             Some(answer) => {
                 let truncated = if answer.len() > 200 {
                     format!("{}...", &answer[..200])

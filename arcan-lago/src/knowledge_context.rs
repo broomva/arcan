@@ -10,6 +10,14 @@ use lago_knowledge::KnowledgeIndex;
 use lago_store::BlobStore;
 use tracing::{debug, info, warn};
 
+/// A retrieval block plus the metrics needed for downstream observability.
+#[derive(Debug, Clone)]
+pub struct KnowledgeBlockAssembly {
+    pub block: ContextBlock,
+    pub note_count: u32,
+    pub context_tokens: u32,
+}
+
 /// Build a knowledge retrieval context block from a directory of `.md` files.
 ///
 /// Returns `None` if no knowledge is available (empty dir, build failure).
@@ -18,6 +26,17 @@ pub fn build_knowledge_block(
     wiki_dir: &std::path::Path,
     token_budget: usize,
 ) -> Option<ContextBlock> {
+    build_knowledge_block_with_stats(wiki_dir, token_budget).map(|assembly| assembly.block)
+}
+
+/// Build a knowledge retrieval block and expose the note/token metrics used to build it.
+pub fn build_knowledge_block_with_stats(
+    wiki_dir: &std::path::Path,
+    token_budget: usize,
+) -> Option<KnowledgeBlockAssembly> {
+    let span = life_vigil::spans::knowledge_context_build_span("wake_up");
+    let _guard = span.enter();
+
     let md_files = collect_md_files(wiki_dir);
     if md_files.is_empty() {
         debug!(dir = %wiki_dir.display(), "no .md files found, skipping knowledge block");
@@ -113,11 +132,16 @@ pub fn build_knowledge_block(
         tokens = tokens_used,
         "knowledge context block assembled"
     );
+    life_vigil::spans::record_knowledge_context(&span, note_count as u32, tokens_used as u32);
 
-    Some(ContextBlock {
-        kind: ContextBlockKind::Retrieval,
-        content,
-        priority: 150,
+    Some(KnowledgeBlockAssembly {
+        note_count: note_count as u32,
+        context_tokens: tokens_used as u32,
+        block: ContextBlock {
+            kind: ContextBlockKind::Retrieval,
+            content,
+            priority: 150,
+        },
     })
 }
 
@@ -228,6 +252,21 @@ mod tests {
         let block = build_knowledge_block(tmp.path(), 100).unwrap();
         // Should be well under 100 tokens worth
         assert!(block.content.len() < 500); // 100 tokens * ~4 chars + header
+    }
+
+    #[test]
+    fn build_block_with_stats_returns_note_and_token_counts() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("a.md"),
+            "---\ntitle: A\ncore_claim: A claim\nscoring:\n  raw_score: 1\n---\n# A\n\nContent.",
+        )
+        .unwrap();
+
+        let assembly = build_knowledge_block_with_stats(tmp.path(), 600).unwrap();
+        assert_eq!(assembly.note_count, 1);
+        assert!(assembly.context_tokens > 0);
+        assert_eq!(assembly.block.kind, ContextBlockKind::Retrieval);
     }
 
     #[test]

@@ -21,7 +21,7 @@ use aios_protocol::sandbox::NetworkPolicy;
 use aios_protocol::{
     ApprovalPort, EventStorePort, ModelProviderPort, PolicyGatePort, ToolHarnessPort,
 };
-use aios_runtime::{KernelRuntime, RuntimeConfig};
+use aios_runtime::{KernelRuntime, RuntimeConfig, TurnMiddleware};
 use arcan_aios_adapters::{
     ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanPolicyAdapter, ArcanProviderAdapter,
     AutonomicPolicyAdapter, EconomicGateHandle, StreamingSenderHandle,
@@ -30,9 +30,9 @@ use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalFs, SandboxPolicy};
 use arcan_lago::{
-    FreeTierJournal, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool, MemoryProjection,
-    MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal, SessionJournalSelector,
-    run_event_writer,
+    FreeTierJournal, KnowledgeEventMiddleware, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool,
+    MemoryProjection, MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal,
+    SessionJournalSelector, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -765,13 +765,17 @@ fn run_serve(
 
     let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
 
-    let runtime = Arc::new(KernelRuntime::new(
+    let turn_middlewares: Vec<Arc<dyn TurnMiddleware>> =
+        vec![Arc::new(KnowledgeEventMiddleware::new(event_store.clone()))];
+
+    let runtime = Arc::new(KernelRuntime::with_turn_middlewares(
         RuntimeConfig::new(data_dir.to_path_buf()),
         event_store,
         provider_adapter,
         tool_harness,
         approvals,
         policy_gate,
+        turn_middlewares,
     ));
 
     // Wire the broadcast sender now that the runtime exists.
