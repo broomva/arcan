@@ -13,6 +13,7 @@ use autonomic_controller::{
     BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, KnowledgeHealthRule,
     KnowledgeRegressionRule, SpendVelocityRule, SurvivalRule, TokenExhaustionRule,
 };
+use autonomic_core::AutonomicEvent;
 use autonomic_core::gating::{AutonomicGatingProfile, HomeostaticState};
 use autonomic_core::rules::RuleSet;
 use lago_core::event::EventPayload;
@@ -62,12 +63,16 @@ impl EmbeddedAutonomicController {
     /// Returns `None` if no projection exists yet (no events seen for this session).
     /// The caller should fall through to the inner gate in that case.
     pub async fn evaluate_gating(&self, session_id: &str) -> Option<AutonomicGatingProfile> {
-        let projections = self.projections.read().await;
-        let state = projections.get(session_id)?;
-        let profile = autonomic_controller::evaluate(state, &self.rules);
+        let state = {
+            let projections = self.projections.read().await;
+            projections.get(session_id).cloned()?
+        };
+        let profile = autonomic_controller::evaluate(&state, &self.rules);
 
         // Update the economic handle for the provider layer.
         self.update_economic_handle(&profile).await;
+        self.acknowledge_advisory_events(session_id, &profile.advisory_events)
+            .await;
 
         Some(profile)
     }
@@ -101,6 +106,24 @@ impl EmbeddedAutonomicController {
 
         let mut handle = self.economic_handle.write().await;
         *handle = Some(gates);
+    }
+
+    async fn acknowledge_advisory_events(&self, session_id: &str, events: &[AutonomicEvent]) {
+        if events.is_empty() {
+            return;
+        }
+
+        let mut projections = self.projections.write().await;
+        let Some(state) = projections.get_mut(session_id) else {
+            return;
+        };
+
+        for event in events {
+            let payload = event.clone().into_event_kind();
+            let seq = state.last_event_seq;
+            let ts_ms = lago_core::event::EventEnvelope::now_micros() / 1_000;
+            *state = autonomic_controller::fold(state.clone(), &payload, seq, ts_ms);
+        }
     }
 }
 
@@ -317,6 +340,46 @@ mod tests {
         // After: handle is populated
         let gates = handle.read().await;
         assert!(gates.is_some());
+    }
+
+    #[tokio::test]
+    async fn knowledge_rollback_advisory_is_acknowledged_once() {
+        let handle: EconomicGateHandle = Arc::new(tokio::sync::RwLock::new(None));
+        let controller = EmbeddedAutonomicController::new(handle);
+
+        {
+            let mut state = HomeostaticState::for_agent("s1");
+            state.cognitive.knowledge_health = 0.62;
+            state.cognitive.knowledge_note_count = 100;
+            state.cognitive.knowledge_promotion.active_version = Some("v2".into());
+            state.cognitive.knowledge_promotion.rollback_target = Some("v1".into());
+            state.cognitive.knowledge_promotion.health_threshold = Some(0.70);
+            state.cognitive.knowledge_promotion.regression_evaluations = 4;
+            state.cognitive.knowledge_promotion.last_regression_score = Some(0.62);
+
+            let mut projections = controller.projections.write().await;
+            projections.insert("s1".into(), state);
+        }
+
+        let first = controller.evaluate_gating("s1").await.unwrap();
+        assert_eq!(first.advisory_events.len(), 1);
+        match &first.advisory_events[0] {
+            AutonomicEvent::RollbackRequested {
+                artifact,
+                rollback_to,
+                ..
+            } => {
+                assert_eq!(artifact, "knowledge_thresholds");
+                assert_eq!(rollback_to, "v1");
+            }
+            other => panic!("expected rollback advisory, got {other:?}"),
+        }
+
+        let state = controller.get_projection("s1").await.unwrap();
+        assert!(state.cognitive.knowledge_promotion.rollback_requested);
+
+        let second = controller.evaluate_gating("s1").await.unwrap();
+        assert!(second.advisory_events.is_empty());
     }
 
     #[tokio::test]
