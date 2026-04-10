@@ -1,7 +1,7 @@
 use arcan_core::error::CoreError;
 use arcan_core::protocol::{
-    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
-    ToolDefinition,
+    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, ProviderTelemetry, Role, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,24 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::credential::{ApiKeyCredential, Credential};
+
+fn elapsed_millis_u64(start: std::time::Instant) -> u64 {
+    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn mark_ttft(ttft_ms: &mut Option<u64>, start: std::time::Instant) {
+    ttft_ms.get_or_insert_with(|| elapsed_millis_u64(start));
+}
+
+fn openai_stop_reason(reason: Option<&str>) -> ModelStopReason {
+    match reason {
+        Some("stop") => ModelStopReason::EndTurn,
+        Some("tool_calls") => ModelStopReason::ToolUse,
+        Some("length") => ModelStopReason::MaxTokens,
+        Some("content_filter") => ModelStopReason::Safety,
+        _ => ModelStopReason::Unknown,
+    }
+}
 
 /// Configuration for an OpenAI-compatible provider.
 ///
@@ -332,13 +350,8 @@ impl OpenAiCompatibleProvider {
             }
         }
 
-        let stop_reason = match choice.finish_reason.as_deref() {
-            Some("stop") => ModelStopReason::EndTurn,
-            Some("tool_calls") => ModelStopReason::ToolUse,
-            Some("length") => ModelStopReason::MaxTokens,
-            Some("content_filter") => ModelStopReason::Safety,
-            _ => ModelStopReason::Unknown,
-        };
+        let finish_reason = choice.finish_reason.clone();
+        let stop_reason = openai_stop_reason(finish_reason.as_deref());
 
         let usage = response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
@@ -351,6 +364,10 @@ impl OpenAiCompatibleProvider {
             directives,
             stop_reason,
             usage,
+            telemetry: Some(ProviderTelemetry {
+                finish_reason,
+                ..ProviderTelemetry::default()
+            }),
         })
     }
 
@@ -361,7 +378,7 @@ impl OpenAiCompatibleProvider {
         body: &Value,
         url: &str,
         max_retries: u32,
-    ) -> Result<String, CoreError> {
+    ) -> Result<(String, u32), CoreError> {
         let mut last_error = None;
         let base_delay = std::time::Duration::from_millis(200);
         let mut refreshed_on_401 = false;
@@ -419,7 +436,7 @@ impl OpenAiCompatibleProvider {
                 )));
             }
 
-            return Ok(response_text);
+            return Ok((response_text, attempt));
         }
 
         Err(CoreError::Provider(format!(
@@ -499,6 +516,8 @@ impl OpenAiCompatibleProvider {
             std::collections::BTreeMap::new();
         let mut finish_reason: Option<String> = None;
         let mut usage: Option<ApiUsage> = None;
+        let stream_start = std::time::Instant::now();
+        let mut time_to_first_token_ms = None;
 
         use std::io::BufRead;
         for line in reader.lines() {
@@ -530,6 +549,7 @@ impl OpenAiCompatibleProvider {
                 if let Some(content) = &choice.delta.content
                     && !content.is_empty()
                 {
+                    mark_ttft(&mut time_to_first_token_ms, stream_start);
                     on_delta(StreamEvent::Text(content));
                     accumulated_text.push_str(content);
                 }
@@ -538,11 +558,13 @@ impl OpenAiCompatibleProvider {
                 if let Some(reasoning) = &choice.delta.reasoning
                     && !reasoning.is_empty()
                 {
+                    mark_ttft(&mut time_to_first_token_ms, stream_start);
                     on_delta(StreamEvent::Reasoning(reasoning));
                 }
 
                 if let Some(tcs) = &choice.delta.tool_calls {
                     for tc in tcs {
+                        mark_ttft(&mut time_to_first_token_ms, stream_start);
                         let entry = tool_calls
                             .entry(tc.index)
                             .or_insert_with(|| (String::new(), String::new(), String::new()));
@@ -584,13 +606,7 @@ impl OpenAiCompatibleProvider {
             });
         }
 
-        let stop_reason = match finish_reason.as_deref() {
-            Some("stop") => ModelStopReason::EndTurn,
-            Some("tool_calls") => ModelStopReason::ToolUse,
-            Some("length") => ModelStopReason::MaxTokens,
-            Some("content_filter") => ModelStopReason::Safety,
-            _ => ModelStopReason::Unknown,
-        };
+        let stop_reason = openai_stop_reason(finish_reason.as_deref());
 
         let token_usage = usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
@@ -603,6 +619,11 @@ impl OpenAiCompatibleProvider {
             directives,
             stop_reason,
             usage: token_usage,
+            telemetry: Some(ProviderTelemetry {
+                time_to_first_token_ms,
+                finish_reason,
+                ..ProviderTelemetry::default()
+            }),
         })
     }
 }
@@ -654,7 +675,7 @@ impl Provider for OpenAiCompatibleProvider {
         }
 
         let url = format!("{}/v1/chat/completions", self.config.base_url);
-        let response_text = self.execute_with_retry(&body, &url, 3)?;
+        let (response_text, retry_count) = self.execute_with_retry(&body, &url, 3)?;
 
         let api_response: ApiResponse = serde_json::from_str(&response_text).map_err(|e| {
             CoreError::Provider(format!(
@@ -664,7 +685,17 @@ impl Provider for OpenAiCompatibleProvider {
             ))
         })?;
 
-        self.parse_response(api_response)
+        let mut turn = self.parse_response(api_response)?;
+        match turn.telemetry.as_mut() {
+            Some(telemetry) => telemetry.retry_count = retry_count,
+            None => {
+                turn.telemetry = Some(ProviderTelemetry {
+                    retry_count,
+                    ..ProviderTelemetry::default()
+                });
+            }
+        }
+        Ok(turn)
     }
 }
 
@@ -869,6 +900,8 @@ mod tests {
         assert_eq!(turn.stop_reason, ModelStopReason::EndTurn);
         assert_eq!(turn.directives.len(), 1);
         assert!(matches!(&turn.directives[0], ModelDirective::Text { delta } if delta == "Hello!"));
+        let telemetry = turn.telemetry.unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("stop"));
         let usage = turn.usage.unwrap();
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
@@ -902,6 +935,8 @@ mod tests {
         assert!(
             matches!(&turn.directives[1], ModelDirective::ToolCall { call } if call.tool_name == "read_file")
         );
+        let telemetry = turn.telemetry.unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("tool_calls"));
     }
 
     #[test]
@@ -932,6 +967,8 @@ mod tests {
 
         let turn = provider.parse_response(response).unwrap();
         assert_eq!(turn.stop_reason, ModelStopReason::MaxTokens);
+        let telemetry = turn.telemetry.unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("length"));
     }
 
     #[test]
@@ -950,6 +987,8 @@ mod tests {
 
         let turn = provider.parse_response(response).unwrap();
         assert_eq!(turn.stop_reason, ModelStopReason::Safety);
+        let telemetry = turn.telemetry.unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("content_filter"));
     }
 
     #[test]

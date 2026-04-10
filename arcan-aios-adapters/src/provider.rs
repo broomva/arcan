@@ -9,11 +9,12 @@ use aios_protocol::{
 use crate::capability_map::capabilities_for_tool;
 use arcan_core::protocol::{
     ChatMessage, ModelDirective as ArcanDirective, ModelStopReason as ArcanStopReason,
+    ProviderCircuitState,
 };
 use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent, SwappableProviderHandle};
 use arcan_core::state::AppState;
 use async_trait::async_trait;
-use life_vigil::{JsonlWriter, LlmCallRecord, LlmRequestEnvelope};
+use life_vigil::{CircuitState, JsonlWriter, LlmCallRecord, LlmRequestEnvelope};
 use tokio::sync::broadcast;
 use tracing::Instrument;
 
@@ -184,6 +185,14 @@ fn economic_mode_label(mode: EconomicMode) -> &'static str {
         EconomicMode::Conserving => "conserving",
         EconomicMode::Hustle => "hustle",
         EconomicMode::Hibernate => "hibernate",
+    }
+}
+
+fn to_vigil_circuit_state(state: ProviderCircuitState) -> CircuitState {
+    match state {
+        ProviderCircuitState::Closed => CircuitState::Closed,
+        ProviderCircuitState::Open => CircuitState::Open,
+        ProviderCircuitState::HalfOpen => CircuitState::HalfOpen,
     }
 }
 
@@ -477,6 +486,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
             ModelStopReason::Error => "error",
             ModelStopReason::Other(s) => s.as_str(),
         };
+        let provider_telemetry = turn.telemetry.clone().unwrap_or_default();
+        let circuit_state = provider_telemetry.circuit_state.as_str();
+        let finish_reason = provider_telemetry
+            .finish_reason
+            .clone()
+            .unwrap_or_else(|| reason_str.to_owned());
         life_vigil::spans::record_finish_reason(&chat_span, reason_str);
 
         // Record completion content as span event (output capture for LangSmith/Langfuse).
@@ -567,7 +582,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
         if let Some(ref response_economics) = response_economics {
             response_economics.record_on_span(&chat_span);
         }
-        life_vigil::spans::record_reliability(&chat_span, 0, false, "closed");
+        life_vigil::spans::record_reliability(
+            &chat_span,
+            provider_telemetry.retry_count,
+            provider_telemetry.fallback_triggered,
+            circuit_state,
+        );
 
         // Record GenAI metrics (token usage + operation duration) on shared instruments.
         self.genai_metrics.record_operation_duration(
@@ -604,6 +624,12 @@ impl ModelProviderPort for ArcanProviderAdapter {
         let mut completed_envelope = envelope;
         completed_envelope.latency_ms =
             Some(call_duration.as_millis().min(u128::from(u64::MAX)) as u64);
+        completed_envelope.retry_count = provider_telemetry.retry_count;
+        completed_envelope.fallback_triggered = provider_telemetry.fallback_triggered;
+        completed_envelope.fallback_reason = provider_telemetry.fallback_reason;
+        completed_envelope.circuit_state = to_vigil_circuit_state(provider_telemetry.circuit_state);
+        completed_envelope.time_to_first_token_ms = provider_telemetry.time_to_first_token_ms;
+        completed_envelope.finish_reason = Some(finish_reason);
         completed_envelope.tokens_in = usage.as_ref().map(|usage| usage.prompt_tokens);
         completed_envelope.tokens_out = usage.as_ref().map(|usage| usage.completion_tokens);
         completed_envelope.cost_source = response_economics
@@ -635,7 +661,7 @@ mod tests {
     use super::*;
     use aios_protocol::{BranchId, RunId, SessionId};
     use arcan_core::error::CoreError;
-    use arcan_core::protocol::{ModelTurn, TokenUsage as ArcanTokenUsage};
+    use arcan_core::protocol::{ModelTurn, ProviderTelemetry, TokenUsage as ArcanTokenUsage};
 
     struct ScriptedProvider;
 
@@ -655,6 +681,12 @@ mod tests {
                     output_tokens: 250,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                }),
+                telemetry: Some(ProviderTelemetry {
+                    retry_count: 2,
+                    time_to_first_token_ms: Some(42),
+                    finish_reason: Some("stop".to_owned()),
+                    ..Default::default()
                 }),
             })
         }
@@ -714,6 +746,11 @@ mod tests {
         assert_eq!(record.envelope.tokens_in, Some(1_000));
         assert_eq!(record.envelope.tokens_out, Some(250));
         assert!(record.envelope.estimated_cost_usd.is_some());
+        assert_eq!(record.envelope.retry_count, 2);
+        assert!(!record.envelope.fallback_triggered);
+        assert_eq!(record.envelope.circuit_state, CircuitState::Closed);
+        assert_eq!(record.envelope.time_to_first_token_ms, Some(42));
+        assert_eq!(record.envelope.finish_reason.as_deref(), Some("stop"));
 
         let response = record.response.unwrap();
         assert_eq!(response.input_tokens, 1_000);

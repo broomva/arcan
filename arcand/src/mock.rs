@@ -45,6 +45,7 @@ impl Provider for MockProvider {
                 ],
                 stop_reason: ModelStopReason::ToolUse,
                 usage: None,
+                telemetry: None,
             })
         } else {
             Ok(ModelTurn {
@@ -53,6 +54,7 @@ impl Provider for MockProvider {
                 }],
                 stop_reason: ModelStopReason::EndTurn,
                 usage: None,
+                telemetry: None,
             })
         }
     }

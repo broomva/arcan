@@ -1,7 +1,7 @@
 use arcan_core::error::CoreError;
 use arcan_core::protocol::{
-    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, Role, TokenUsage, ToolCall,
-    ToolDefinition,
+    ChatMessage, ModelDirective, ModelStopReason, ModelTurn, ProviderTelemetry, Role, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use arcan_core::runtime::{Provider, ProviderRequest, StreamEvent};
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,23 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::credential::{AnthropicApiKeyCredential, Credential};
+
+fn elapsed_millis_u64(start: std::time::Instant) -> u64 {
+    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn mark_ttft(ttft_ms: &mut Option<u64>, start: std::time::Instant) {
+    ttft_ms.get_or_insert_with(|| elapsed_millis_u64(start));
+}
+
+fn anthropic_stop_reason(reason: Option<&str>) -> ModelStopReason {
+    match reason {
+        Some("end_turn") => ModelStopReason::EndTurn,
+        Some("tool_use") => ModelStopReason::ToolUse,
+        Some("max_tokens") => ModelStopReason::MaxTokens,
+        _ => ModelStopReason::Unknown,
+    }
+}
 
 /// Configuration for the Anthropic provider.
 pub struct AnthropicConfig {
@@ -243,12 +260,8 @@ impl AnthropicProvider {
             }
         }
 
-        let stop_reason = match response.stop_reason.as_deref() {
-            Some("end_turn") => ModelStopReason::EndTurn,
-            Some("tool_use") => ModelStopReason::ToolUse,
-            Some("max_tokens") => ModelStopReason::MaxTokens,
-            _ => ModelStopReason::Unknown,
-        };
+        let finish_reason = response.stop_reason.clone();
+        let stop_reason = anthropic_stop_reason(finish_reason.as_deref());
 
         let usage = response.usage.map(|u| TokenUsage {
             input_tokens: u.input_tokens,
@@ -261,6 +274,10 @@ impl AnthropicProvider {
             directives,
             stop_reason,
             usage,
+            telemetry: Some(ProviderTelemetry {
+                finish_reason,
+                ..ProviderTelemetry::default()
+            }),
         })
     }
 }
@@ -340,6 +357,9 @@ impl Provider for AnthropicProvider {
         let mut stop_reason = ModelStopReason::Unknown;
         let mut usage: Option<TokenUsage> = None;
         let mut current_event_type = String::new();
+        let stream_start = std::time::Instant::now();
+        let mut time_to_first_token_ms = None;
+        let mut finish_reason = None;
 
         for line in reader.lines() {
             let line =
@@ -390,6 +410,7 @@ impl Provider for AnthropicProvider {
                         match delta["type"].as_str() {
                             Some("text_delta") => {
                                 if let Some(text) = delta["text"].as_str() {
+                                    mark_ttft(&mut time_to_first_token_ms, stream_start);
                                     on_delta(StreamEvent::Text(text));
                                     directives.push(ModelDirective::Text {
                                         delta: text.to_string(),
@@ -398,6 +419,7 @@ impl Provider for AnthropicProvider {
                             }
                             Some("thinking_delta") => {
                                 if let Some(thinking) = delta["thinking"].as_str() {
+                                    mark_ttft(&mut time_to_first_token_ms, stream_start);
                                     on_delta(StreamEvent::Reasoning(thinking));
                                 }
                             }
@@ -405,6 +427,7 @@ impl Provider for AnthropicProvider {
                                 if let Some(json_chunk) = delta["partial_json"].as_str()
                                     && let Some(entry) = tool_inputs.get_mut(&index)
                                 {
+                                    mark_ttft(&mut time_to_first_token_ms, stream_start);
                                     entry.2.push_str(json_chunk);
                                 }
                             }
@@ -428,12 +451,8 @@ impl Provider for AnthropicProvider {
                 }
                 "message_delta" => {
                     if let Some(delta) = v.get("delta") {
-                        stop_reason = match delta["stop_reason"].as_str() {
-                            Some("end_turn") => ModelStopReason::EndTurn,
-                            Some("tool_use") => ModelStopReason::ToolUse,
-                            Some("max_tokens") => ModelStopReason::MaxTokens,
-                            _ => ModelStopReason::Unknown,
-                        };
+                        finish_reason = delta["stop_reason"].as_str().map(ToOwned::to_owned);
+                        stop_reason = anthropic_stop_reason(finish_reason.as_deref());
                     }
                     if let Some(u) = v.get("usage")
                         && let Some(ref mut existing) = usage
@@ -449,6 +468,11 @@ impl Provider for AnthropicProvider {
             directives,
             stop_reason,
             usage,
+            telemetry: Some(ProviderTelemetry {
+                time_to_first_token_ms,
+                finish_reason,
+                ..ProviderTelemetry::default()
+            }),
         })
     }
 
@@ -649,6 +673,8 @@ mod tests {
         assert_eq!(turn.stop_reason, ModelStopReason::EndTurn);
         assert_eq!(turn.directives.len(), 1);
         assert!(matches!(&turn.directives[0], ModelDirective::Text { delta } if delta == "Hello!"));
+        let telemetry = turn.telemetry.unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("end_turn"));
     }
 
     #[test]
@@ -681,6 +707,8 @@ mod tests {
         assert!(
             matches!(&turn.directives[1], ModelDirective::ToolCall { call } if call.tool_name == "read_file")
         );
+        let telemetry = turn.telemetry.as_ref().unwrap();
+        assert_eq!(telemetry.finish_reason.as_deref(), Some("tool_use"));
         // Verify usage is parsed
         let usage = turn.usage.unwrap();
         assert_eq!(usage.input_tokens, 100);

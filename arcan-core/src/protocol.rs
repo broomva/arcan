@@ -211,6 +211,55 @@ pub struct ModelTurn {
     /// Token usage for this turn (if reported by the provider).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
+    /// Provider-side reliability and latency telemetry for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<ProviderTelemetry>,
+}
+
+/// Provider circuit breaker state observed at request time.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCircuitState {
+    /// Normal operation; requests are allowed.
+    #[default]
+    Closed,
+    /// Circuit is open; requests should be blocked or routed elsewhere.
+    Open,
+    /// Circuit is probing recovery with a limited request.
+    HalfOpen,
+}
+
+impl ProviderCircuitState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Open => "open",
+            Self::HalfOpen => "half_open",
+        }
+    }
+}
+
+/// Provider-neutral reliability telemetry emitted by LLM adapters.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct ProviderTelemetry {
+    /// Number of retry attempts before success/failure.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Whether this turn used a fallback provider.
+    #[serde(default)]
+    pub fallback_triggered: bool,
+    /// Why fallback occurred, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Circuit breaker state observed at request time.
+    #[serde(default)]
+    pub circuit_state: ProviderCircuitState,
+    /// Streaming time to first token in milliseconds, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token_ms: Option<u64>,
+    /// Provider-native finish reason, normalized only enough for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
