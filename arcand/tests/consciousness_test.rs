@@ -283,10 +283,11 @@ async fn non_blocking_cycle_completes() {
             panic!("actor did not return to Idle within 10s");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Some(status) = handle.query_status().await {
-            if status.mode == "Idle" && !status.has_active_run {
-                break;
-            }
+        if let Some(status) = handle.query_status().await
+            && status.mode == "Idle"
+            && !status.has_active_run
+        {
+            break;
         }
     }
 
@@ -384,10 +385,12 @@ async fn cycle_completed_drains_queue() {
             panic!("actor did not return to Idle within 15s");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Some(status) = handle.query_status().await {
-            if status.mode == "Idle" && !status.has_active_run && status.queue_depth == 0 {
-                break;
-            }
+        if let Some(status) = handle.query_status().await
+            && status.mode == "Idle"
+            && !status.has_active_run
+            && status.queue_depth == 0
+        {
+            break;
         }
     }
 
@@ -737,14 +740,11 @@ async fn external_signal_triggers_run_when_idle() {
             .send(ConsciousnessEvent::QueryStatus { reply: reply_tx })
             .await
             .is_ok()
+            && let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(2), reply_rx).await
+            && status.mode == "Idle"
+            && !status.has_active_run
         {
-            if let Ok(status) = tokio::time::timeout(Duration::from_secs(2), reply_rx).await {
-                if let Ok(s) = status {
-                    if s.mode == "Idle" && !s.has_active_run {
-                        break;
-                    }
-                }
-            }
+            break;
         }
     }
 

@@ -518,10 +518,10 @@ fn load_memory_context(memory_dir: &Path) -> Option<String> {
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if !content.trim().is_empty() {
-                sections.push(format!("## {key}\n{content}"));
-            }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && !content.trim().is_empty()
+        {
+            sections.push(format!("## {key}\n{content}"));
         }
     }
 
