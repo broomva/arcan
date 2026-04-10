@@ -1108,6 +1108,9 @@ pub fn run_shell(
         registry.register(PraxisToolBridge::new(
             crate::memory_tools::MemoryForgetTool::new(&memory_dir),
         ));
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryGraphTool::new(&memory_dir),
+        ));
 
         // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---
         let memory_journal: Arc<dyn Journal> =

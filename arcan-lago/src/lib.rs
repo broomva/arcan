@@ -5,6 +5,7 @@ pub mod knowledge_context;
 pub mod knowledge_events;
 pub mod knowledge_tools;
 pub mod learning;
+pub mod memory_graph;
 pub mod memory_projection;
 pub mod memory_scope;
 pub mod memory_tools;
@@ -32,6 +33,11 @@ pub use knowledge_tools::{WikiLintTool, WikiSearchTool};
 pub use arcan_core::runtime::{ApprovalGateHook, ApprovalResolver};
 pub use ephemeral::{EphemeralJournal, SessionJournalSelector};
 pub use learning::{LearningEntry, LearningMiddleware};
+pub use memory_graph::{
+    DEFAULT_GRAPH_DEPTH, DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, MemoryGraphEdge, MemoryGraphError,
+    MemoryGraphNode, MemoryGraphQuery, MemoryGraphResponse, memory_graph_from_dir,
+    memory_graph_from_index,
+};
 pub use memory_projection::MemoryProjection;
 pub use memory_scope::{MemoryEntry, MemoryScopeConfig};
 pub use memory_tools::{MemoryCommitTool, MemoryProposeTool, MemoryQueryTool};

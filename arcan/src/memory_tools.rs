@@ -7,9 +7,14 @@
 //! - `memory_offload` — save content to episodic memory
 //! - `memory_forget` — mark a memory as low importance
 //! - `memory_similar` — semantic retrieval over Lance embeddings
+//! - `memory_graph` — bounded graph traversal over wikilinked memory files
 
 use aios_protocol::tool::{
     Tool, ToolAnnotations, ToolCall, ToolContext, ToolDefinition, ToolError, ToolResult,
+};
+use arcan_lago::{
+    DEFAULT_GRAPH_DEPTH, DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, MemoryGraphError, MemoryGraphQuery,
+    memory_graph_from_dir,
 };
 use lago_core::event::{EventEnvelope, EventPayload};
 use lago_lance::{EMBEDDING_META_KEY, LanceJournal};
@@ -362,6 +367,158 @@ impl Tool for MemorySimilarTool {
             }),
         ))
     }
+}
+
+// ── MemoryGraphTool ────────────────────────────────────────────────
+
+/// Bounded graph traversal over wikilinked memory files.
+pub struct MemoryGraphTool {
+    memory_dir: PathBuf,
+}
+
+impl MemoryGraphTool {
+    pub fn new(memory_dir: &Path) -> Self {
+        Self {
+            memory_dir: memory_dir.to_path_buf(),
+        }
+    }
+}
+
+impl Tool for MemoryGraphTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "memory_graph".into(),
+            description: "Traverse related memories from a start note using bounded wikilink graph retrieval. Returns compact nodes, references edges, and provenance paths.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Start memory by title, filename, path, or wikilink target"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Maximum traversal depth (default: 2, capped at 4)"
+                    },
+                    "max_nodes": {
+                        "type": "integer",
+                        "description": "Maximum nodes to return (default: 12, capped at 50)"
+                    },
+                    "max_edges": {
+                        "type": "integer",
+                        "description": "Maximum edges to return (default: 16, capped at 100)"
+                    },
+                    "edge_types": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional edge filter. V1 supports references."
+                    }
+                },
+                "required": ["start"]
+            }),
+            title: Some("Memory Graph".into()),
+            output_schema: None,
+            annotations: Some(ToolAnnotations {
+                read_only: true,
+                idempotent: true,
+                ..Default::default()
+            }),
+            category: Some("memory".into()),
+            tags: vec!["memory".into(), "graph".into(), "retrieval".into()],
+            timeout_secs: Some(15),
+        }
+    }
+
+    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+        let start = call
+            .input
+            .get("start")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| ToolError::InvalidInput {
+                message: "Missing or invalid 'start' argument".into(),
+            })?;
+
+        let depth = bounded_usize_arg(&call.input, "depth", DEFAULT_GRAPH_DEPTH);
+        let max_nodes = bounded_usize_arg(&call.input, "max_nodes", DEFAULT_MAX_NODES);
+        let max_edges = bounded_usize_arg(&call.input, "max_edges", DEFAULT_MAX_EDGES);
+        let edge_types = call
+            .input
+            .get("edge_types")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let query = MemoryGraphQuery {
+            start: start.to_string(),
+            depth,
+            max_nodes,
+            max_edges,
+            edge_types,
+        };
+        let bounded_query = query.clone().bounded();
+        let effective_depth = if bounded_query.edge_types.is_empty()
+            || bounded_query
+                .edge_types
+                .iter()
+                .any(|edge_type| edge_type == "references")
+        {
+            bounded_query.depth
+        } else {
+            0
+        };
+        let edge_filter = if bounded_query.edge_types.is_empty() {
+            vec!["references".to_string()]
+        } else {
+            bounded_query.edge_types.clone()
+        };
+
+        match memory_graph_from_dir(&self.memory_dir, query) {
+            Ok(graph) => Ok(ToolResult::json(
+                &call.call_id,
+                &call.tool_name,
+                json!(graph),
+            )),
+            Err(MemoryGraphError::StartNodeNotFound(start)) => Ok(ToolResult::json(
+                &call.call_id,
+                &call.tool_name,
+                json!({
+                    "found": false,
+                    "start": start,
+                    "message": "Memory graph start node not found",
+                    "root": null,
+                    "nodes": [],
+                    "edges": [],
+                    "total_nodes": 0,
+                    "total_edges": 0,
+                    "truncated": false,
+                    "depth": effective_depth,
+                    "max_nodes": bounded_query.max_nodes,
+                    "max_edges": bounded_query.max_edges,
+                    "edge_filter": edge_filter,
+                }),
+            )),
+            Err(err) => Err(ToolError::ExecutionFailed {
+                tool_name: "memory_graph".into(),
+                message: format!("Memory graph retrieval failed: {err}"),
+            }),
+        }
+    }
+}
+
+fn bounded_usize_arg(input: &serde_json::Value, key: &str, default: usize) -> usize {
+    input
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
 }
 
 /// Extract a short excerpt around the first keyword match.
@@ -1122,6 +1279,71 @@ mod tests {
         assert_eq!(result.output["matches"][0]["file"], "auth-notes");
     }
 
+    // ── MemoryGraphTool tests ──
+
+    #[test]
+    fn graph_traverses_wikilinked_memories() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(
+            dir.path(),
+            "decision",
+            "---\ntitle: Sandbox Decision\ntype: decision\nsummary: Route commands through sandbox policy.\n---\nSee [[Evidence]].",
+        );
+        create_memory_file(
+            dir.path(),
+            "evidence",
+            "---\ntitle: Evidence\ntype: evidence\n---\nThe prior run leaked host state.",
+        );
+
+        let tool = MemoryGraphTool::new(dir.path());
+        let call = make_call(
+            "memory_graph",
+            json!({"start": "decision", "depth": 1, "max_nodes": 12}),
+        );
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert!(result.output["found"].as_bool().unwrap());
+        assert_eq!(result.output["root"], "/decision.md");
+        assert_eq!(result.output["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(result.output["edges"].as_array().unwrap().len(), 1);
+        assert_eq!(result.output["nodes"][0]["node_type"], "decision");
+        assert_eq!(result.output["nodes"][0]["source_ref"], "/decision.md");
+    }
+
+    #[test]
+    fn graph_missing_start_returns_clear_empty_result() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(dir.path(), "a", "# A");
+
+        let tool = MemoryGraphTool::new(dir.path());
+        let call = make_call("memory_graph", json!({"start": "missing"}));
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert!(!result.output["found"].as_bool().unwrap());
+        assert_eq!(result.output["total_nodes"], 0);
+        assert_eq!(result.output["total_edges"], 0);
+        assert!(result.output["root"].is_null());
+        assert_eq!(result.output["nodes"].as_array().unwrap().len(), 0);
+        assert_eq!(result.output["edges"].as_array().unwrap().len(), 0);
+        assert!(!result.output["truncated"].as_bool().unwrap());
+        assert_eq!(result.output["depth"], DEFAULT_GRAPH_DEPTH);
+        assert_eq!(result.output["max_nodes"], DEFAULT_MAX_NODES);
+        assert_eq!(result.output["max_edges"], DEFAULT_MAX_EDGES);
+        assert_eq!(result.output["edge_filter"], json!(["references"]));
+        assert!(!result.is_error);
+    }
+
+    #[test]
+    fn graph_tool_definition_is_read_only() {
+        let dir = TempDir::new().unwrap();
+        let tool = MemoryGraphTool::new(dir.path());
+        let def = tool.definition();
+
+        assert_eq!(def.name, "memory_graph");
+        assert_eq!(def.category.as_deref(), Some("memory"));
+        assert!(def.annotations.unwrap().read_only);
+    }
+
     // ── MemoryBrowseTool tests ──
 
     #[test]
@@ -1390,6 +1612,7 @@ mod tests {
             Box::new(MemoryRecentTool::new(&path)),
             Box::new(MemoryOffloadTool::new(&path)),
             Box::new(MemoryForgetTool::new(&path)),
+            Box::new(MemoryGraphTool::new(&path)),
         ];
 
         let expected_names = [
@@ -1399,6 +1622,7 @@ mod tests {
             "memory_recent",
             "memory_offload",
             "memory_forget",
+            "memory_graph",
         ];
 
         for (tool, expected_name) in tools.iter().zip(expected_names.iter()) {
