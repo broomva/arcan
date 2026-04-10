@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use autonomic_controller::{
-    BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, SpendVelocityRule, SurvivalRule,
-    TokenExhaustionRule,
+    BudgetExhaustionRule, ContextPressureRule, ErrorStreakRule, KnowledgeHealthRule,
+    KnowledgeRegressionRule, SpendVelocityRule, SurvivalRule, TokenExhaustionRule,
 };
 use autonomic_core::gating::{AutonomicGatingProfile, HomeostaticState};
 use autonomic_core::rules::RuleSet;
@@ -35,7 +35,7 @@ pub struct EmbeddedAutonomicController {
 }
 
 impl EmbeddedAutonomicController {
-    /// Create a new embedded controller with the default 6-rule set.
+    /// Create a new embedded controller with the default rule set.
     pub fn new(economic_handle: EconomicGateHandle) -> Self {
         Self {
             projections: Arc::new(RwLock::new(HashMap::new())),
@@ -104,7 +104,7 @@ impl EmbeddedAutonomicController {
     }
 }
 
-/// Build the default 6-rule set (same as the standalone Autonomic daemon).
+/// Build the default rule set (same core gates as the standalone Autonomic daemon).
 fn default_rules() -> RuleSet {
     let mut rules = RuleSet::new();
     rules.add(Box::new(SurvivalRule));
@@ -113,6 +113,8 @@ fn default_rules() -> RuleSet {
     rules.add(Box::new(ContextPressureRule::default()));
     rules.add(Box::new(TokenExhaustionRule::default()));
     rules.add(Box::new(ErrorStreakRule::default()));
+    rules.add(Box::new(KnowledgeHealthRule::default()));
+    rules.add(Box::new(KnowledgeRegressionRule::default()));
     rules
 }
 
