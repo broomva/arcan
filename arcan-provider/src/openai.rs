@@ -441,11 +441,12 @@ impl OpenAiCompatibleProvider {
     ) -> Result<ModelTurn, CoreError> {
         let api_messages = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
+        let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
 
         let mut body = serde_json::json!({
             "model": self.config.model,
             "messages": api_messages,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens,
             "stream": true,
         });
 
@@ -630,11 +631,12 @@ impl Provider for OpenAiCompatibleProvider {
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
         let api_messages = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
+        let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
 
         let mut body = json!({
             "model": self.config.model,
             "messages": api_messages,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens,
         });
 
         // Merge extra body parameters (e.g., x_context_strategy for apfel).

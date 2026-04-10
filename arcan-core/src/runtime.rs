@@ -57,6 +57,8 @@ pub struct ProviderRequest {
     pub iteration: u32,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolDefinition>,
+    /// Optional request-scoped output token cap supplied by policy/gating layers.
+    pub max_tokens: Option<u32>,
     pub state: AppState,
 }
 
@@ -457,6 +459,7 @@ impl Orchestrator {
                 iteration,
                 messages: messages.clone(),
                 tools: self.tools.definitions(),
+                max_tokens: None,
                 state: state.clone(),
             };
 

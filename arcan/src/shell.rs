@@ -1905,6 +1905,7 @@ fn run_agent_loop(
             iteration,
             messages: messages.clone(),
             tools: tool_defs.to_vec(),
+            max_tokens: None,
             state: state.clone(),
         };
 

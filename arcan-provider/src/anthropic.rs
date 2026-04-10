@@ -286,10 +286,11 @@ impl Provider for AnthropicProvider {
     ) -> Result<ModelTurn, CoreError> {
         let (system_prompt, api_messages) = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
+        let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
 
         let mut body = json!({
             "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens,
             "messages": api_messages,
             "stream": true,
         });
@@ -454,10 +455,11 @@ impl Provider for AnthropicProvider {
     fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
         let (system_prompt, api_messages) = self.build_messages(&request.messages);
         let api_tools = self.convert_tools(&request.tools);
+        let max_tokens = request.max_tokens.unwrap_or(self.config.max_tokens);
 
         let mut body = json!({
             "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": max_tokens,
             "messages": api_messages,
         });
 

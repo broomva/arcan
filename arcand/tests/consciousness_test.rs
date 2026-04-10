@@ -37,6 +37,7 @@ impl ModelProviderPort for TestProvider {
         Ok(ModelCompletion {
             provider: "test".to_owned(),
             model: "test-model".to_owned(),
+            llm_call_record: None,
             directives: vec![ModelDirective::Message {
                 role: "assistant".to_owned(),
                 content: format!("ack: {}", request.objective),
