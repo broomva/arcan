@@ -420,8 +420,16 @@ impl ModelProviderPort for ArcanProviderAdapter {
                 life_vigil::spans::record_reliability(&chat_span, 0, false, "closed");
                 self.genai_metrics.record_operation_duration(
                     &provider_system,
+                    &model_name,
                     "chat",
+                    "error",
                     call_duration,
+                );
+                self.genai_metrics.record_llm_request(
+                    &provider_system,
+                    &model_name,
+                    "chat",
+                    "error",
                 );
                 let record = llm_call_record(error_envelope, None, Some(error.clone()));
                 write_llm_call_record(self.jsonl_writer.as_ref(), &record);
@@ -441,8 +449,16 @@ impl ModelProviderPort for ArcanProviderAdapter {
                 life_vigil::spans::record_reliability(&chat_span, 0, false, "closed");
                 self.genai_metrics.record_operation_duration(
                     &provider_system,
+                    &model_name,
                     "chat",
+                    "error",
                     call_duration,
+                );
+                self.genai_metrics.record_llm_request(
+                    &provider_system,
+                    &model_name,
+                    "chat",
+                    "error",
                 );
                 let record = llm_call_record(error_envelope, None, Some(error.clone()));
                 write_llm_call_record(self.jsonl_writer.as_ref(), &record);
@@ -554,14 +570,34 @@ impl ModelProviderPort for ArcanProviderAdapter {
         life_vigil::spans::record_reliability(&chat_span, 0, false, "closed");
 
         // Record GenAI metrics (token usage + operation duration) on shared instruments.
+        self.genai_metrics.record_operation_duration(
+            &provider_system,
+            &model_name,
+            "chat",
+            "success",
+            call_duration,
+        );
         self.genai_metrics
-            .record_operation_duration(&provider_system, "chat", call_duration);
+            .record_llm_request(&provider_system, &model_name, "chat", "success");
         if let Some(ref usage) = usage {
             self.genai_metrics.record_token_usage(
                 &provider_system,
+                &model_name,
                 "chat",
                 usage.prompt_tokens as u64,
                 usage.completion_tokens as u64,
+            );
+        }
+        if let Some(cost_usd) = response_economics
+            .as_ref()
+            .and_then(|economics| economics.total_cost_usd)
+        {
+            self.genai_metrics.record_estimated_cost_usd(
+                &provider_system,
+                &model_name,
+                "chat",
+                "direct_provider_handle",
+                cost_usd,
             );
         }
 
