@@ -2579,6 +2579,64 @@ mod tests {
     }
 
     #[test]
+    fn shell_execute_tool_smokes_memory_graph() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("decision.md"),
+            "---\ntitle: Decision\ntype: decision\n---\nSee [[Evidence]].",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("evidence.md"),
+            "---\ntitle: Evidence\ntype: evidence\n---\nSee [[Outcome]].",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("outcome.md"),
+            "---\ntitle: Outcome\ntype: outcome\n---\nValidated shell smoke path.",
+        )
+        .unwrap();
+
+        let mut registry = ToolRegistry::default();
+        registry.register(PraxisToolBridge::new(
+            crate::memory_tools::MemoryGraphTool::new(dir.path()),
+        ));
+
+        let call = ToolCall {
+            call_id: "call-memory-graph".into(),
+            tool_name: "memory_graph".into(),
+            input: serde_json::json!({
+                "start": "Decision",
+                "query": "validated shell smoke",
+                "depth": 2,
+                "max_nodes": 3,
+                "max_edges": 2
+            }),
+        };
+        let ctx = ToolContext {
+            run_id: "shell-e2e".into(),
+            session_id: "shell-e2e".into(),
+            iteration: 0,
+        };
+
+        let (content, is_error) = execute_tool(&registry, &call, &ctx);
+        assert!(!is_error, "{content}");
+
+        let output: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(output["found"], true);
+        assert_eq!(output["root"], "/decision.md");
+        assert_eq!(output["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(output["edges"].as_array().unwrap().len(), 2);
+        assert_eq!(output["metrics"]["operation"], "memory_graph");
+        assert_eq!(output["metrics"]["returned_node_count"], 3);
+        assert_eq!(output["metrics"]["returned_edge_count"], 2);
+        assert_eq!(output["metrics"]["depth_reached"], 2);
+        assert_eq!(output["metrics"]["ranking_backend"], "hybrid_lexical_graph");
+        assert_eq!(output["metrics"]["fallback_path"], "semantic_unavailable");
+        assert_eq!(output["metrics"]["provenance_preserved"], true);
+    }
+
+    #[test]
     fn test_is_memory_signal() {
         // Bullet points
         assert!(is_memory_signal("- This is a key decision we made"));

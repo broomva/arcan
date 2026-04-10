@@ -35,9 +35,10 @@ pub use ephemeral::{EphemeralJournal, SessionJournalSelector};
 pub use learning::{LearningEntry, LearningMiddleware};
 pub use memory_graph::{
     DEFAULT_GRAPH_DEPTH, DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, MemoryGraphEdge, MemoryGraphError,
-    MemoryGraphNode, MemoryGraphQuery, MemoryGraphRankSignals, MemoryGraphRankingHints,
-    MemoryGraphResponse, memory_graph_from_dir, memory_graph_from_dir_with_ranking,
-    memory_graph_from_index, memory_graph_from_index_with_ranking,
+    MemoryGraphMetrics, MemoryGraphNode, MemoryGraphQuery, MemoryGraphRankSignals,
+    MemoryGraphRankingHints, MemoryGraphResponse, memory_graph_from_dir,
+    memory_graph_from_dir_with_ranking, memory_graph_from_index,
+    memory_graph_from_index_with_ranking,
 };
 pub use memory_projection::MemoryProjection;
 pub use memory_scope::{MemoryEntry, MemoryScopeConfig};

@@ -434,14 +434,14 @@ impl MemoryGraphTool {
             .as_ref()
             .zip(self.workspace_journal.as_ref())
         else {
-            return MemoryGraphRankingHints::default();
+            return MemoryGraphRankingHints::default().with_fallback_path("semantic_unavailable");
         };
 
         let query_embedding = match provider.embed(query) {
             Ok(embedding) => embedding,
             Err(e) => {
                 tracing::warn!(error = %e, "memory_graph embedding failed, using lexical graph ranking");
-                return MemoryGraphRankingHints::default();
+                return MemoryGraphRankingHints::default().with_fallback_path("embedding_failed");
             }
         };
 
@@ -454,9 +454,14 @@ impl MemoryGraphTool {
             Ok(events) => events,
             Err(err) => {
                 tracing::warn!(message = %err, "memory_graph vector search failed, using lexical graph ranking");
-                return MemoryGraphRankingHints::default();
+                return MemoryGraphRankingHints::default()
+                    .with_fallback_path("vector_search_failed");
             }
         };
+
+        if events.is_empty() {
+            return MemoryGraphRankingHints::default().with_fallback_path("semantic_empty");
+        }
 
         let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
         for event in events {
@@ -471,6 +476,11 @@ impl MemoryGraphTool {
                     .and_modify(|score| *score = score.max(similarity))
                     .or_insert(similarity);
             }
+        }
+
+        if scores.is_empty() {
+            return MemoryGraphRankingHints::default()
+                .with_fallback_path("semantic_metadata_missing");
         }
 
         MemoryGraphRankingHints::new(scores)
@@ -592,12 +602,24 @@ impl Tool for MemoryGraphTool {
             "graph_bfs"
         };
 
-        match memory_graph_from_dir_with_ranking(&self.memory_dir, query, ranking_hints) {
-            Ok(graph) => Ok(ToolResult::json(
-                &call.call_id,
-                &call.tool_name,
-                json!(graph),
-            )),
+        match memory_graph_from_dir_with_ranking(&self.memory_dir, query, ranking_hints.clone()) {
+            Ok(graph) => {
+                tracing::info!(
+                    tool_name = "memory_graph",
+                    returned_node_count = graph.metrics.returned_node_count,
+                    returned_edge_count = graph.metrics.returned_edge_count,
+                    depth_reached = graph.metrics.depth_reached,
+                    ranking_backend = %graph.metrics.ranking_backend,
+                    fallback_path = graph.metrics.fallback_path.as_deref().unwrap_or("none"),
+                    provenance_preserved = graph.metrics.provenance_preserved,
+                    "memory_graph retrieval metrics"
+                );
+                Ok(ToolResult::json(
+                    &call.call_id,
+                    &call.tool_name,
+                    json!(graph),
+                ))
+            }
             Err(MemoryGraphError::StartNodeNotFound(start)) => Ok(ToolResult::json(
                 &call.call_id,
                 &call.tool_name,
@@ -617,6 +639,15 @@ impl Tool for MemoryGraphTool {
                     "edge_filter": edge_filter,
                     "query": bounded_query.query,
                     "ranking_backend": missing_ranking_backend,
+                    "metrics": {
+                        "operation": "memory_graph",
+                        "returned_node_count": 0,
+                        "returned_edge_count": 0,
+                        "depth_reached": 0,
+                        "ranking_backend": missing_ranking_backend,
+                        "fallback_path": ranking_hints.fallback_path,
+                        "provenance_preserved": true
+                    },
                 }),
             )),
             Err(err) => Err(ToolError::ExecutionFailed {
@@ -1422,6 +1453,13 @@ mod tests {
         assert_eq!(result.output["edges"].as_array().unwrap().len(), 1);
         assert_eq!(result.output["nodes"][0]["node_type"], "decision");
         assert_eq!(result.output["nodes"][0]["source_ref"], "/decision.md");
+        assert_eq!(result.output["metrics"]["operation"], "memory_graph");
+        assert_eq!(result.output["metrics"]["returned_node_count"], 2);
+        assert_eq!(result.output["metrics"]["returned_edge_count"], 1);
+        assert_eq!(result.output["metrics"]["depth_reached"], 1);
+        assert_eq!(result.output["metrics"]["ranking_backend"], "graph_bfs");
+        assert!(result.output["metrics"]["fallback_path"].is_null());
+        assert_eq!(result.output["metrics"]["provenance_preserved"], true);
     }
 
     #[test]
@@ -1460,6 +1498,15 @@ mod tests {
         assert_eq!(result.output["ranking_backend"], "hybrid_lexical_graph");
         assert_eq!(result.output["query"], "knowledge calibration recall");
         assert!(result.output["truncated"].as_bool().unwrap());
+        assert_eq!(
+            result.output["metrics"]["fallback_path"],
+            "semantic_unavailable"
+        );
+        assert_eq!(
+            result.output["metrics"]["ranking_backend"],
+            "hybrid_lexical_graph"
+        );
+        assert_eq!(result.output["metrics"]["provenance_preserved"], true);
     }
 
     #[test]
@@ -1528,12 +1575,64 @@ mod tests {
             "/semantic-target.md"
         );
         assert_eq!(result.output["ranking_backend"], "hybrid_vector_graph");
+        assert!(result.output["metrics"]["fallback_path"].is_null());
+        assert_eq!(
+            result.output["metrics"]["ranking_backend"],
+            "hybrid_vector_graph"
+        );
         assert!(
             result.output["nodes"][1]["rank_signals"]["semantic"]
                 .as_f64()
                 .unwrap()
                 > 0.9
         );
+    }
+
+    #[test]
+    fn graph_records_semantic_empty_fallback_metrics() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(
+            dir.path(),
+            "root",
+            "---\ntitle: Root\n---\nSee [[calibration]].",
+        );
+        create_memory_file(
+            dir.path(),
+            "calibration",
+            "---\ntitle: Calibration\n---\nKnowledge calibration improves recall thresholds.",
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let journal = rt.block_on(async {
+            Arc::new(
+                LanceJournal::open(dir.path().join("empty-workspace.lance"))
+                    .await
+                    .unwrap(),
+            )
+        });
+
+        let tool = MemoryGraphTool::new_with_semantic(
+            dir.path(),
+            Some(Arc::new(TestEmbeddingProvider {
+                vector: vec![1.0; 1536],
+            })),
+            Some(journal),
+        );
+        let call = make_call(
+            "memory_graph",
+            json!({
+                "start": "root",
+                "query": "knowledge calibration recall",
+                "depth": 1,
+                "max_nodes": 2
+            }),
+        );
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert_eq!(result.output["ranking_backend"], "hybrid_lexical_graph");
+        assert_eq!(result.output["metrics"]["fallback_path"], "semantic_empty");
+        assert_eq!(result.output["metrics"]["returned_node_count"], 2);
+        assert_eq!(result.output["metrics"]["provenance_preserved"], true);
     }
 
     #[test]
@@ -1558,6 +1657,13 @@ mod tests {
         assert_eq!(result.output["edge_filter"], json!(["references"]));
         assert!(result.output["query"].is_null());
         assert_eq!(result.output["ranking_backend"], "graph_bfs");
+        assert_eq!(result.output["metrics"]["operation"], "memory_graph");
+        assert_eq!(result.output["metrics"]["returned_node_count"], 0);
+        assert_eq!(result.output["metrics"]["returned_edge_count"], 0);
+        assert_eq!(result.output["metrics"]["depth_reached"], 0);
+        assert_eq!(result.output["metrics"]["ranking_backend"], "graph_bfs");
+        assert!(result.output["metrics"]["fallback_path"].is_null());
+        assert_eq!(result.output["metrics"]["provenance_preserved"], true);
         assert!(!result.is_error);
     }
 

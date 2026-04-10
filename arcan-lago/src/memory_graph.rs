@@ -75,6 +75,7 @@ impl MemoryGraphQuery {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemoryGraphRankingHints {
     pub semantic_scores: HashMap<String, f32>,
+    pub fallback_path: Option<String>,
 }
 
 impl MemoryGraphRankingHints {
@@ -84,7 +85,18 @@ impl MemoryGraphRankingHints {
                 .into_iter()
                 .map(|(key, score)| (ranking_key(&key), clamp_unit(score)))
                 .collect(),
+            fallback_path: None,
         }
+    }
+
+    pub fn with_fallback_path(mut self, fallback_path: impl Into<String>) -> Self {
+        let fallback_path = fallback_path.into();
+        self.fallback_path = if fallback_path.trim().is_empty() {
+            None
+        } else {
+            Some(fallback_path)
+        };
+        self
     }
 
     fn has_semantic_scores(&self) -> bool {
@@ -161,6 +173,18 @@ pub struct MemoryGraphResponse {
     pub edge_filter: Vec<String>,
     pub query: Option<String>,
     pub ranking_backend: String,
+    pub metrics: MemoryGraphMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryGraphMetrics {
+    pub operation: String,
+    pub returned_node_count: usize,
+    pub returned_edge_count: usize,
+    pub depth_reached: usize,
+    pub ranking_backend: String,
+    pub fallback_path: Option<String>,
+    pub provenance_preserved: bool,
 }
 
 #[derive(Debug, Error)]
@@ -287,6 +311,14 @@ pub fn memory_graph_from_index_with_ranking(
         .collect::<Vec<_>>();
 
     let truncated = candidates_overflowed || edges_overflowed;
+    let ranking_backend = ranking_backend(ranked_mode, ranking_hints.has_semantic_scores());
+    let metrics = graph_metrics(
+        &nodes,
+        &graph_edges.edges,
+        &ranking_backend,
+        ranking_hints.fallback_path.clone(),
+    );
+
     Ok(MemoryGraphResponse {
         found: true,
         start: query.start,
@@ -305,7 +337,38 @@ pub fn memory_graph_from_index_with_ranking(
             query.edge_types
         },
         query: query.query,
-        ranking_backend: ranking_backend(ranked_mode, ranking_hints.has_semantic_scores()),
+        ranking_backend,
+        metrics,
+    })
+}
+
+fn graph_metrics(
+    nodes: &[MemoryGraphNode],
+    edges: &[MemoryGraphEdge],
+    ranking_backend: &str,
+    fallback_path: Option<String>,
+) -> MemoryGraphMetrics {
+    MemoryGraphMetrics {
+        operation: "memory_graph".to_string(),
+        returned_node_count: nodes.len(),
+        returned_edge_count: edges.len(),
+        depth_reached: nodes.iter().map(|node| node.depth).max().unwrap_or(0),
+        ranking_backend: ranking_backend.to_string(),
+        fallback_path,
+        provenance_preserved: graph_provenance_preserved(nodes, edges),
+    }
+}
+
+fn graph_provenance_preserved(nodes: &[MemoryGraphNode], edges: &[MemoryGraphEdge]) -> bool {
+    nodes.iter().all(|node| {
+        !node.node_id.trim().is_empty()
+            && !node.source_ref.trim().is_empty()
+            && node.node_id == node.source_ref
+    }) && edges.iter().all(|edge| {
+        !edge.source.trim().is_empty()
+            && !edge.target.trim().is_empty()
+            && !edge.source_ref.trim().is_empty()
+            && edge.source == edge.source_ref
     })
 }
 
@@ -793,6 +856,13 @@ mod tests {
         assert_eq!(graph.nodes[0].node_type, "decision");
         assert_eq!(graph.nodes[0].source_ref, "/decision.md");
         assert_eq!(graph.nodes[0].outgoing_links, vec!["Evidence"]);
+        assert_eq!(graph.metrics.operation, "memory_graph");
+        assert_eq!(graph.metrics.returned_node_count, 3);
+        assert_eq!(graph.metrics.returned_edge_count, 2);
+        assert_eq!(graph.metrics.depth_reached, 2);
+        assert_eq!(graph.metrics.ranking_backend, "graph_bfs");
+        assert!(graph.metrics.fallback_path.is_none());
+        assert!(graph.metrics.provenance_preserved);
     }
 
     #[test]
@@ -806,6 +876,7 @@ mod tests {
 
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 2);
+        assert!(graph.metrics.provenance_preserved);
     }
 
     #[test]
@@ -943,6 +1014,10 @@ mod tests {
             Some("knowledge calibration recall")
         );
         assert_eq!(ranked.ranking_backend, "hybrid_lexical_graph");
+        assert_eq!(ranked.metrics.ranking_backend, "hybrid_lexical_graph");
+        assert_eq!(ranked.metrics.returned_node_count, 2);
+        assert_eq!(ranked.metrics.depth_reached, 1);
+        assert!(ranked.metrics.provenance_preserved);
     }
 
     #[test]
@@ -982,5 +1057,41 @@ mod tests {
         assert_eq!(graph.nodes[1].source_ref, "/semantic-target.md");
         assert!(graph.nodes[1].rank_signals.semantic > 0.9);
         assert_eq!(graph.ranking_backend, "hybrid_vector_graph");
+        assert_eq!(graph.metrics.ranking_backend, "hybrid_vector_graph");
+        assert!(graph.metrics.fallback_path.is_none());
+    }
+
+    #[test]
+    fn graph_metrics_record_semantic_fallback_path() {
+        let (_tmp, index) = build_index(&[
+            ("/root.md", "---\ntitle: Root\n---\nSee [[Evidence]]."),
+            (
+                "/evidence.md",
+                "---\ntitle: Evidence\n---\nEvaluation proof keeps provenance.",
+            ),
+        ]);
+
+        let graph = memory_graph_from_index_with_ranking(
+            &index,
+            MemoryGraphQuery {
+                start: "Root".into(),
+                query: Some("evaluation proof".into()),
+                depth: 1,
+                max_nodes: 12,
+                max_edges: 16,
+                edge_types: Vec::new(),
+            },
+            MemoryGraphRankingHints::default().with_fallback_path("semantic_unavailable"),
+        )
+        .unwrap();
+
+        assert_eq!(graph.ranking_backend, "hybrid_lexical_graph");
+        assert_eq!(
+            graph.metrics.fallback_path.as_deref(),
+            Some("semantic_unavailable")
+        );
+        assert_eq!(graph.metrics.returned_node_count, graph.nodes.len());
+        assert_eq!(graph.metrics.returned_edge_count, graph.edges.len());
+        assert!(graph.metrics.provenance_preserved);
     }
 }
