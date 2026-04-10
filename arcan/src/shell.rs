@@ -1109,7 +1109,11 @@ pub fn run_shell(
             crate::memory_tools::MemoryForgetTool::new(&memory_dir),
         ));
         registry.register(PraxisToolBridge::new(
-            crate::memory_tools::MemoryGraphTool::new(&memory_dir),
+            crate::memory_tools::MemoryGraphTool::new_with_semantic(
+                &memory_dir,
+                embedding_provider.clone(),
+                workspace_lance.clone(),
+            ),
         ));
 
         // --- Phase 2: Governed memory tools (BRO-360, BRO-361, BRO-385) ---

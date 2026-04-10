@@ -14,7 +14,7 @@ use aios_protocol::tool::{
 };
 use arcan_lago::{
     DEFAULT_GRAPH_DEPTH, DEFAULT_MAX_EDGES, DEFAULT_MAX_NODES, MemoryGraphError, MemoryGraphQuery,
-    memory_graph_from_dir,
+    MemoryGraphRankingHints, memory_graph_from_dir_with_ranking,
 };
 use lago_core::event::{EventEnvelope, EventPayload};
 use lago_lance::{EMBEDDING_META_KEY, LanceJournal};
@@ -106,20 +106,31 @@ fn run_async<T, F>(future: F) -> Result<T, ToolError>
 where
     F: std::future::Future<Output = Result<T, lago_core::LagoError>>,
 {
+    run_async_for_tool("memory_similar", "Semantic search failed", future)
+}
+
+fn run_async_for_tool<T, F>(
+    tool_name: &str,
+    failure_prefix: &str,
+    future: F,
+) -> Result<T, ToolError>
+where
+    F: std::future::Future<Output = Result<T, lago_core::LagoError>>,
+{
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => handle
             .block_on(future)
             .map_err(|e| ToolError::ExecutionFailed {
-                tool_name: "memory_similar".into(),
-                message: format!("Semantic search failed: {e}"),
+                tool_name: tool_name.into(),
+                message: format!("{failure_prefix}: {e}"),
             }),
         Err(_) => match tokio::runtime::Runtime::new() {
             Ok(rt) => rt.block_on(future).map_err(|e| ToolError::ExecutionFailed {
-                tool_name: "memory_similar".into(),
-                message: format!("Semantic search failed: {e}"),
+                tool_name: tool_name.into(),
+                message: format!("{failure_prefix}: {e}"),
             }),
             Err(e) => Err(ToolError::ExecutionFailed {
-                tool_name: "memory_similar".into(),
+                tool_name: tool_name.into(),
                 message: format!("Failed to create async runtime: {e}"),
             }),
         },
@@ -138,6 +149,15 @@ fn event_embedding(event: &EventEnvelope) -> Option<Vec<f32>> {
         .metadata
         .get(EMBEDDING_META_KEY)
         .and_then(|json| serde_json::from_str(json).ok())
+}
+
+fn semantic_event_keys(event: &EventEnvelope) -> Vec<String> {
+    ["title", "path", "source_ref", "memory_file"]
+        .iter()
+        .filter_map(|key| event.metadata.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
@@ -374,13 +394,86 @@ impl Tool for MemorySimilarTool {
 /// Bounded graph traversal over wikilinked memory files.
 pub struct MemoryGraphTool {
     memory_dir: PathBuf,
+    embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>>,
+    workspace_journal: Option<Arc<LanceJournal>>,
 }
 
 impl MemoryGraphTool {
+    #[cfg(test)]
     pub fn new(memory_dir: &Path) -> Self {
         Self {
             memory_dir: memory_dir.to_path_buf(),
+            embedding_provider: None,
+            workspace_journal: None,
         }
+    }
+
+    pub fn new_with_semantic(
+        memory_dir: &Path,
+        embedding_provider: Option<Arc<dyn crate::embedding::EmbeddingProvider>>,
+        workspace_journal: Option<Arc<LanceJournal>>,
+    ) -> Self {
+        Self {
+            memory_dir: memory_dir.to_path_buf(),
+            embedding_provider,
+            workspace_journal,
+        }
+    }
+
+    fn semantic_ranking_hints(
+        &self,
+        query: Option<&str>,
+        max_nodes: usize,
+    ) -> MemoryGraphRankingHints {
+        let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+            return MemoryGraphRankingHints::default();
+        };
+
+        let Some((provider, journal)) = self
+            .embedding_provider
+            .as_ref()
+            .zip(self.workspace_journal.as_ref())
+        else {
+            return MemoryGraphRankingHints::default();
+        };
+
+        let query_embedding = match provider.embed(query) {
+            Ok(embedding) => embedding,
+            Err(e) => {
+                tracing::warn!(error = %e, "memory_graph embedding failed, using lexical graph ranking");
+                return MemoryGraphRankingHints::default();
+            }
+        };
+
+        let limit = max_nodes.saturating_mul(4).clamp(DEFAULT_MAX_NODES, 50);
+        let events = match run_async_for_tool(
+            "memory_graph",
+            "Semantic graph ranking failed",
+            journal.vector_search(&query_embedding, limit),
+        ) {
+            Ok(events) => events,
+            Err(err) => {
+                tracing::warn!(message = %err, "memory_graph vector search failed, using lexical graph ranking");
+                return MemoryGraphRankingHints::default();
+            }
+        };
+
+        let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+        for event in events {
+            let similarity = event_embedding(&event)
+                .as_deref()
+                .and_then(|embedding| cosine_similarity(&query_embedding, embedding))
+                .unwrap_or(0.0);
+
+            for key in semantic_event_keys(&event) {
+                scores
+                    .entry(key)
+                    .and_modify(|score| *score = score.max(similarity))
+                    .or_insert(similarity);
+            }
+        }
+
+        MemoryGraphRankingHints::new(scores)
     }
 }
 
@@ -395,6 +488,10 @@ impl Tool for MemoryGraphTool {
                     "start": {
                         "type": "string",
                         "description": "Start memory by title, filename, path, or wikilink target"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional natural-language query used to rank graph candidates by lexical and semantic relevance"
                     },
                     "depth": {
                         "type": "integer",
@@ -443,6 +540,13 @@ impl Tool for MemoryGraphTool {
         let depth = bounded_usize_arg(&call.input, "depth", DEFAULT_GRAPH_DEPTH);
         let max_nodes = bounded_usize_arg(&call.input, "max_nodes", DEFAULT_MAX_NODES);
         let max_edges = bounded_usize_arg(&call.input, "max_edges", DEFAULT_MAX_EDGES);
+        let rank_query = call
+            .input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned);
         let edge_types = call
             .input
             .get("edge_types")
@@ -458,12 +562,15 @@ impl Tool for MemoryGraphTool {
 
         let query = MemoryGraphQuery {
             start: start.to_string(),
+            query: rank_query,
             depth,
             max_nodes,
             max_edges,
             edge_types,
         };
         let bounded_query = query.clone().bounded();
+        let ranking_hints =
+            self.semantic_ranking_hints(bounded_query.query.as_deref(), bounded_query.max_nodes);
         let effective_depth = if bounded_query.edge_types.is_empty()
             || bounded_query
                 .edge_types
@@ -479,8 +586,13 @@ impl Tool for MemoryGraphTool {
         } else {
             bounded_query.edge_types.clone()
         };
+        let missing_ranking_backend = if bounded_query.query.is_some() {
+            "hybrid_lexical_graph"
+        } else {
+            "graph_bfs"
+        };
 
-        match memory_graph_from_dir(&self.memory_dir, query) {
+        match memory_graph_from_dir_with_ranking(&self.memory_dir, query, ranking_hints) {
             Ok(graph) => Ok(ToolResult::json(
                 &call.call_id,
                 &call.tool_name,
@@ -503,6 +615,8 @@ impl Tool for MemoryGraphTool {
                     "max_nodes": bounded_query.max_nodes,
                     "max_edges": bounded_query.max_edges,
                     "edge_filter": edge_filter,
+                    "query": bounded_query.query,
+                    "ranking_backend": missing_ranking_backend,
                 }),
             )),
             Err(err) => Err(ToolError::ExecutionFailed {
@@ -1311,6 +1425,118 @@ mod tests {
     }
 
     #[test]
+    fn graph_query_promotes_relevant_memory_over_plain_bfs() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(
+            dir.path(),
+            "root",
+            "---\ntitle: Root\n---\nSee [[noise]] and [[calibration]].",
+        );
+        create_memory_file(
+            dir.path(),
+            "noise",
+            "---\ntitle: Noise\n---\nDeployment notes unrelated to evaluation.",
+        );
+        create_memory_file(
+            dir.path(),
+            "calibration",
+            "---\ntitle: Calibration\n---\nKnowledge calibration improves recall thresholds.",
+        );
+
+        let tool = MemoryGraphTool::new(dir.path());
+        let call = make_call(
+            "memory_graph",
+            json!({
+                "start": "root",
+                "query": "knowledge calibration recall",
+                "depth": 1,
+                "max_nodes": 2
+            }),
+        );
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert_eq!(result.output["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(result.output["nodes"][1]["source_ref"], "/calibration.md");
+        assert_eq!(result.output["ranking_backend"], "hybrid_lexical_graph");
+        assert_eq!(result.output["query"], "knowledge calibration recall");
+        assert!(result.output["truncated"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn graph_uses_vector_hints_when_semantic_backend_is_available() {
+        let dir = TempDir::new().unwrap();
+        create_memory_file(
+            dir.path(),
+            "root",
+            "---\ntitle: Root\n---\nSee [[noise]] and [[semantic-target]].",
+        );
+        create_memory_file(
+            dir.path(),
+            "noise",
+            "---\ntitle: Noise\n---\nPlain first BFS result.",
+        );
+        create_memory_file(
+            dir.path(),
+            "semantic-target",
+            "---\ntitle: Semantic Target\n---\nVector-only relevant memory.",
+        );
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let journal = rt.block_on(async {
+            let journal = Arc::new(
+                LanceJournal::open(dir.path().join("workspace.lance"))
+                    .await
+                    .unwrap(),
+            );
+            journal
+                .append_with_embedding(
+                    make_memory_event("Vector-only relevant memory", "Semantic Target"),
+                    vec![1.0; 1536],
+                )
+                .await
+                .unwrap();
+            journal
+                .append_with_embedding(
+                    make_memory_event("Unrelated graph neighbor", "Noise"),
+                    vec![0.0; 1536],
+                )
+                .await
+                .unwrap();
+            journal
+        });
+
+        let tool = MemoryGraphTool::new_with_semantic(
+            dir.path(),
+            Some(Arc::new(TestEmbeddingProvider {
+                vector: vec![1.0; 1536],
+            })),
+            Some(journal),
+        );
+        let call = make_call(
+            "memory_graph",
+            json!({
+                "start": "root",
+                "query": "opaque semantic request",
+                "depth": 1,
+                "max_nodes": 2
+            }),
+        );
+        let result = tool.execute(&call, &make_ctx()).unwrap();
+
+        assert_eq!(
+            result.output["nodes"][1]["source_ref"],
+            "/semantic-target.md"
+        );
+        assert_eq!(result.output["ranking_backend"], "hybrid_vector_graph");
+        assert!(
+            result.output["nodes"][1]["rank_signals"]["semantic"]
+                .as_f64()
+                .unwrap()
+                > 0.9
+        );
+    }
+
+    #[test]
     fn graph_missing_start_returns_clear_empty_result() {
         let dir = TempDir::new().unwrap();
         create_memory_file(dir.path(), "a", "# A");
@@ -1330,6 +1556,8 @@ mod tests {
         assert_eq!(result.output["max_nodes"], DEFAULT_MAX_NODES);
         assert_eq!(result.output["max_edges"], DEFAULT_MAX_EDGES);
         assert_eq!(result.output["edge_filter"], json!(["references"]));
+        assert!(result.output["query"].is_null());
+        assert_eq!(result.output["ranking_backend"], "graph_bfs");
         assert!(!result.is_error);
     }
 
