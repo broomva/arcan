@@ -1367,13 +1367,28 @@ pub fn run_shell(
     }
 
     // --- Welcome banner ---
-    eprintln!("arcan shell v{}", env!("CARGO_PKG_VERSION"));
+    let provider_display = format!("{provider_name}/{model_name}");
+    let banner_width: usize = 41;
+    let provider_line = format!("  Running with {} provider", provider_name);
+    let provider_pad = banner_width.saturating_sub(provider_line.len() + 1);
+    eprintln!();
     eprintln!(
-        "Provider: {} | Model: {} | Tools: {} | Hooks: {} | Skills: {}",
-        provider_name,
-        model_name,
+        "\x1b[36m\
+         +-------------------------------------------+\n\
+         |        Life Agent OS (Arcan)               |\n\
+         |{}{} |\n\
+         |  Type '/help' for commands                 |\n\
+         +-------------------------------------------+\
+         \x1b[0m",
+        provider_line,
+        " ".repeat(provider_pad),
+    );
+    eprintln!();
+    eprintln!(
+        "v{} | {} | {} tools | {} skills",
+        env!("CARGO_PKG_VERSION"),
+        provider_display,
         tool_defs.len(),
-        hook_registry.len(),
         skill_names.len(),
     );
     if let Some(b) = budget {
@@ -1394,12 +1409,12 @@ pub fn run_shell(
     }
     if journal_ephemeral {
         eprintln!(
-            "Session: {} | Journal: ephemeral (in-memory) | Type /help for commands",
+            "Session: {} | Journal: ephemeral (in-memory)",
             lago_session_id,
         );
     } else {
         eprintln!(
-            "Session: {} | Journal: {} | Type /help for commands",
+            "Session: {} | Journal: {}",
             lago_session_id,
             journal_path.display()
         );
@@ -1607,7 +1622,7 @@ pub fn run_shell(
                     eprintln!("[consolidate] Done.");
                 }
                 Some(CommandResult::Quit) => {
-                    eprintln!("Goodbye.");
+                    eprintln!("Goodbye. Next: read docs/QUICKSTART.md");
                     break;
                 }
                 Some(CommandResult::Error(err)) => {
