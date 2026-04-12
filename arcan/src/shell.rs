@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use aios_protocol::sandbox::NetworkPolicy;
 use arcan_commands::{
-    CommandContext, CommandRegistry, CommandResult, PermissionMode, is_tool_auto_approved,
-    prompt_tool_permission,
+    CommandContext, CommandRegistry, CommandResult, NousScoreDetail, PermissionMode,
+    is_tool_auto_approved, prompt_tool_permission,
 };
 use arcan_core::hooks::{HookContext, HookEvent, HookRegistry};
 use arcan_core::protocol::{
@@ -1694,6 +1694,11 @@ pub fn run_shell(
             }),
             _ => None,
         };
+        let eval_journal_ref = if journal_ephemeral {
+            None
+        } else {
+            Some(&journal)
+        };
         let response_text = run_agent_loop(
             &provider,
             &registry,
@@ -1704,6 +1709,7 @@ pub fn run_shell(
             &hook_ctx,
             nous_registry.as_ref(),
             emb_ctx.as_ref(),
+            eval_journal_ref,
         );
 
         match response_text {
@@ -1874,6 +1880,7 @@ fn run_agent_loop(
     base_hook_ctx: &HookContext,
     nous_registry: Option<&EvaluatorRegistry>,
     embedding_ctx: Option<&EmbeddingContext<'_>>,
+    eval_journal: Option<&Arc<dyn Journal>>,
 ) -> anyhow::Result<String> {
     let run_id = format!("shell-{}", uuid::Uuid::new_v4());
     let session_id = "shell";
@@ -2290,16 +2297,39 @@ fn run_agent_loop(
                             for score in &scores {
                                 // Update running scores in cmd_ctx (BRO-363)
                                 // Replace existing score for this evaluator or add new.
+                                let detail = NousScoreDetail {
+                                    name: score.evaluator.clone(),
+                                    value: score.value,
+                                    layer: score.layer.label().to_string(),
+                                    label: score.label.as_str().to_string(),
+                                };
                                 if let Some(existing) = cmd_ctx
                                     .nous_scores
                                     .iter_mut()
-                                    .find(|(name, _)| name == &score.evaluator)
+                                    .find(|d| d.name == score.evaluator)
                                 {
-                                    existing.1 = score.value;
+                                    *existing = detail;
                                 } else {
-                                    cmd_ctx
-                                        .nous_scores
-                                        .push((score.evaluator.clone(), score.value));
+                                    cmd_ctx.nous_scores.push(detail);
+                                }
+
+                                // Persist eval score to Lago journal (BRO-363)
+                                if let Some(j) = eval_journal {
+                                    let j = j.clone();
+                                    let s = score.clone();
+                                    let sid = session_id.to_string();
+                                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                        handle.spawn(async move {
+                                            let publisher =
+                                                nous_lago::LivePublisher::new(j, &sid, "shell");
+                                            if let Err(e) = publisher.publish_score(&s).await {
+                                                tracing::debug!(
+                                                    error = %e,
+                                                    "eval score Lago persist failed (non-fatal)"
+                                                );
+                                            }
+                                        });
+                                    }
                                 }
 
                                 if score.value < 0.5 {

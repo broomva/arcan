@@ -17,6 +17,7 @@ mod memory;
 mod model;
 mod quit;
 mod reasoning;
+mod safety;
 mod search;
 mod skill;
 mod status;
@@ -40,6 +41,21 @@ pub enum CommandResult {
     Quit,
     /// An error occurred during command execution.
     Error(String),
+}
+
+/// Detailed Nous evaluation score with layer and label information.
+///
+/// Avoids a dependency on `nous-core` by carrying layer/label as strings.
+#[derive(Debug, Clone)]
+pub struct NousScoreDetail {
+    /// Evaluator name (e.g. `"safety_compliance"`).
+    pub name: String,
+    /// Normalized score value in `[0.0, 1.0]`.
+    pub value: f64,
+    /// Layer label: `"safety"`, `"execution"`, `"cost"`, `"reasoning"`, `"action"`.
+    pub layer: String,
+    /// Categorical label: `"good"`, `"warning"`, `"critical"`.
+    pub label: String,
 }
 
 /// Mutable context passed to every command invocation.
@@ -81,8 +97,8 @@ pub struct CommandContext {
     pub hooks_count: usize,
     /// Names of discovered skills.
     pub skill_names: Vec<String>,
-    /// Latest Nous evaluation scores: `(evaluator_name, score_value)`.
-    pub nous_scores: Vec<(String, f64)>,
+    /// Latest Nous evaluation scores with layer and label details.
+    pub nous_scores: Vec<NousScoreDetail>,
     /// Session budget in USD (set via `--budget`). `None` means unlimited.
     pub budget_usd: Option<f64>,
     /// Autonomic economic mode label (e.g. "Sovereign", "Conserving").
@@ -246,6 +262,7 @@ impl CommandRegistry {
         registry.register(Box::new(skill::SkillCommand));
         registry.register(Box::new(context::ContextCommand));
         registry.register(Box::new(consolidate::ConsolidateCommand));
+        registry.register(Box::new(safety::SafetyCommand));
         registry.register(Box::new(search::SearchCommand));
         registry.register(Box::new(reasoning::ReasoningCommand));
         registry.rebuild_help_text();
@@ -447,6 +464,12 @@ mod tests {
         assert!(ctx.nous_scores.is_empty());
         assert!(ctx.budget_usd.is_none());
         assert!(ctx.economic_mode.is_none());
+    }
+
+    #[test]
+    fn safety_command_is_registered() {
+        let registry = CommandRegistry::with_builtins();
+        assert!(registry.has_command("safety"));
     }
 
     #[test]

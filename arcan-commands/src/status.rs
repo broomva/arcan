@@ -20,16 +20,27 @@ impl Command for StatusCommand {
     fn execute(&self, _args: &str, ctx: &mut CommandContext) -> CommandResult {
         let total_tokens = ctx.session_input_tokens + ctx.session_output_tokens;
 
-        // Nous safety scores line
-        let safety_line = if ctx.nous_scores.is_empty() {
-            "  Safety:   (no evaluations yet)".to_string()
+        // Nous evaluation scores grouped by layer
+        let eval_line = if ctx.nous_scores.is_empty() {
+            "  Eval:     (no evaluations yet)".to_string()
         } else {
-            let scores_str: Vec<String> = ctx
-                .nous_scores
-                .iter()
-                .map(|(name, val)| format!("{name}: {val:.2}"))
-                .collect();
-            format!("  Safety:   {}", scores_str.join(", "))
+            let mut by_layer: std::collections::BTreeMap<&str, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for s in &ctx.nous_scores {
+                let entry = by_layer.entry(s.layer.as_str()).or_default();
+                let indicator = match s.label.as_str() {
+                    "good" => "✓",
+                    "warning" => "⚠",
+                    "critical" => "✗",
+                    _ => "·",
+                };
+                entry.push(format!("{}{} {:.2}", indicator, s.name, s.value));
+            }
+            let mut lines = vec!["  Eval:".to_string()];
+            for (layer, scores) in &by_layer {
+                lines.push(format!("    {layer}: {}", scores.join(", ")));
+            }
+            lines.join("\n")
         };
 
         // Economic / budget line
@@ -80,7 +91,7 @@ impl Command for StatusCommand {
              \n  Turns:    {}\
              \n  Tokens:   {} (in: {}, out: {})\
              \n  Cost:     ${:.4}\
-             \n{safety_line}\
+             \n{eval_line}\
              \n{economic_line}\
              \n{identity_line}\
              \n{workspace_line}",
@@ -102,6 +113,7 @@ impl Command for StatusCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NousScoreDetail;
 
     #[test]
     fn status_shows_provider_and_model() {
@@ -127,7 +139,7 @@ mod tests {
                 assert!(text.contains("Skills:   2"));
                 assert!(text.contains("Turns:    5"));
                 assert!(text.contains("1500"));
-                assert!(text.contains("Safety:"));
+                assert!(text.contains("Eval:"));
                 assert!(text.contains("Economic:"));
             }
             other => panic!("expected Output, got {other:?}"),
@@ -135,19 +147,39 @@ mod tests {
     }
 
     #[test]
-    fn status_shows_nous_scores() {
+    fn status_shows_nous_scores_grouped_by_layer() {
         let cmd = StatusCommand;
         let mut ctx = CommandContext {
             nous_scores: vec![
-                ("safety_compliance".to_string(), 0.95),
-                ("tool_correctness".to_string(), 1.0),
+                NousScoreDetail {
+                    name: "safety_compliance".into(),
+                    value: 0.95,
+                    layer: "safety".into(),
+                    label: "good".into(),
+                },
+                NousScoreDetail {
+                    name: "tool_correctness".into(),
+                    value: 1.0,
+                    layer: "action".into(),
+                    label: "good".into(),
+                },
+                NousScoreDetail {
+                    name: "token_efficiency".into(),
+                    value: 0.45,
+                    layer: "execution".into(),
+                    label: "critical".into(),
+                },
             ],
             ..Default::default()
         };
         match cmd.execute("", &mut ctx) {
             CommandResult::Output(text) => {
-                assert!(text.contains("safety_compliance: 0.95"));
-                assert!(text.contains("tool_correctness: 1.00"));
+                assert!(text.contains("safety_compliance"));
+                assert!(text.contains("0.95"));
+                assert!(text.contains("tool_correctness"));
+                assert!(text.contains("safety:"));
+                assert!(text.contains("action:"));
+                assert!(text.contains("execution:"));
             }
             other => panic!("expected Output, got {other:?}"),
         }
