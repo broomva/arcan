@@ -1,6 +1,7 @@
 pub mod approval_gate;
 pub mod ephemeral;
 pub mod event_map;
+pub mod event_search;
 pub mod knowledge_context;
 pub mod knowledge_events;
 pub mod knowledge_tools;
@@ -23,6 +24,7 @@ pub mod state_projection;
 pub mod tracked_fs;
 
 pub use approval_gate::{ApprovalGate, ApprovalOutcome};
+pub use event_search::EventSearchTool;
 pub use knowledge_context::{
     KnowledgeBlockAssembly, build_index_from_dir, build_knowledge_block,
     build_knowledge_block_with_stats,

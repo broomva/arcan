@@ -30,8 +30,8 @@ use arcan_core::runtime::{Provider, ToolRegistry};
 use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalFs, SandboxPolicy};
 use arcan_lago::{
-    FreeTierJournal, KnowledgeEventMiddleware, LagoPolicyConfig, LagoTrackedFs, MemoryCommitTool,
-    MemoryProjection, MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal,
+    EventSearchTool, FreeTierJournal, KnowledgeEventMiddleware, LagoPolicyConfig, LagoTrackedFs,
+    MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool, RemoteLagoJournal,
     SessionJournalSelector, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
@@ -576,6 +576,9 @@ fn run_serve(
             registry.register(MemoryQueryTool::new(memory_projection));
             registry.register(MemoryProposeTool::new(memory_journal.clone()));
             registry.register(MemoryCommitTool::new(memory_journal));
+
+            // Cross-session event search (BRO-432)
+            registry.register(EventSearchTool::new(journal.clone(), None));
         }
     } // else (not bare)
 
