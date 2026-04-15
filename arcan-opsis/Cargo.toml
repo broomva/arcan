@@ -17,6 +17,7 @@ workspace = true
 arcan-core = { path = "../arcan-core", version = "0.3.0" }
 opsis-core = { path = "../../opsis/opsis-core" }
 chrono.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

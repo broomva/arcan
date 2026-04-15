@@ -661,7 +661,10 @@ fn run_serve(
                             .map_err(|e| anyhow::anyhow!("opsis world state injector: {e}"))?;
                         let snapshot = injector.snapshot_handle();
                         arcan_opsis::register_opsis_tools(&mut registry, client.clone(), snapshot);
-                        tracing::info!(url = %url, "Opsis bridge enabled (3 tools registered)");
+                        // Spawn SSE loop to continuously update the world state snapshot.
+                        let injector = Arc::new(injector);
+                        injector.spawn_sse_loop(&url);
+                        tracing::info!(url = %url, "Opsis bridge enabled (3 tools registered + SSE loop)");
                         Some(client)
                     }
                     Err(e) => {

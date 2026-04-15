@@ -60,6 +60,60 @@ impl WorldStateInjector {
         self.snapshot.clone()
     }
 
+    /// Spawn a background task that subscribes to the opsisd SSE stream
+    /// and continuously updates the local snapshot.
+    pub fn spawn_sse_loop(self: Arc<Self>, opsisd_url: &str) {
+        let url = format!("{}/stream", opsisd_url.trim_end_matches('/'));
+        tokio::spawn(async move {
+            tracing::info!(%url, "opsis injector: starting SSE subscription loop");
+            let client = reqwest::Client::new();
+            loop {
+                match client.get(&url).send().await {
+                    Ok(resp) => {
+                        use futures_util::StreamExt;
+                        let mut stream = resp.bytes_stream();
+                        let mut buffer = String::new();
+
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(bytes) => {
+                                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                                    // Process complete SSE events (double newline delimited).
+                                    while let Some(pos) = buffer.find("\n\n") {
+                                        let event_text = buffer[..pos].to_string();
+                                        buffer = buffer[pos + 2..].to_string();
+
+                                        // Parse SSE: "event: world_delta\ndata: {...}"
+                                        if let Some(data_line) =
+                                            event_text.lines().find(|l| l.starts_with("data: "))
+                                        {
+                                            let json_str = &data_line[6..];
+                                            if let Ok(delta) =
+                                                serde_json::from_str::<WorldDelta>(json_str)
+                                            {
+                                                self.process_delta(&delta).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "opsis injector: SSE read error");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "opsis injector: SSE connect failed");
+                    }
+                }
+                // Reconnect after 5 seconds.
+                tracing::debug!("opsis injector: reconnecting in 5s...");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+    }
+
     /// Process a WorldDelta — update snapshot and return signal-worthy events.
     pub async fn process_delta(&self, delta: &WorldDelta) -> Vec<OpsisEvent> {
         // Update snapshot.
