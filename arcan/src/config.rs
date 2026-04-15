@@ -659,7 +659,7 @@ mod tests {
     fn resolve_defaults() {
         let config = ArcanConfig::default();
         let resolved = resolve(
-            &config, None, None, None, None, None, None, None, None, false,
+            &config, None, None, None, None, None, None, None, None, false, None,
         );
         assert_eq!(resolved.provider, "anthropic");
         assert!(resolved.model.is_none());
@@ -688,6 +688,7 @@ mod tests {
             None,
             None,
             false,
+            None,
         );
         assert_eq!(resolved.provider, "anthropic");
         assert_eq!(resolved.model.as_deref(), Some("claude-3"));
@@ -705,7 +706,7 @@ mod tests {
         config.providers.insert("ollama".into(), pc);
 
         let resolved = resolve(
-            &config, None, None, None, None, None, None, None, None, false,
+            &config, None, None, None, None, None, None, None, None, false, None,
         );
         assert_eq!(resolved.model.as_deref(), Some("special-model"));
     }
