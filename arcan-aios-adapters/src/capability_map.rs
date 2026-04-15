@@ -149,6 +149,10 @@ pub fn tools_allowed_by_policy(policy: &PolicySet) -> Option<Vec<String>> {
         "grep".to_owned(),
         "read_memory".to_owned(),
         "memory_query".to_owned(),
+        // Opsis world state bridge — observer tools, no capability required.
+        "opsis_world_state".to_owned(),
+        "opsis_observe".to_owned(),
+        "opsis_alert".to_owned(),
     ];
 
     if exec_allowed {
