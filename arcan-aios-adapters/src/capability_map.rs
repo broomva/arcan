@@ -123,7 +123,16 @@ fn shell_binary(cmd: &str) -> &str {
 /// | anonymous   | gated        | gated        | read-only tools only   |
 /// | free        | gated        | gated        | read + net (no write)  |
 /// | pro/enterprise | allowed   | allowed      | all tools (None)       |
-pub fn tools_allowed_by_policy(policy: &PolicySet) -> Option<Vec<String>> {
+/// Derive the tool allowlist, optionally enriched with all registered tool names.
+///
+/// When `all_tool_names` is provided, any tool whose name does not match a known
+/// privileged pattern (exec, fs:write, net, secrets) is automatically included
+/// in the visible set — this ensures dynamically registered tools (opsis bridge,
+/// skills, MCP tools) are visible without hardcoding each name.
+pub fn tools_allowed_by_policy(
+    policy: &PolicySet,
+    all_tool_names: Option<&[String]>,
+) -> Option<Vec<String>> {
     let allow = &policy.allow_capabilities;
 
     // Full wildcard — show everything.
@@ -169,7 +178,47 @@ pub fn tools_allowed_by_policy(policy: &PolicySet) -> Option<Vec<String>> {
         ]);
     }
 
+    // Auto-include any registered tool that requires no capabilities.
+    // This covers opsis tools, skills, MCP tools, and any future dynamically
+    // registered tools — no need to hardcode each name.
+    if let Some(names) = all_tool_names {
+        for name in names {
+            if !visible.contains(name) && !requires_privilege(name) {
+                visible.push(name.clone());
+            }
+        }
+    }
+
     Some(visible)
+}
+
+/// Returns `true` if a tool name matches a known privileged pattern that
+/// requires explicit capability grants (exec, fs:write, net, secrets).
+fn requires_privilege(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "bash"
+            | "shell"
+            | "command"
+            | "terminal"
+            | "run_command"
+            | "write_file"
+            | "create_file"
+            | "edit_file"
+            | "delete_file"
+            | "move_file"
+            | "create_directory"
+            | "append_file"
+            | "http_request"
+            | "web_search"
+            | "fetch_url"
+            | "web_fetch"
+            | "curl"
+            | "browser"
+            | "get_secret"
+            | "read_env"
+            | "get_credential"
+    )
 }
 
 /// Returns `true` if `allow` contains a wildcard pattern that broadly covers
@@ -323,7 +372,7 @@ mod tests {
     #[test]
     fn anonymous_policy_blocks_bash_and_write_tools() {
         let policy = PolicySet::anonymous();
-        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
         assert!(
             !allowed.contains(&"bash".to_owned()),
             "bash should be hidden"
@@ -341,7 +390,7 @@ mod tests {
     #[test]
     fn anonymous_policy_exposes_read_tools() {
         let policy = PolicySet::anonymous();
-        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
         assert!(allowed.contains(&"read_file".to_owned()));
         assert!(allowed.contains(&"list_dir".to_owned()));
         assert!(allowed.contains(&"glob".to_owned()));
@@ -353,7 +402,7 @@ mod tests {
     #[test]
     fn free_policy_blocks_bash_and_write_tools() {
         let policy = PolicySet::free();
-        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
         assert!(!allowed.contains(&"bash".to_owned()));
         assert!(!allowed.contains(&"write_file".to_owned()));
         assert!(!allowed.contains(&"edit_file".to_owned()));
@@ -365,7 +414,7 @@ mod tests {
     fn pro_policy_returns_none_all_tools_visible() {
         let policy = PolicySet::pro();
         assert!(
-            tools_allowed_by_policy(&policy).is_none(),
+            tools_allowed_by_policy(&policy, None).is_none(),
             "pro should allow all tools"
         );
     }
@@ -373,7 +422,7 @@ mod tests {
     #[test]
     fn enterprise_policy_returns_none_all_tools_visible() {
         let policy = PolicySet::enterprise();
-        assert!(tools_allowed_by_policy(&policy).is_none());
+        assert!(tools_allowed_by_policy(&policy, None).is_none());
     }
 
     #[test]
@@ -381,7 +430,7 @@ mod tests {
         // default() allows exec:git (not exec:cmd:*) and fs:write:/session/artifacts/**
         // (not broadly fs:write:*) — so bash and write tools should be hidden.
         let policy = PolicySet::default();
-        let allowed = tools_allowed_by_policy(&policy).expect("should restrict");
+        let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
         assert!(
             !allowed.contains(&"bash".to_owned()),
             "bash hidden (only exec:git allowed)"

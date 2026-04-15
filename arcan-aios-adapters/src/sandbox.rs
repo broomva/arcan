@@ -71,7 +71,7 @@ impl SandboxEnforcer {
         policy: &PolicySet,
     ) -> std::io::Result<Option<PathBuf>> {
         // Reuse BRO-214 tier detection: `None` → wildcard / unrestricted tier.
-        if tools_allowed_by_policy(policy).is_none() {
+        if tools_allowed_by_policy(policy, None).is_none() {
             return Ok(None);
         }
         let sandbox = self.sandbox_path(session_id);

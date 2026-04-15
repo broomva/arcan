@@ -1418,7 +1418,7 @@ async fn run_session(
     // The authoritative enforcement is still policy evaluation at execution time
     // (BRO-213); this layer only affects what the LLM sees.
     let tier_allowed_tools: Option<Vec<String>> =
-        arcan_aios_adapters::tools_allowed_by_policy(&session_policy);
+        arcan_aios_adapters::tools_allowed_by_policy(&session_policy, None);
 
     // BRO-217: Detect anonymous sessions (no exec:cmd:* in allow_capabilities, no wildcard).
     // Anonymous sessions have memory events discarded (ephemeral Lago isolation).
