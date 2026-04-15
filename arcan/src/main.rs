@@ -99,6 +99,11 @@ struct Cli {
     /// Bare mode: minimal system prompt and core tools only, for small-context models (≤4K tokens)
     #[arg(long, global = true)]
     bare: bool,
+
+    /// Default subscription tier for unauthenticated sessions (anonymous, free, pro, enterprise).
+    /// Set to "pro" for full local/OSS access without the auth stack.
+    #[arg(long, global = true, env = "ARCAN_DEFAULT_TIER")]
+    default_tier: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -855,6 +860,7 @@ fn run_serve(
             Some(session_selector),  // BRO-217: ephemeral journal routing for anonymous tiers
             Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
             resolved.bare,           // minimal prompt for small-context models
+            resolved.default_tier.as_deref(), // OSS tier override
         );
 
         // --- Console UI ---
@@ -1312,6 +1318,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             run_serve(&data_dir, &resolved, cli.console_dir, &tokio_runtime)
@@ -1337,6 +1344,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1358,6 +1366,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1391,6 +1400,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1413,6 +1423,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
             run_skills(&data_dir, &resolved, &action)
         }
@@ -1434,6 +1445,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             // Build the Tokio runtime FIRST — same as `serve` mode.
@@ -1472,6 +1484,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1491,6 +1504,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1519,6 +1533,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_backend.as_deref(),
                 cli.spaces_token.as_deref(),
                 cli.bare,
+                cli.default_tier.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()

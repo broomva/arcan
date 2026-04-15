@@ -60,7 +60,7 @@ lago-store.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 dirs.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

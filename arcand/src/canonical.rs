@@ -223,6 +223,8 @@ struct CanonicalState {
     frozen_prompt_prefixes: Arc<Mutex<HashMap<String, FrozenPromptPrefix>>>,
     /// Bare mode: use minimal system prompt for small-context models (≤4K tokens).
     bare: bool,
+    /// Default policy for sessions without identity tokens (OSS/local dev).
+    default_policy: aios_protocol::PolicySet,
     /// Autonomic context regulation state — shared across all sessions.
     /// Protected by Mutex for interior mutability in the axum handler.
     autonomic: Arc<Mutex<AutonomicDaemonState>>,
@@ -679,6 +681,7 @@ pub fn create_canonical_router(
         None,  // session_selector (BRO-217)
         None,  // free_tier_journal (BRO-218)
         false, // bare
+        None,  // default_tier
     )
 }
 
@@ -704,6 +707,7 @@ pub fn create_canonical_router_with_skills(
     session_selector: Option<Arc<arcan_lago::SessionJournalSelector>>,
     free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
     bare: bool,
+    default_tier: Option<&str>,
 ) -> Router {
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
@@ -750,6 +754,33 @@ pub fn create_canonical_router_with_skills(
         instructions
     };
 
+    let default_policy = match default_tier {
+        Some("pro") => {
+            tracing::info!("Default tier: Pro (full tool access, no auth required)");
+            aios_protocol::PolicySet::pro()
+        }
+        Some("enterprise") => {
+            tracing::info!("Default tier: Enterprise (full access)");
+            aios_protocol::PolicySet::enterprise()
+        }
+        Some("free") => {
+            tracing::info!("Default tier: Free");
+            aios_protocol::PolicySet::free()
+        }
+        Some("anonymous") => {
+            tracing::info!("Default tier: Anonymous (restricted)");
+            aios_protocol::PolicySet::anonymous()
+        }
+        Some(other) => {
+            tracing::warn!(
+                tier = other,
+                "Unknown default tier, using default PolicySet"
+            );
+            aios_protocol::PolicySet::default()
+        }
+        None => aios_protocol::PolicySet::default(),
+    };
+
     let state = CanonicalState {
         runtime,
         provider_handle,
@@ -767,6 +798,7 @@ pub fn create_canonical_router_with_skills(
         rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
         frozen_prompt_prefixes: Arc::new(Mutex::new(HashMap::new())),
         bare,
+        default_policy,
         autonomic: Arc::new(Mutex::new(AutonomicDaemonState::new(bare))),
         cached_git_context: Arc::new(Mutex::new(None)),
         consciousness_registry: if crate::consciousness::is_consciousness_enabled() {
@@ -1326,7 +1358,7 @@ async fn run_session(
                 serde_json::from_value::<aios_protocol::PolicySet>(m.policy.clone()).ok()
             })
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| state.default_policy.clone());
 
     // Session owner: use verified sub claim when available; else session manifest owner.
     // The sub is used as user_id for free-tier Lago namespace isolation (BRO-218).

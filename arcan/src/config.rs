@@ -105,6 +105,10 @@ pub struct ResolvedConfig {
     pub hook_registry: HookRegistry,
     /// Bare mode: minimal prompt and core tools only (for small-context models).
     pub bare: bool,
+    /// Default subscription tier for sessions without an identity token.
+    /// OSS/local dev: set to "pro" for full tool access without auth.
+    /// Env: ARCAN_DEFAULT_TIER. Values: anonymous, free, pro, enterprise.
+    pub default_tier: Option<String>,
 }
 
 impl ArcanConfig {
@@ -384,6 +388,7 @@ pub fn resolve(
     cli_spaces_backend: Option<&str>,
     cli_spaces_token: Option<&str>,
     cli_bare: bool,
+    cli_default_tier: Option<&str>,
 ) -> ResolvedConfig {
     // Provider: CLI > env > config > ""
     let provider = cli_provider
@@ -483,6 +488,7 @@ pub fn resolve(
         skills_write_registry,
         hook_registry,
         bare,
+        default_tier: cli_default_tier.map(String::from),
     }
 }
 
