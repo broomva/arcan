@@ -60,32 +60,28 @@ pub fn event_pump(
         loop {
             if event::poll(tick_rate).unwrap_or(false) {
                 match event::read() {
-                    Ok(Event::Key(key)) => {
-                        if term_tx.blocking_send(TuiEvent::Key(key)).is_err() {
-                            break;
-                        }
+                    Ok(Event::Key(key)) if term_tx.blocking_send(TuiEvent::Key(key)).is_err() => {
+                        break;
                     }
-                    Ok(Event::Resize(w, h)) => {
-                        if term_tx.blocking_send(TuiEvent::Resize(w, h)).is_err() {
-                            break;
-                        }
+                    Ok(Event::Resize(w, h))
+                        if term_tx.blocking_send(TuiEvent::Resize(w, h)).is_err() =>
+                    {
+                        break;
                     }
                     Ok(Event::Mouse(mouse)) => match mouse.kind {
-                        MouseEventKind::ScrollUp => {
+                        MouseEventKind::ScrollUp
                             if term_tx
                                 .blocking_send(TuiEvent::MouseScroll(ScrollDirection::Up))
-                                .is_err()
-                            {
-                                break;
-                            }
+                                .is_err() =>
+                        {
+                            break;
                         }
-                        MouseEventKind::ScrollDown => {
+                        MouseEventKind::ScrollDown
                             if term_tx
                                 .blocking_send(TuiEvent::MouseScroll(ScrollDirection::Down))
-                                .is_err()
-                            {
-                                break;
-                            }
+                                .is_err() =>
+                        {
+                            break;
                         }
                         _ => {}
                     },

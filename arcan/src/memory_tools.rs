@@ -924,7 +924,7 @@ impl Tool for MemoryRecentTool {
         }
 
         // Sort by modification time descending (most recent first)
-        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.sort_by_key(|f| std::cmp::Reverse(f.1));
 
         let results: Vec<serde_json::Value> = files
             .into_iter()

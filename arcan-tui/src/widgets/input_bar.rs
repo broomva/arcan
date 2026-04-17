@@ -76,27 +76,23 @@ impl InputBarState {
                 self.buffer.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
             }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    // Find the previous character boundary
-                    let prev = self.buffer[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    self.buffer.drain(prev..self.cursor);
-                    self.cursor = prev;
-                }
+            KeyCode::Backspace if self.cursor > 0 => {
+                // Find the previous character boundary
+                let prev = self.buffer[..self.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                self.buffer.drain(prev..self.cursor);
+                self.cursor = prev;
             }
-            KeyCode::Delete => {
-                if self.cursor < self.buffer.len() {
-                    let next = self.buffer[self.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.cursor + i)
-                        .unwrap_or(self.buffer.len());
-                    self.buffer.drain(self.cursor..next);
-                }
+            KeyCode::Delete if self.cursor < self.buffer.len() => {
+                let next = self.buffer[self.cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| self.cursor + i)
+                    .unwrap_or(self.buffer.len());
+                self.buffer.drain(self.cursor..next);
             }
             KeyCode::Left => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) {

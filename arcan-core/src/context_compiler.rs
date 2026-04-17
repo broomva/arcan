@@ -156,7 +156,7 @@ pub fn compile_context(blocks: &[ContextBlock], config: &ContextCompilerConfig) 
 
     // Sort by priority ascending — lowest priority gets dropped first.
     // Persona (priority 255 by convention) should never be dropped.
-    indexed.sort_by(|a, b| a.1.priority.cmp(&b.1.priority));
+    indexed.sort_by_key(|a| a.1.priority);
 
     let mut budget_remaining = config.total_budget;
     let mut keep_indices: Vec<usize> = Vec::new();

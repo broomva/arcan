@@ -1543,7 +1543,7 @@ pub fn run_shell(
                     );
                     println!("{}", "-".repeat(80));
                     let mut sorted = sessions;
-                    sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                    sorted.sort_by_key(|s| std::cmp::Reverse(s.created_at));
                     for sess in &sorted {
                         let ts_secs = sess.created_at / 1_000_000;
                         let dt = chrono::DateTime::from_timestamp(ts_secs as i64, 0)

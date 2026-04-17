@@ -112,7 +112,7 @@ pub fn build_knowledge_block_with_stats(
         scored.push((&note.name, title, score));
     }
 
-    scored.sort_by(|a, b| b.2.cmp(&a.2));
+    scored.sort_by_key(|t| std::cmp::Reverse(t.2));
 
     let mut content = format!("## Knowledge Graph ({note_count} entities)\n\n");
     let mut tokens_used = content.len() / 4;

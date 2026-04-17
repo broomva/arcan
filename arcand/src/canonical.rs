@@ -1075,7 +1075,7 @@ async fn list_sessions(State(state): State<CanonicalState>) -> Json<Vec<SessionS
             created_at: m.created_at,
         })
         .collect();
-    summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    summaries.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     Json(summaries)
 }
 
