@@ -10,12 +10,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aios_protocol::{BranchId, EventKind, OperatingMode, SessionId, SteeringMode};
+use aios_protocol::{
+    AgentStateVector, BranchId, EventKind, OperatingMode, SessionId, SteeringMode,
+};
 use aios_runtime::{KernelRuntime, TickInput};
 use arcan_core::queue::{MessageQueue, QueueConfig, QueuedMessage, SteeringAction};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{Instrument, debug, error, info, warn};
+
+use crate::rcs_observer::{RcsObservationSnapshot, RcsObserver, SharedRcsObserver};
 
 // ─── Spaces client port ────────────────────────────────────────────────────
 
@@ -125,7 +129,15 @@ pub enum ConsciousnessEvent {
         error: String,
     },
     /// An agent cycle (spawned task) completed.
-    CycleCompleted { run_id: String },
+    ///
+    /// `final_state` carries the last `AgentStateVector` observed in the
+    /// cycle (or `None` if the cycle failed before any tick succeeded).
+    /// It is consumed by the RCS Level 1 observer to keep
+    /// `life.control_margin_l1` fresh — see `rcs_observer::RcsObserver`.
+    CycleCompleted {
+        run_id: String,
+        final_state: Option<Box<AgentStateVector>>,
+    },
 }
 
 /// Snapshot of the actor's status for the GET /queue endpoint.
@@ -258,20 +270,54 @@ pub struct SessionConsciousness {
     /// When `None`, the spaces poll timer logs a debug stub.
     #[allow(dead_code)]
     spaces_client: Option<Arc<dyn SpacesClient>>,
+    /// Shared RCS Level 1 observer: owns this actor's `HomeostaticState`
+    /// and the `MarginEstimator` that feeds `life.control_margin_l1`.
+    ///
+    /// Updated on every `CycleCompleted`. Exposed via `ConsciousnessHandle`
+    /// so callers (tests, diagnostics endpoints) can read the live margin
+    /// without a message round-trip.
+    rcs_observer: SharedRcsObserver,
 }
 
 impl SessionConsciousness {
     /// Spawn a new consciousness actor for the given session.
     ///
-    /// Returns the `JoinHandle` and a `Sender` for pushing events.
+    /// Returns the `JoinHandle` and a `Sender` for pushing events. The
+    /// actor's RCS Level 1 observer is constructed internally and is not
+    /// returned from this method (legacy API). Callers that need it should
+    /// use [`Self::spawn_with_rcs`] or pull it from the
+    /// [`ConsciousnessRegistry`] via `ConsciousnessHandle::rcs_observer()`.
     pub fn spawn(
         session_id: SessionId,
         branch: BranchId,
         runtime: Arc<KernelRuntime>,
         config: ConsciousnessConfig,
     ) -> (JoinHandle<()>, mpsc::Sender<ConsciousnessEvent>) {
+        let (handle, tx, _observer) = Self::spawn_with_rcs(session_id, branch, runtime, config);
+        (handle, tx)
+    }
+
+    /// Spawn a new consciousness actor and return its RCS Level 1 observer.
+    ///
+    /// The observer is the authoritative source of this actor's
+    /// `HomeostaticState` — the same state that is updated inside the actor
+    /// after every agent cycle (see the `CycleCompleted` branch of
+    /// [`Self::run`]). Tests and diagnostic tooling use this to validate the
+    /// `lambda_1 > 0` claim against the daemon's real state, without
+    /// reconstructing a parallel state vector.
+    pub fn spawn_with_rcs(
+        session_id: SessionId,
+        branch: BranchId,
+        runtime: Arc<KernelRuntime>,
+        config: ConsciousnessConfig,
+    ) -> (
+        JoinHandle<()>,
+        mpsc::Sender<ConsciousnessEvent>,
+        SharedRcsObserver,
+    ) {
         let (tx, rx) = mpsc::channel(config.channel_buffer);
         let span = tracing::info_span!("consciousness", session = %session_id);
+        let rcs_observer = RcsObserver::shared(session_id.as_str());
 
         // Build knowledge context block if wiki_dir is configured.
         let runtime_for_knowledge = runtime.clone();
@@ -331,9 +377,10 @@ impl SessionConsciousness {
             runtime,
             config,
             spaces_client: None,
+            rcs_observer: rcs_observer.clone(),
         };
         let handle = tokio::spawn(actor.run().instrument(span));
-        (handle, tx)
+        (handle, tx, rcs_observer)
     }
 
     /// Main event loop — runs until Shutdown or channel closes.
@@ -415,8 +462,20 @@ impl SessionConsciousness {
                 ConsciousnessEvent::AutonomicSignal { ruling } => {
                     self.handle_autonomic_signal(&ruling);
                 }
-                ConsciousnessEvent::CycleCompleted { run_id } => {
+                ConsciousnessEvent::CycleCompleted {
+                    run_id,
+                    final_state,
+                } => {
                     debug!(run_id, "agent cycle completed");
+                    // Fold the final AgentStateVector into the RCS L1 observer
+                    // before touching any actor bookkeeping — this is the
+                    // daemon-equivalent of
+                    // `AutonomicDaemonState::evaluate_after_run` in
+                    // canonical.rs and closes the F2 instrumentation loop by
+                    // emitting `life.control_margin_l1` via vigil.
+                    if let Some(state) = final_state.as_deref() {
+                        self.record_cycle_in_rcs_observer(state);
+                    }
                     self.state.mode = ConsciousnessMode::Idle;
                     self.state.last_activity = Instant::now();
                     self.state.queue.set_active_run(false).ok();
@@ -596,7 +655,7 @@ impl SessionConsciousness {
 
         tokio::spawn(
             async move {
-                Self::run_agent_cycle_inner(
+                let final_state = Self::run_agent_cycle_inner(
                     &run_id,
                     objective,
                     branch,
@@ -608,10 +667,14 @@ impl SessionConsciousness {
                 )
                 .await;
 
-                // Notify the actor that the cycle is done.
+                // Notify the actor that the cycle is done. `final_state` is
+                // the last `AgentStateVector` observed in the cycle — it
+                // feeds the RCS Level 1 observer so
+                // `life.control_margin_l1` stays current.
                 if let Err(err) = self_tx
                     .send(ConsciousnessEvent::CycleCompleted {
                         run_id: run_id.clone(),
+                        final_state: final_state.map(Box::new),
                     })
                     .await
                 {
@@ -626,6 +689,10 @@ impl SessionConsciousness {
     ///
     /// This is a static-like method that takes all state by value/ref so it
     /// can run independently of the actor's `&mut self`.
+    ///
+    /// Returns the final observed [`AgentStateVector`] on success (i.e. when
+    /// at least one tick produced a result). Returns `None` if every tick
+    /// errored before yielding a result.
     async fn run_agent_cycle_inner(
         run_id: &str,
         objective: String,
@@ -635,7 +702,7 @@ impl SessionConsciousness {
         session_id: SessionId,
         queue: MessageQueue,
         max_iterations: u32,
-    ) {
+    ) -> Option<AgentStateVector> {
         debug!(run_id, objective = %objective, "starting agent cycle");
 
         let agent_span = life_vigil::spans::agent_span(session_id.as_str(), "arcan");
@@ -772,6 +839,10 @@ impl SessionConsciousness {
                 error!(run_id, %err, "agent cycle failed");
             }
         }
+
+        // Surface the final state vector to the actor so the RCS L1 observer
+        // can fold it into `life.control_margin_l1`.
+        tick_result.ok().map(|tick| tick.state)
     }
 
     /// Process queued messages after a run completes.
@@ -934,6 +1005,32 @@ impl SessionConsciousness {
         }
     }
 
+    /// Fold the final tick state of a completed cycle into the RCS observer.
+    ///
+    /// This is the in-daemon analogue of
+    /// `AutonomicDaemonState::evaluate_after_run` (see canonical.rs) but for
+    /// the `SessionConsciousness` path that bypasses the HTTP layer. Updates
+    /// the session's `HomeostaticState`, runs the L1 margin estimator, and
+    /// emits `life.control_margin_l1` via vigil.
+    ///
+    /// Lock is held only for the duration of the update; never across
+    /// `.await` boundaries.
+    fn record_cycle_in_rcs_observer(&self, state: &AgentStateVector) {
+        let mut observer = self
+            .rcs_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let budget = observer.record_cycle(state);
+        debug!(
+            session = %self.state.session_id,
+            l1_margin = budget.margin(),
+            rho = budget.rho,
+            eta = budget.eta,
+            tau_bar = budget.tau_bar,
+            "RCS L1 observer updated"
+        );
+    }
+
     /// Handle an autonomic context-pressure signal.
     ///
     /// If the ruling indicates Compress, Emergency, or knowledge regulation,
@@ -995,14 +1092,45 @@ pub struct ConsciousnessHandle {
     /// Sender for pushing events to the actor.
     pub tx: mpsc::Sender<ConsciousnessEvent>,
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Shared RCS Level 1 observer — same handle the actor writes into.
+    ///
+    /// Cloning this `Arc` lets callers (tests, diagnostic endpoints) read
+    /// the live `HomeostaticState` and the most recently computed stability
+    /// budget without a message round-trip.
+    rcs_observer: SharedRcsObserver,
 }
 
 impl ConsciousnessHandle {
-    fn new(tx: mpsc::Sender<ConsciousnessEvent>, join: JoinHandle<()>) -> Self {
+    fn new(
+        tx: mpsc::Sender<ConsciousnessEvent>,
+        join: JoinHandle<()>,
+        rcs_observer: SharedRcsObserver,
+    ) -> Self {
         Self {
             tx,
             join: Arc::new(Mutex::new(Some(join))),
+            rcs_observer,
         }
+    }
+
+    /// Access the shared RCS Level 1 observer.
+    ///
+    /// Returns the same `Arc<Mutex<RcsObserver>>` that the actor writes into
+    /// on `CycleCompleted`. Callers can clone the `Arc`, lock it, and read
+    /// the live `HomeostaticState` or call [`RcsObserver::snapshot`]. See
+    /// `crates/arcan/arcand/tests/rcs_validation.rs` for an integration
+    /// example that asserts `lambda_1 > 0` end-to-end.
+    pub fn rcs_observer(&self) -> SharedRcsObserver {
+        self.rcs_observer.clone()
+    }
+
+    /// Convenience: take a clonable snapshot of the RCS observer.
+    pub fn rcs_snapshot(&self) -> RcsObservationSnapshot {
+        let observer = self
+            .rcs_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        observer.snapshot()
     }
 
     /// Check if the actor task is still running.
@@ -1088,14 +1216,16 @@ impl ConsciousnessRegistry {
             sessions.remove(session_id);
         }
 
-        // Spawn new actor.
-        let (join, tx) = SessionConsciousness::spawn(
+        // Spawn new actor. Use `spawn_with_rcs` so the handle carries the
+        // L1 observer — callers (tests, diagnostics) can read the live
+        // homeostatic state and margin via `handle.rcs_observer()`.
+        let (join, tx, rcs_observer) = SessionConsciousness::spawn_with_rcs(
             SessionId::from_string(session_id.to_string()),
             branch,
             runtime,
             self.config.clone(),
         );
-        let handle = ConsciousnessHandle::new(tx, join);
+        let handle = ConsciousnessHandle::new(tx, join, rcs_observer);
         sessions.insert(session_id.to_string(), handle.clone());
 
         info!(session_id, "consciousness actor created");

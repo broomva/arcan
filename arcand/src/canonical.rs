@@ -243,6 +243,11 @@ struct CanonicalState {
 /// Wraps the `HomeostaticState` and `ContextPressureRule` from the autonomic
 /// crates. Evaluated after each agent run to determine if context compaction
 /// is needed.
+///
+/// Also drives the RCS Level 1 stability margin estimator so the HTTP
+/// daemon path emits `life.control_margin_l1` on every cycle (same
+/// instrumentation the `SessionConsciousness` path emits via
+/// `crate::rcs_observer::RcsObserver`).
 struct AutonomicDaemonState {
     homeostatic: autonomic_core::gating::HomeostaticState,
     rule: autonomic_controller::ContextPressureRule,
@@ -250,6 +255,10 @@ struct AutonomicDaemonState {
     last_ruling: Option<autonomic_core::context::ContextCompressionAdvice>,
     /// Context window size from the current provider.
     context_window: usize,
+    /// RCS L1 margin estimator (folds every `evaluate_after_run` call).
+    rcs_estimator: autonomic_core::rcs_budget::MarginEstimator,
+    /// RCS metrics handle — emits `life.control_margin_l1`.
+    rcs_metrics: life_vigil::GenAiMetrics,
 }
 
 #[derive(Debug, Clone)]
@@ -2782,11 +2791,15 @@ impl AutonomicDaemonState {
         let context_window = if bare { 4_096 } else { DEFAULT_CONTEXT_WINDOW };
         let mut homeostatic = autonomic_core::gating::HomeostaticState::for_agent("daemon");
         homeostatic.cognitive.tokens_remaining = context_window as u64;
+        let rcs_estimator =
+            autonomic_core::rcs_budget::MarginEstimator::for_l1(homeostatic.clone());
         Self {
             homeostatic,
             rule: autonomic_controller::ContextPressureRule::default(),
             last_ruling: None,
             context_window,
+            rcs_estimator,
+            rcs_metrics: life_vigil::GenAiMetrics::new("arcan"),
         }
     }
 
@@ -2804,6 +2817,23 @@ impl AutonomicDaemonState {
 
         let advice = self.rule.evaluate_compression(&self.homeostatic);
         self.last_ruling = Some(advice);
+
+        // Advance the RCS L1 estimator off the same HomeostaticState update
+        // the context-pressure rule just consumed. Keeping a single update
+        // path guarantees the `life.control_margin_l1` gauge tracks the
+        // state the regulator actually sees.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.homeostatic.last_event_ms = now_ms;
+        self.homeostatic.last_event_seq = self.homeostatic.last_event_seq.saturating_add(1);
+        self.homeostatic.cognitive.turns_completed =
+            self.homeostatic.cognitive.turns_completed.saturating_add(1);
+        self.rcs_estimator.observe(&self.homeostatic);
+        let budget = self.rcs_estimator.estimate();
+        self.rcs_metrics
+            .record_control_margin("L1", budget.margin());
     }
 
     /// Update the context window when the provider changes.

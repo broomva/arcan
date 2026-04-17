@@ -1,22 +1,37 @@
-//! RCS (Recursive Controlled Systems) runtime validation.
+//! RCS (Recursive Controlled Systems) runtime validation — end-to-end.
 //!
-//! Part of the F2 instrumentation deliverable — asserts the paper's Level 1
-//! stability claim `lambda_1 > 0` against a running arcand session and against
-//! homeostatic state evolved over a burst of synthetic ticks.
+//! This test exercises the F2 instrumentation loop against a **real running
+//! arcand consciousness actor**:
 //!
-//! The test spawns a `SessionConsciousness` with a mock provider (mirroring
-//! `consciousness_test.rs`), pushes a user message through the agent loop to
-//! prove the runtime is live, and in parallel evolves a `HomeostaticState`
-//! forward over N ticks. The estimator folds the observations into a
-//! `StabilityBudget` which must (a) be individually stable and (b) stay
-//! within tolerance of the canonical L1 margin loaded from
-//! `research/rcs/latex/parameters.toml`.
+//! ```text
+//!   agent executes
+//!     → tick_on_branch emits events + AgentStateVector
+//!       → CycleCompleted(final_state) sent to actor
+//!         → actor updates HomeostaticState INSIDE RcsObserver
+//!           → MarginEstimator::for_l1 folds the state
+//!             → StabilityBudget computed
+//!               → life.control_margin_l1 gauge emitted via vigil
+//!                 → test snapshots the observer and asserts lambda_1 > 0
+//! ```
 //!
-//! See `research/rcs/latex/rcs-definitions.tex` Theorem 1 for the budget.
+//! This replaces the earlier reconstruction-style test that synthesised a
+//! parallel `HomeostaticState` alongside the actor. Here we assert against
+//! the **same** state the daemon's control loop is using — no doubles, no
+//! parallel evolution.
+//!
+//! See:
+//! - `research/rcs/latex/rcs-definitions.tex` Theorem 1 — the budget
+//!   formula and individual-stability claim.
+//! - `crates/autonomic/autonomic-core/src/rcs_budget.rs` — the
+//!   canonical parameters + `MarginEstimator` implementation.
+//! - `crates/arcan/arcand/src/rcs_observer.rs` — the daemon-side
+//!   observer that owns the authoritative `HomeostaticState`.
+//! - `crates/vigil/life-vigil/src/metrics.rs` — the
+//!   `life.control_margin_l1` gauge that receives every emission.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
@@ -29,11 +44,11 @@ use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
 use aios_tools::{ToolDispatcher, ToolRegistry};
 use arcand::consciousness::{
-    ConsciousnessAck, ConsciousnessConfig, ConsciousnessEvent, RunContext, SessionConsciousness,
-    UserMessageEvent,
+    ConsciousnessAck, ConsciousnessConfig, ConsciousnessEvent, ConsciousnessRegistry, RunContext,
+    SessionConsciousness, UserMessageEvent,
 };
+use arcand::rcs_observer::SharedRcsObserver;
 use async_trait::async_trait;
-use autonomic_core::gating::HomeostaticState;
 use autonomic_core::rcs_budget::{MarginEstimator, StabilityBudget};
 
 use aios_protocol::{BranchId, SessionId};
@@ -96,35 +111,38 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
     ))
 }
 
-/// Number of synthetic autonomic ticks the test drives through the estimator.
-/// Sized so the estimator's window covers at least one L0/L1 dwell period
-/// without requiring a real wall-clock wait.
-const SIMULATED_TICKS: u32 = 16;
-
-/// Simulate a single autonomic tick on `state`.
+/// Wait (up to `deadline`) for the RCS observer to fold at least one cycle.
 ///
-/// Each tick:
-/// - advances `last_event_ms` by 100ms (L1 time scale is seconds; 100ms is a
-///   realistic inter-event gap for a chatty inner loop),
-/// - increments turn/observation counters,
-/// - nudges context pressure toward a moderate steady-state (0.4) rather than
-///   leaving it at zero — this exercises the `rho` proxy in the estimator.
-fn tick(state: &mut HomeostaticState, i: u32) {
-    state.last_event_ms = (i as u64 + 1) * 100;
-    state.last_event_seq = (i as u64) + 1;
-    state.cognitive.turns_completed = i + 1;
-    state.cognitive.observation_count = i + 1;
-    // Ramp context pressure from 0 to ~0.4 over the window.
-    let target = 0.4_f32;
-    state.cognitive.context_pressure = (state.cognitive.context_pressure
-        + (target - state.cognitive.context_pressure) * 0.25)
-        .clamp(0.0, 1.0);
-    state.operational.total_successes = state.operational.total_successes.saturating_add(1);
+/// Polls `observer.event_count()` with a small sleep so the actor has time to
+/// deliver `CycleCompleted` through its mpsc channel and update the
+/// `HomeostaticState`. Returns when the count is >= `target` or panics on
+/// timeout. Keeps the lock held only for single reads — never across sleeps.
+async fn wait_for_cycles(observer: &SharedRcsObserver, target: u64, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let count = {
+            let guard = observer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.event_count()
+        };
+        if count >= target {
+            return;
+        }
+        if Instant::now() > deadline {
+            panic!("timed out waiting for {target} cycle(s) in RCS observer (seen {count})",);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]
-async fn rcs_l1_margin_is_positive_under_simulated_load() {
-    // ── 1. Spawn a minimal arcand agent with a mock provider ──────────────
+async fn rcs_l1_margin_is_positive_from_real_daemon_state() {
+    // ── 1. Spawn the full consciousness actor with an RCS observer ────────
+    //
+    // `spawn_with_rcs` is the end-to-end path: the same constructor the
+    // production registry uses (see ConsciousnessRegistry::get_or_create),
+    // just with the observer handle returned so the test can read it.
     let runtime = build_runtime(unique_root("rcs-validation-l1"));
     let session_id = SessionId::from_string("test-rcs-l1".to_string());
 
@@ -142,14 +160,24 @@ async fn rcs_l1_margin_is_positive_under_simulated_load() {
         max_agent_iterations: 1,
         ..Default::default()
     };
-    let (handle, tx) = SessionConsciousness::spawn(session_id, BranchId::main(), runtime, config);
+    let (join, tx, observer) =
+        SessionConsciousness::spawn_with_rcs(session_id, BranchId::main(), runtime, config);
 
-    // Drive at least one real cycle through the agent to prove the runtime
-    // is exercised. The RCS state we measure is computed below against a
-    // HomeostaticState evolved in parallel — the daemon does not surface its
-    // internal HomeostaticState through the consciousness actor (it lives in
-    // arcand's HTTP server layer), so we simulate the tick series that
-    // autonomic would produce under equivalent load.
+    // Baseline sanity: no cycles recorded yet, last_budget must be None.
+    {
+        let guard = observer.lock().unwrap();
+        assert_eq!(
+            guard.event_count(),
+            0,
+            "observer must start with zero folded cycles"
+        );
+        assert!(
+            guard.last_budget().is_none(),
+            "observer must not have a budget before the first cycle"
+        );
+    }
+
+    // ── 2. Drive a real agent cycle through the consciousness loop ────────
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
     tx.send(ConsciousnessEvent::UserMessage(Box::new(
         UserMessageEvent {
@@ -162,6 +190,7 @@ async fn rcs_l1_margin_is_positive_under_simulated_load() {
     )))
     .await
     .unwrap();
+
     let ack = tokio::time::timeout(Duration::from_secs(10), ack_rx)
         .await
         .expect("ack within 10s")
@@ -171,66 +200,235 @@ async fn rcs_l1_margin_is_positive_under_simulated_load() {
         "agent must accept the test message"
     );
 
-    // ── 2. Run N simulated ticks through a parallel HomeostaticState ──────
-    let mut state = HomeostaticState::for_agent("test-rcs-l1");
-    let mut estimator = MarginEstimator::for_l1(state.clone());
+    // ── 3. Wait for the cycle to flow through CycleCompleted and update ───
+    //
+    // This is the moment that matters: the actor has received
+    // `CycleCompleted { final_state }` and called `RcsObserver::record_cycle`,
+    // which means (a) the HomeostaticState inside the observer reflects the
+    // run, (b) the MarginEstimator has folded it, and (c) the
+    // `life.control_margin_l1` gauge has been emitted. No separate state
+    // evolution, no parallel reconstruction.
+    wait_for_cycles(&observer, 1, Duration::from_secs(15)).await;
 
-    for i in 0..SIMULATED_TICKS {
-        tick(&mut state, i);
-        estimator.observe(&state);
-    }
+    // ── 4. Snapshot the REAL observer state and assert lambda_1 > 0 ───────
+    let snapshot = {
+        let guard = observer.lock().unwrap();
+        guard.snapshot()
+    };
 
     assert_eq!(
-        estimator.event_count(),
-        SIMULATED_TICKS as u64,
-        "estimator must fold every tick"
+        snapshot.event_count, 1,
+        "exactly one cycle must have been folded into the estimator"
     );
     assert!(
-        estimator.window_ms() > 0,
-        "estimator must observe a non-empty window"
+        snapshot.last_budget.is_some(),
+        "snapshot must carry a budget after the first cycle"
     );
 
-    // ── 3. Estimate stability budget and assert the paper's claim ─────────
-    let budget = estimator.estimate();
+    // The observer already computed a budget when it recorded the cycle.
+    // Pull it out — this is the value that was pushed to vigil.
+    let daemon_budget = snapshot.last_budget.expect("budget present");
+    let daemon_margin = daemon_budget.margin();
 
-    // Primary claim: Level 1 is individually stable.
-    let margin = budget.margin();
     assert!(
-        budget.is_stable(),
-        "L1 runtime estimate must be stable: margin = {margin:.6}"
+        daemon_budget.is_stable(),
+        "L1 margin must be positive from the daemon's real state: \
+         margin = {daemon_margin:.6}"
     );
 
-    // ── 4. Compare to canonical L1 from parameters.toml ───────────────────
+    // ── 5. Independently re-estimate from the observer's homeostatic ──────
+    //
+    // This sanity-checks that the value emitted by the observer matches what
+    // a fresh `MarginEstimator::for_l1` would compute from the same state.
+    // It's not a reconstruction of the daemon's state — it's validation that
+    // the daemon's emission is reproducible from the same inputs.
+    let mut verifier = MarginEstimator::for_l1(snapshot.homeostatic.clone());
+    verifier.observe(&snapshot.homeostatic);
+    let recomputed = verifier.estimate();
+    assert!(
+        (recomputed.margin() - daemon_margin).abs() < 1e-9,
+        "recomputed margin {} must match daemon-emitted margin {}",
+        recomputed.margin(),
+        daemon_margin
+    );
+
+    // ── 6. Compare to canonical L1 from parameters.toml ───────────────────
     let canonical_l1 =
         StabilityBudget::from_canonical("L1").expect("L1 must exist in canonical params");
     let canonical_margin = canonical_l1.margin();
 
-    // Tolerance rationale: the estimator perturbs rho, eta, and tau_bar using
-    // proxies derived from observable HomeostaticState deltas. Under the
-    // ramp-to-0.4 context-pressure scenario, rho grows by roughly
-    // (0.5 + 0.4) = 0.9 of its prior, which pulls the margin down by at most
-    // L_theta * rho_delta = 0.2 * (0.5 * 0.1) = 0.01. We allow 0.1 of slack on
-    // top to tolerate future refinements of the proxy model.
+    // Tolerance rationale: the observer perturbs rho, eta, and tau_bar based
+    // on proxies derived from observable HomeostaticState deltas (see
+    // `MarginEstimator::estimate`). Under a single real cycle with the mock
+    // provider, context_pressure/tool_density stay low so the estimator
+    // should hug canonical closely. We allow 0.1 of slack to tolerate
+    // future refinements of the proxy model.
     const TOLERANCE: f64 = 0.1;
-    let drift = (margin - canonical_margin).abs();
+    let drift = (daemon_margin - canonical_margin).abs();
     assert!(
         drift < TOLERANCE,
-        "runtime L1 margin {margin:.6} diverges from canonical {canonical_margin:.6} \
-         by {drift:.6} (> tolerance {TOLERANCE})"
+        "runtime L1 margin {daemon_margin:.6} diverges from canonical \
+         {canonical_margin:.6} by {drift:.6} (> tolerance {TOLERANCE})"
     );
 
-    // Estimator must not report a margin LARGER than the nominal gamma — that
-    // would mean a runtime signal is claiming the system is safer than the
-    // paper's theorem permits.
+    // Nominal gamma is the upper bound: a runtime estimate claiming the
+    // system is *safer* than the theorem permits would indicate a bug in
+    // the estimator's proxy model.
     assert!(
-        margin <= canonical_l1.gamma,
-        "runtime margin {margin} must not exceed nominal gamma {}",
+        daemon_margin <= canonical_l1.gamma,
+        "runtime margin {daemon_margin} must not exceed nominal gamma {}",
         canonical_l1.gamma
     );
 
-    // ── 5. Cleanup ────────────────────────────────────────────────────────
+    // ── 7. Cleanup ────────────────────────────────────────────────────────
     tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+}
+
+#[tokio::test]
+async fn rcs_l1_observer_survives_multiple_cycles() {
+    // Stronger variant: drive multiple messages sequentially and assert the
+    // observer's event count tracks every cycle AND the margin stays stable
+    // through the series.
+    let runtime = build_runtime(unique_root("rcs-validation-l1-multi"));
+    let session_id = SessionId::from_string("test-rcs-l1-multi".to_string());
+
+    runtime
+        .create_session_with_id(
+            session_id.clone(),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let config = ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    };
+    let (join, tx, observer) =
+        SessionConsciousness::spawn_with_rcs(session_id, BranchId::main(), runtime, config);
+
+    const MESSAGES: u64 = 3;
+    for i in 0..MESSAGES {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        tx.send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: format!("rcs validation msg {i}"),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+
+        // Wait for ack so messages don't pile up; then wait for the observer
+        // to register this cycle before sending the next.
+        let _ = tokio::time::timeout(Duration::from_secs(10), ack_rx)
+            .await
+            .expect("ack within 10s");
+        wait_for_cycles(&observer, i + 1, Duration::from_secs(15)).await;
+    }
+
+    let snapshot = {
+        let guard = observer.lock().unwrap();
+        guard.snapshot()
+    };
+    assert_eq!(
+        snapshot.event_count, MESSAGES,
+        "observer must have folded every cycle"
+    );
+
+    // All cycles executed; margin must have stayed stable throughout.
+    let last = snapshot.last_budget.expect("budget present");
+    assert!(
+        last.is_stable(),
+        "L1 margin must remain stable after {MESSAGES} cycles: margin = {}",
+        last.margin()
+    );
+
+    // Agent id must be the session id — we are reading the SAME state the
+    // daemon is using for regulation decisions.
+    assert_eq!(snapshot.homeostatic.agent_id, "test-rcs-l1-multi");
+
+    // Cognitive pillar: turns_completed / observation_count must advance
+    // per-cycle, proving the observer is driven by real ticks, not defaults.
+    assert_eq!(
+        snapshot.homeostatic.cognitive.turns_completed as u64, MESSAGES,
+        "turns_completed must equal the number of cycles"
+    );
+    assert_eq!(
+        snapshot.homeostatic.cognitive.observation_count as u64, MESSAGES,
+        "observation_count must equal the number of cycles"
+    );
+
+    tx.send(ConsciousnessEvent::Shutdown).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+}
+
+#[tokio::test]
+async fn rcs_handle_exposes_live_observer_through_registry() {
+    // Exercise the full production path: ConsciousnessRegistry::get_or_create
+    // → ConsciousnessHandle → handle.rcs_observer() / rcs_snapshot().
+    // This is how a diagnostics endpoint (e.g. a future GET /rcs route)
+    // would publish the margin.
+    let runtime = build_runtime(unique_root("rcs-validation-handle"));
+    let session_id_str = "test-rcs-handle";
+
+    runtime
+        .create_session_with_id(
+            SessionId::from_string(session_id_str.to_string()),
+            "test",
+            PolicySet::default(),
+            aios_protocol::ModelRouting::default(),
+        )
+        .await
+        .unwrap();
+
+    let registry = ConsciousnessRegistry::new(ConsciousnessConfig {
+        max_agent_iterations: 1,
+        ..Default::default()
+    });
+    let handle = registry.get_or_create(session_id_str, BranchId::main(), runtime);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Fresh handle: observer exists but has folded nothing yet.
+    let initial = handle.rcs_snapshot();
+    assert_eq!(initial.event_count, 0);
+    assert!(initial.last_budget.is_none());
+
+    // Drive one real cycle.
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    handle
+        .send(ConsciousnessEvent::UserMessage(Box::new(
+            UserMessageEvent {
+                objective: "handle-access test".to_string(),
+                branch: BranchId::main(),
+                steering: SteeringMode::Collect,
+                ack: Some(ack_tx),
+                run_context: RunContext::default(),
+            },
+        )))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(10), ack_rx)
+        .await
+        .expect("ack within 10s");
+
+    // The registry-held observer is the same Arc the actor writes into,
+    // so `wait_for_cycles` on the handle's observer works identically.
+    let observer = handle.rcs_observer();
+    wait_for_cycles(&observer, 1, Duration::from_secs(15)).await;
+
+    let snap = handle.rcs_snapshot();
+    assert_eq!(snap.event_count, 1);
+    let margin = snap.last_margin().expect("budget present after cycle");
+    assert!(margin > 0.0, "L1 margin must be positive: {margin}");
+
+    registry.shutdown_all().await;
 }
 
 #[tokio::test]
