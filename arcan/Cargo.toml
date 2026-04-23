@@ -31,8 +31,8 @@ arcan-opsis = { path = "../arcan-opsis", version = "0.3.0", optional = true }
 opsis-core = { path = "../../opsis/opsis-core", version = "0.3.0", optional = true }
 arcan-spaces = { path = "../arcan-spaces", version = "0.3.0", optional = true }
 arcan-prosopon = { path = "../arcan-prosopon", version = "0.1.0", optional = true }
-prosopon-daemon = { path = "../../../../prosopon/crates/prosopon-daemon", version = "0.2.0", optional = true }
-prosopon-compositor-glass = { path = "../../../../prosopon/crates/prosopon-compositor-glass", version = "0.2.0", optional = true }
+prosopon-daemon = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2", optional = true }
+prosopon-compositor-glass = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2", optional = true }
 arcan-commands = { path = "../arcan-commands", version = "0.3.0" }
 arcan-praxis = { path = "../arcan-praxis", version = "0.3.0" }
 arcan-core = { path = "../arcan-core", version = "0.3.0" }

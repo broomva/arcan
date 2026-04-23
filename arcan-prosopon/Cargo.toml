@@ -8,10 +8,14 @@ description = "Pneuma<L0ToExternal> for Arcan — emits ProsoponEvents from the 
 repository = "https://github.com/broomva/life"
 
 [dependencies]
-prosopon-core     = { path = "../../../../prosopon/crates/prosopon-core" }
-prosopon-protocol = { path = "../../../../prosopon/crates/prosopon-protocol" }
-prosopon-sdk      = { path = "../../../../prosopon/crates/prosopon-sdk" }
-prosopon-daemon   = { path = "../../../../prosopon/crates/prosopon-daemon" }
+# Prosopon crates pinned to the v0.2.0-alpha.2 git tag so CI can resolve them
+# without needing the sibling `core/prosopon/` workspace to be checked out.
+# Local devs can override with a `[patch."https://github.com/broomva/prosopon.git"]`
+# block in their own .cargo/config.toml pointing at a local path clone.
+prosopon-core     = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-protocol = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-sdk      = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-daemon   = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
 
 aios-protocol = { path = "../../aios/aios-protocol" }
 
@@ -24,4 +28,4 @@ chrono    = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-prosopon-runtime = { path = "../../../../prosopon/crates/prosopon-runtime" }
+prosopon-runtime = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
