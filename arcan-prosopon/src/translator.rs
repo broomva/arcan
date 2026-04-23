@@ -10,7 +10,7 @@ use crate::state::TranslationState;
 /// Total over every currently-known variant and includes a `_` wildcard
 /// for `#[non_exhaustive]` forward compatibility.
 pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<ProsoponEvent> {
-    use prosopon_core::{Intent, Node, Scene, SignalValue, Topic};
+    use prosopon_core::{ChildrenPatch, Intent, Node, NodePatch, Scene, SignalValue, Topic};
 
     match kind {
         EventKind::SessionCreated { name, .. } => {
@@ -143,15 +143,13 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
 
         EventKind::ToolCallCompleted { call_id, result, status, .. } => {
             use aios_protocol::SpanStatus;
-            use prosopon_core::{ChildrenPatch, NodePatch};
+            let Some(c) = call_id.as_ref() else {
+                return Vec::new(); // no call_id → can't match a prior ToolCall; drop
+            };
             let success = matches!(status, SpanStatus::Ok);
             let result_node = Node::new(Intent::ToolResult { success, payload: result.clone() });
-            let id = match call_id.as_ref() {
-                Some(c) => tool_node_id(c),
-                None => state.scene_root.clone(),
-            };
             vec![ProsoponEvent::NodeUpdated {
-                id,
+                id: tool_node_id(c),
                 patch: NodePatch {
                     children: Some(ChildrenPatch::Append { children: vec![result_node] }),
                     ..NodePatch::default()
@@ -160,7 +158,6 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
         }
 
         EventKind::ToolCallFailed { call_id, error, .. } => {
-            use prosopon_core::{ChildrenPatch, NodePatch};
             let id = tool_node_id(call_id);
             let result_node = Node::new(Intent::ToolResult {
                 success: false,
@@ -427,6 +424,20 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn tool_call_completed_with_no_call_id_emits_nothing() {
+        use aios_protocol::SpanStatus;
+        let kind = EventKind::ToolCallCompleted {
+            tool_run_id: aios_protocol::ToolRunId::default(),
+            call_id: None,
+            tool_name: "shell".into(),
+            result: serde_json::json!("orphan"),
+            duration_ms: 1,
+            status: SpanStatus::Ok,
+        };
+        assert!(translate(&mut st(), &kind).is_empty());
     }
 
     #[test]
