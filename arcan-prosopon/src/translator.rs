@@ -131,8 +131,56 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             }]
         }
 
+        EventKind::ToolCallRequested { call_id, tool_name, arguments, .. } => {
+            let node = Node::new(Intent::ToolCall {
+                name: tool_name.clone(),
+                args: arguments.clone(),
+                stream: None,
+            })
+            .with_id(tool_node_id(call_id));
+            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+        }
+
+        EventKind::ToolCallCompleted { call_id, result, status, .. } => {
+            use aios_protocol::SpanStatus;
+            use prosopon_core::{ChildrenPatch, NodePatch};
+            let success = matches!(status, SpanStatus::Ok);
+            let result_node = Node::new(Intent::ToolResult { success, payload: result.clone() });
+            let id = match call_id.as_ref() {
+                Some(c) => tool_node_id(c),
+                None => state.scene_root.clone(),
+            };
+            vec![ProsoponEvent::NodeUpdated {
+                id,
+                patch: NodePatch {
+                    children: Some(ChildrenPatch::Append { children: vec![result_node] }),
+                    ..NodePatch::default()
+                },
+            }]
+        }
+
+        EventKind::ToolCallFailed { call_id, error, .. } => {
+            use prosopon_core::{ChildrenPatch, NodePatch};
+            let id = tool_node_id(call_id);
+            let result_node = Node::new(Intent::ToolResult {
+                success: false,
+                payload: serde_json::json!({ "error": error }),
+            });
+            vec![ProsoponEvent::NodeUpdated {
+                id,
+                patch: NodePatch {
+                    children: Some(ChildrenPatch::Append { children: vec![result_node] }),
+                    ..NodePatch::default()
+                },
+            }]
+        }
+
         _ => Vec::new(),
     }
+}
+
+fn tool_node_id(call_id: &str) -> prosopon_core::NodeId {
+    prosopon_core::NodeId::from_raw(format!("tool:{call_id}"))
 }
 
 #[cfg(test)]
@@ -300,5 +348,128 @@ mod tests {
         let events = translate(&mut st(), &kind);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], ProsoponEvent::NodeAdded { .. }));
+    }
+
+    #[test]
+    fn tool_call_requested_adds_tool_call_node() {
+        use prosopon_core::Intent;
+        let kind = EventKind::ToolCallRequested {
+            call_id: "call-1".into(),
+            tool_name: "shell".into(),
+            arguments: serde_json::json!({"cmd": "ls"}),
+            category: None,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeAdded { node, parent } => {
+                assert_eq!(parent, &st().scene_root);
+                assert!(matches!(node.intent, Intent::ToolCall { .. }));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn tool_call_completed_updates_node_with_child_result() {
+        use aios_protocol::SpanStatus;
+        use prosopon_core::Intent;
+        let kind = EventKind::ToolCallCompleted {
+            tool_run_id: aios_protocol::ToolRunId::default(),
+            call_id: Some("call-1".into()),
+            tool_name: "shell".into(),
+            result: serde_json::json!("ok"),
+            duration_ms: 12,
+            status: SpanStatus::Ok,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeUpdated { patch, .. } => {
+                let cp = patch.children.as_ref().expect("children patch set");
+                match cp {
+                    prosopon_core::ChildrenPatch::Append { children } => {
+                        assert_eq!(children.len(), 1);
+                        match &children[0].intent {
+                            Intent::ToolResult { success, .. } => assert!(*success),
+                            _ => panic!("expected ToolResult"),
+                        }
+                    }
+                    _ => panic!("expected Append"),
+                }
+            }
+            _ => panic!("expected NodeUpdated"),
+        }
+    }
+
+    #[test]
+    fn tool_call_failed_updates_with_unsuccess_result() {
+        use prosopon_core::Intent;
+        let kind = EventKind::ToolCallFailed {
+            call_id: "call-2".into(),
+            tool_name: "shell".into(),
+            error: "denied".into(),
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeUpdated { patch, .. } => {
+                let cp = patch.children.as_ref().unwrap();
+                if let prosopon_core::ChildrenPatch::Append { children } = cp {
+                    if let Intent::ToolResult { success, .. } = &children[0].intent {
+                        assert!(!success);
+                    } else {
+                        panic!()
+                    }
+                } else {
+                    panic!()
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn tool_call_round_trip_applies_to_scene_store() {
+        use aios_protocol::SpanStatus;
+        use prosopon_runtime::SceneStore;
+        let mut state = TranslationState::new();
+
+        let reset = translate(
+            &mut state,
+            &EventKind::SessionCreated { name: "s".into(), config: serde_json::json!({}) },
+        );
+        let ProsoponEvent::SceneReset { scene } = reset.into_iter().next().unwrap() else {
+            panic!()
+        };
+        let mut store = SceneStore::new(scene);
+
+        let req = translate(
+            &mut state,
+            &EventKind::ToolCallRequested {
+                call_id: "call-1".into(),
+                tool_name: "shell".into(),
+                arguments: serde_json::json!({}),
+                category: None,
+            },
+        );
+        for ev in req {
+            store.apply(ev).expect("tool request applies");
+        }
+
+        let done = translate(
+            &mut state,
+            &EventKind::ToolCallCompleted {
+                tool_run_id: aios_protocol::ToolRunId::default(),
+                call_id: Some("call-1".into()),
+                tool_name: "shell".into(),
+                result: serde_json::json!("ok"),
+                duration_ms: 1,
+                status: SpanStatus::Ok,
+            },
+        );
+        for ev in done {
+            store.apply(ev).expect("tool completion applies");
+        }
     }
 }
