@@ -1,0 +1,31 @@
+[package]
+name = "arcan-prosopon"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Pneuma<L0ToExternal> for Arcan — emits ProsoponEvents from the runtime's event stream."
+repository = "https://github.com/broomva/life"
+
+[dependencies]
+# Prosopon crates pinned to the v0.2.0-alpha.2 git tag so CI can resolve them
+# without needing the sibling `core/prosopon/` workspace to be checked out.
+# Local devs can override with a `[patch."https://github.com/broomva/prosopon.git"]`
+# block in their own .cargo/config.toml pointing at a local path clone.
+prosopon-core     = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-protocol = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-sdk      = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+prosopon-daemon   = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
+
+aios-protocol = { path = "../../aios/aios-protocol" }
+
+tokio     = { workspace = true, features = ["sync", "rt", "macros"] }
+tracing   = { workspace = true }
+thiserror = { workspace = true }
+anyhow    = { workspace = true }
+serde_json = { workspace = true }
+chrono    = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+prosopon-runtime = { git = "https://github.com/broomva/prosopon.git", tag = "v0.2.0-alpha.2" }
