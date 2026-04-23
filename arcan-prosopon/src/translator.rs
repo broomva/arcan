@@ -33,21 +33,22 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             provider,
             max_iterations,
         } => {
+            let ts = chrono::Utc::now();
             vec![
                 ProsoponEvent::SignalChanged {
                     topic: Topic::from("run.status"),
                     value: SignalValue::Scalar(serde_json::json!("running")),
-                    ts: chrono::Utc::now(),
+                    ts,
                 },
                 ProsoponEvent::SignalChanged {
                     topic: Topic::from("run.provider"),
                     value: SignalValue::Scalar(serde_json::json!(provider)),
-                    ts: chrono::Utc::now(),
+                    ts,
                 },
                 ProsoponEvent::SignalChanged {
                     topic: Topic::from("run.max_iterations"),
                     value: SignalValue::Scalar(serde_json::json!(max_iterations)),
-                    ts: chrono::Utc::now(),
+                    ts,
                 },
             ]
         }
@@ -66,6 +67,68 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                     ts: chrono::Utc::now(),
                 },
             ]
+        }
+
+        EventKind::UserMessage { content } => {
+            let prose = Node::new(Intent::Prose { text: content.clone() });
+            let section = Node::new(Intent::Section {
+                title: Some("User".into()),
+                collapsible: false,
+            })
+            .child(prose);
+            vec![ProsoponEvent::NodeAdded {
+                parent: state.scene_root.clone(),
+                node: section,
+            }]
+        }
+
+        EventKind::AssistantTextDelta { delta, index }
+        | EventKind::TextDelta { delta, index } => {
+            use prosopon_core::{ChunkPayload, StreamChunk, StreamId, StreamKind};
+            let iteration = index.or(state.current_iteration).unwrap_or(0);
+            let mut events = Vec::with_capacity(2);
+
+            let stream_id = match state.streams_by_iteration.get(&iteration) {
+                Some(id) => id.clone(),
+                None => {
+                    let id = StreamId::from_raw(format!("stream:iter-{iteration}"));
+                    let stream_node =
+                        Node::new(Intent::Stream { id: id.clone(), kind: StreamKind::Text });
+                    events.push(ProsoponEvent::NodeAdded {
+                        parent: state.scene_root.clone(),
+                        node: stream_node,
+                    });
+                    state.streams_by_iteration.insert(iteration, id.clone());
+                    id
+                }
+            };
+
+            let seq = state.stream_seq.entry(stream_id.clone()).or_insert(0);
+            let this_seq = *seq;
+            *seq += 1;
+
+            events.push(ProsoponEvent::StreamChunk {
+                id: stream_id,
+                chunk: StreamChunk {
+                    seq: this_seq,
+                    payload: ChunkPayload::Text { text: delta.clone() },
+                    final_: false,
+                },
+            });
+            events
+        }
+
+        EventKind::AssistantMessageCommitted { content, .. }
+        | EventKind::Message { content, .. } => {
+            let section = Node::new(Intent::Section {
+                title: Some("Assistant".into()),
+                collapsible: false,
+            })
+            .child(Node::new(Intent::Prose { text: content.clone() }));
+            vec![ProsoponEvent::NodeAdded {
+                parent: state.scene_root.clone(),
+                node: section,
+            }]
         }
 
         _ => Vec::new(),
@@ -151,5 +214,91 @@ mod tests {
         for ev in errs {
             store.apply(ev).expect("event must apply cleanly");
         }
+
+        let user = translate(&mut state, &EventKind::UserMessage { content: "q".into() });
+        for ev in user {
+            store.apply(ev).expect("user message should apply");
+        }
+
+        let delta =
+            translate(&mut state, &EventKind::TextDelta { delta: "a".into(), index: Some(0) });
+        for ev in delta {
+            store.apply(ev).expect("text delta should apply");
+        }
+    }
+
+    #[test]
+    fn user_message_adds_section_with_prose() {
+        use prosopon_core::Intent;
+        let kind = EventKind::UserMessage { content: "hi".into() };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeAdded { node, .. } => {
+                assert!(matches!(node.intent, Intent::Section { .. }));
+                assert_eq!(node.children.len(), 1);
+                assert!(matches!(node.children[0].intent, Intent::Prose { .. }));
+            }
+            _ => panic!("expected NodeAdded"),
+        }
+    }
+
+    #[test]
+    fn first_text_delta_creates_stream_node_then_chunks() {
+        let mut s = st();
+        s.current_iteration = Some(3);
+        let first = EventKind::TextDelta { delta: "he".into(), index: Some(3) };
+        let second = EventKind::TextDelta { delta: "llo".into(), index: Some(3) };
+
+        let a = translate(&mut s, &first);
+        let b = translate(&mut s, &second);
+
+        // First delta: NodeAdded (stream) + StreamChunk.
+        assert_eq!(a.len(), 2);
+        assert!(matches!(a[0], ProsoponEvent::NodeAdded { .. }));
+        assert!(matches!(a[1], ProsoponEvent::StreamChunk { .. }));
+        // Second delta: StreamChunk only.
+        assert_eq!(b.len(), 1);
+        assert!(matches!(b[0], ProsoponEvent::StreamChunk { .. }));
+    }
+
+    #[test]
+    fn assistant_text_delta_uses_same_stream_as_text_delta() {
+        let mut s = st();
+        let a = translate(
+            &mut s,
+            &EventKind::AssistantTextDelta { delta: "x".into(), index: Some(1) },
+        );
+        let b =
+            translate(&mut s, &EventKind::TextDelta { delta: "y".into(), index: Some(1) });
+        // Same iteration (1) → a creates the stream, b only adds a chunk.
+        assert_eq!(a.len(), 2);
+        assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn assistant_message_committed_adds_assistant_section() {
+        let kind = EventKind::AssistantMessageCommitted {
+            role: "assistant".into(),
+            content: "answer".into(),
+            model: None,
+            token_usage: None,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ProsoponEvent::NodeAdded { .. }));
+    }
+
+    #[test]
+    fn message_variant_also_adds_assistant_section() {
+        let kind = EventKind::Message {
+            role: "assistant".into(),
+            content: "answer".into(),
+            model: None,
+            token_usage: None,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ProsoponEvent::NodeAdded { .. }));
     }
 }
