@@ -24,3 +24,4 @@ chrono    = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+prosopon-runtime = { path = "../../../../prosopon/crates/prosopon-runtime" }

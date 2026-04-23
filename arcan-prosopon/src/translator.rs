@@ -10,16 +10,20 @@ use crate::state::TranslationState;
 /// Total over every currently-known variant and includes a `_` wildcard
 /// for `#[non_exhaustive]` forward compatibility.
 pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<ProsoponEvent> {
-    use prosopon_core::{Intent, Node, NodeId, Scene, SignalValue, Topic};
-
-    let _ = state; // used by future arms
+    use prosopon_core::{Intent, Node, Scene, SignalValue, Topic};
 
     match kind {
         EventKind::SessionCreated { name, .. } => {
+            // A new session resets per-session bookkeeping so a resumed translator
+            // state doesn't carry prior streams into the new scene.
+            state.streams_by_iteration.clear();
+            state.current_iteration = None;
+
             let root = Node::new(Intent::Section {
                 title: Some(name.clone()),
                 collapsible: false,
-            });
+            })
+            .with_id(state.scene_root.clone());
             vec![ProsoponEvent::SceneReset {
                 scene: Scene::new(root),
             }]
@@ -49,13 +53,11 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
         }
 
         EventKind::RunErrored { error } => {
-            let node = Node::new(Intent::Prose { text: error.clone() }).attr(
-                "semantic_role",
-                serde_json::json!("error"),
-            );
+            let node = Node::new(Intent::Prose { text: error.clone() })
+                .attr("semantic_role", serde_json::json!("error"));
             vec![
                 ProsoponEvent::NodeAdded {
-                    parent: NodeId::new(),
+                    parent: state.scene_root.clone(),
                     node,
                 },
                 ProsoponEvent::SignalChanged {
@@ -117,5 +119,37 @@ mod tests {
     fn unknown_variant_is_empty() {
         let kind = EventKind::SessionClosed { reason: "idle".into() };
         assert!(translate(&mut st(), &kind).is_empty());
+    }
+
+    #[test]
+    fn translated_events_apply_cleanly_to_scene_store() {
+        use prosopon_runtime::SceneStore;
+
+        let mut state = TranslationState::new();
+
+        // Session first — establishes the scene root.
+        let reset = translate(
+            &mut state,
+            &EventKind::SessionCreated {
+                name: "test".into(),
+                config: serde_json::json!({}),
+            },
+        );
+        assert_eq!(reset.len(), 1);
+
+        // Build the scene from the SceneReset.
+        let ProsoponEvent::SceneReset { scene } = reset.into_iter().next().unwrap() else {
+            panic!("expected SceneReset");
+        };
+        let mut store = SceneStore::new(scene);
+
+        // Now a RunErrored — its NodeAdded must target the scene root.
+        let errs = translate(
+            &mut state,
+            &EventKind::RunErrored { error: "x".into() },
+        );
+        for ev in errs {
+            store.apply(ev).expect("event must apply cleanly");
+        }
     }
 }
