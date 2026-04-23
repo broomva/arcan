@@ -172,12 +172,103 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             }]
         }
 
+        EventKind::ApprovalRequested { approval_id, tool_name, risk, .. } => {
+            let node = Node::new(Intent::Confirm {
+                message: format!("Approve {tool_name}?"),
+                severity: severity_for(*risk),
+            })
+            .with_id(approval_node_id(approval_id))
+            .attr("approval_id", serde_json::json!(approval_id.to_string()));
+            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+        }
+
+        EventKind::ApprovalResolved { approval_id, decision, .. } => {
+            use prosopon_core::{Lifecycle, NodeStatus};
+            let id = approval_node_id(approval_id);
+            let ts = chrono::Utc::now();
+            vec![
+                ProsoponEvent::NodeUpdated {
+                    id,
+                    patch: NodePatch {
+                        lifecycle: Some(Lifecycle::now().with_status(NodeStatus::Resolved)),
+                        ..NodePatch::default()
+                    },
+                },
+                ProsoponEvent::SignalChanged {
+                    topic: Topic::from(format!("approval.{approval_id}").as_str()),
+                    value: SignalValue::Scalar(serde_json::json!(format!("{decision:?}").to_lowercase())),
+                    ts,
+                },
+            ]
+        }
+
+        EventKind::StatePatched { revision, .. } => vec![ProsoponEvent::SignalChanged {
+            topic: Topic::from("state.revision"),
+            value: SignalValue::Scalar(serde_json::json!(*revision)),
+            ts: chrono::Utc::now(),
+        }],
+
+        EventKind::ContextCompacted { tokens_before, tokens_after, .. } => {
+            let ts = chrono::Utc::now();
+            let node = Node::new(Intent::Prose {
+                text: format!("Compacted {tokens_before}→{tokens_after} tokens"),
+            })
+            .attr("emphasis", serde_json::json!("low"));
+            vec![
+                ProsoponEvent::SignalChanged {
+                    topic: Topic::from("context.tokens"),
+                    value: SignalValue::Scalar(serde_json::json!(*tokens_after)),
+                    ts,
+                },
+                ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node },
+            ]
+        }
+
+        EventKind::StepStarted { index } => vec![ProsoponEvent::SignalChanged {
+            topic: Topic::from("iteration"),
+            value: SignalValue::Scalar(serde_json::json!(*index)),
+            ts: chrono::Utc::now(),
+        }],
+
+        EventKind::PolicyEvaluated { tool_name, decision, .. } => vec![
+            ProsoponEvent::SignalChanged {
+                topic: Topic::from(format!("policy.{tool_name}").as_str()),
+                value: SignalValue::Scalar(
+                    serde_json::json!(format!("{decision:?}").to_lowercase()),
+                ),
+                ts: chrono::Utc::now(),
+            },
+        ],
+
+        EventKind::KnowledgeSearched { query, result_count, .. } => {
+            let node = Node::new(Intent::Prose {
+                text: format!("Searched: {query} ({result_count})"),
+            })
+            .attr("emphasis", serde_json::json!("low"));
+            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+        }
+
         _ => Vec::new(),
     }
 }
 
 fn tool_node_id(call_id: &str) -> prosopon_core::NodeId {
     prosopon_core::NodeId::from_raw(format!("tool:{call_id}"))
+}
+
+fn severity_for(risk: aios_protocol::RiskLevel) -> prosopon_core::Severity {
+    use aios_protocol::RiskLevel;
+    use prosopon_core::Severity;
+    match risk {
+        RiskLevel::Low => Severity::Info,
+        RiskLevel::Medium => Severity::Notice,
+        RiskLevel::High => Severity::Warning,
+        RiskLevel::Critical => Severity::Danger,
+    }
+}
+
+fn approval_node_id(id: &aios_protocol::ApprovalId) -> prosopon_core::NodeId {
+    prosopon_core::NodeId::from_raw(format!("approval:{id}"))
 }
 
 #[cfg(test)]
@@ -269,6 +360,35 @@ mod tests {
             translate(&mut state, &EventKind::TextDelta { delta: "a".into(), index: Some(0) });
         for ev in delta {
             store.apply(ev).expect("text delta should apply");
+        }
+
+        use aios_protocol::{ApprovalDecision, ApprovalId, RiskLevel};
+
+        let approval_id = ApprovalId::default();
+        let req = translate(
+            &mut state,
+            &EventKind::ApprovalRequested {
+                approval_id: approval_id.clone(),
+                call_id: "a".into(),
+                tool_name: "shell".into(),
+                arguments: serde_json::json!({}),
+                risk: RiskLevel::Medium,
+            },
+        );
+        for ev in req {
+            store.apply(ev).expect("approval request applies");
+        }
+
+        let res = translate(
+            &mut state,
+            &EventKind::ApprovalResolved {
+                approval_id,
+                decision: ApprovalDecision::Approved,
+                reason: None,
+            },
+        );
+        for ev in res {
+            store.apply(ev).expect("approval resolved applies");
         }
     }
 
@@ -438,6 +558,110 @@ mod tests {
             status: SpanStatus::Ok,
         };
         assert!(translate(&mut st(), &kind).is_empty());
+    }
+
+    #[test]
+    fn approval_requested_adds_confirm_node() {
+        use aios_protocol::{ApprovalId, RiskLevel};
+        use prosopon_core::{Intent, Severity};
+        let kind = EventKind::ApprovalRequested {
+            approval_id: ApprovalId::default(),
+            call_id: "c".into(),
+            tool_name: "shell".into(),
+            arguments: serde_json::json!({}),
+            risk: RiskLevel::High,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeAdded { node, parent } => {
+                assert_eq!(parent, &st().scene_root);
+                assert!(
+                    matches!(&node.intent, Intent::Confirm { severity, .. } if *severity == Severity::Warning)
+                );
+            }
+            _ => panic!("expected NodeAdded"),
+        }
+    }
+
+    #[test]
+    fn approval_resolved_updates_lifecycle_and_emits_decision_signal() {
+        use aios_protocol::{ApprovalDecision, ApprovalId};
+        use prosopon_core::NodeStatus;
+        let id = ApprovalId::default();
+        let kind = EventKind::ApprovalResolved {
+            approval_id: id.clone(),
+            decision: ApprovalDecision::Approved,
+            reason: None,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            ProsoponEvent::NodeUpdated { patch, .. } => {
+                let lc = patch.lifecycle.as_ref().expect("lifecycle set");
+                assert!(matches!(lc.status, NodeStatus::Resolved));
+            }
+            _ => panic!("expected NodeUpdated"),
+        }
+        assert!(matches!(events[1], ProsoponEvent::SignalChanged { .. }));
+    }
+
+    #[test]
+    fn state_patched_emits_revision_signal() {
+        let kind = EventKind::StatePatched {
+            index: None,
+            patch: serde_json::json!([]),
+            revision: 42,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ProsoponEvent::SignalChanged { .. }));
+    }
+
+    #[test]
+    fn context_compacted_emits_signal_and_prose() {
+        let kind = EventKind::ContextCompacted {
+            dropped_count: 3,
+            tokens_before: 1000,
+            tokens_after: 500,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], ProsoponEvent::SignalChanged { .. }));
+        match &events[1] {
+            ProsoponEvent::NodeAdded { parent, .. } => {
+                assert_eq!(parent, &st().scene_root);
+            }
+            _ => panic!("expected NodeAdded"),
+        }
+    }
+
+    #[test]
+    fn step_started_emits_iteration_signal() {
+        let kind = EventKind::StepStarted { index: 3 };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], ProsoponEvent::SignalChanged { .. }));
+    }
+
+    #[test]
+    fn knowledge_searched_emits_prose() {
+        use prosopon_core::Intent;
+        let kind = EventKind::KnowledgeSearched {
+            query: "foo".into(),
+            result_count: 2,
+            top_relevance: 0.9,
+            duration_ms: 5,
+        };
+        let events = translate(&mut st(), &kind);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ProsoponEvent::NodeAdded { parent, node } => {
+                assert_eq!(parent, &st().scene_root);
+                assert!(matches!(node.intent, Intent::Prose { .. }));
+            }
+            _ => panic!("expected NodeAdded"),
+        }
     }
 
     #[test]
