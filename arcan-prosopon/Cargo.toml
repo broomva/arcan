@@ -2,7 +2,7 @@
 name = "arcan-prosopon"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Pneuma<L0ToExternal> for Arcan — emits ProsoponEvents from the runtime's event stream."
 repository = "https://github.com/broomva/life"
