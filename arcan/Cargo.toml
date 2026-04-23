@@ -23,12 +23,16 @@ console = ["dep:arcan-console"]
 spaces = ["dep:arcan-spaces", "arcan-spaces/spacetimedb"]
 opsis = ["dep:arcan-opsis", "dep:opsis-core"]
 praxis = []
+prosopon = ["dep:arcan-prosopon", "dep:prosopon-daemon", "dep:prosopon-compositor-glass"]
 
 [dependencies]
 arcan-console = { path = "../arcan-console", version = "0.3.0", optional = true }
 arcan-opsis = { path = "../arcan-opsis", version = "0.3.0", optional = true }
 opsis-core = { path = "../../opsis/opsis-core", version = "0.3.0", optional = true }
 arcan-spaces = { path = "../arcan-spaces", version = "0.3.0", optional = true }
+arcan-prosopon = { path = "../arcan-prosopon", version = "0.1.0", optional = true }
+prosopon-daemon = { path = "../../../../prosopon/crates/prosopon-daemon", version = "0.2.0", optional = true }
+prosopon-compositor-glass = { path = "../../../../prosopon/crates/prosopon-compositor-glass", version = "0.2.0", optional = true }
 arcan-commands = { path = "../arcan-commands", version = "0.3.0" }
 arcan-praxis = { path = "../arcan-praxis", version = "0.3.0" }
 arcan-core = { path = "../arcan-core", version = "0.3.0" }

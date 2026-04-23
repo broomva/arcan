@@ -104,6 +104,11 @@ struct Cli {
     /// Set to "pro" for full local/OSS access without the auth stack.
     #[arg(long, global = true, env = "ARCAN_DEFAULT_TIER")]
     default_tier: Option<String>,
+
+    /// Enable the Prosopon display-server sidecar on this address.
+    /// Requires `--features prosopon` at build time; silently ignored otherwise.
+    #[arg(long, global = true, value_name = "ADDR")]
+    prosopon_port: Option<std::net::SocketAddr>,
 }
 
 #[derive(Subcommand)]
@@ -467,6 +472,7 @@ fn run_serve(
     data_dir: &Path,
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
+    prosopon_port: Option<std::net::SocketAddr>,
     tokio_runtime: &tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
     // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
@@ -791,6 +797,56 @@ fn run_serve(
 
     // Wire the broadcast sender now that the runtime exists.
     *streaming_sender.lock().unwrap() = Some(runtime.event_sender());
+
+    // ── Prosopon display-server sidecar (opt-in via `--features prosopon`) ──
+    //
+    // The field `prosopon_port` is always present in the CLI struct so the flag
+    // is parseable in all builds. The boot logic is conditionally compiled; in a
+    // build without the feature the block below is a no-op and clippy won't
+    // complain about unused variables.
+    #[cfg(feature = "prosopon")]
+    if let Some(addr) = prosopon_port {
+        use arcan_prosopon::ArcanProsoponBridge;
+        use prosopon_compositor_glass::glass_surface;
+        use prosopon_daemon::{DaemonConfig, DaemonServer};
+
+        let event_rx = runtime.subscribe_events();
+
+        let bind_result = tokio_runtime
+            .block_on(DaemonServer::bind(DaemonConfig {
+                addr,
+                surface: Some(glass_surface()),
+            }));
+
+        match bind_result {
+            Ok(server) => {
+                let fanout = server.fanout();
+                let bridge = ArcanProsoponBridge::new(fanout);
+                let _bridge_handle = bridge.spawn(event_rx);
+                tokio_runtime.spawn(async move {
+                    if let Err(err) = server.serve().await {
+                        tracing::error!(error = %err, "prosopon-daemon serve failed");
+                    }
+                });
+                tracing::info!(%addr, "arcan-prosopon: bridge online");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    %addr,
+                    "arcan-prosopon: failed to bind, arcan will continue without Prosopon"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(feature = "prosopon"))]
+    if prosopon_port.is_some() {
+        tracing::warn!(
+            "--prosopon-port was set but arcan was not built with the `prosopon` feature; \
+             display-server sidecar is disabled"
+        );
+    }
 
     let data_dir_owned = data_dir.to_path_buf();
     let port = resolved.port;
@@ -1324,7 +1380,7 @@ fn main() -> anyhow::Result<()> {
                 cli.default_tier.as_deref(),
             );
 
-            run_serve(&data_dir, &resolved, cli.console_dir, &tokio_runtime)
+            run_serve(&data_dir, &resolved, cli.console_dir, cli.prosopon_port, &tokio_runtime)
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)
