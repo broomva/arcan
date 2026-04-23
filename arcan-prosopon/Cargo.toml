@@ -1,0 +1,25 @@
+[package]
+name = "arcan-prosopon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Pneuma<L0ToExternal> for Arcan — emits ProsoponEvents from the runtime's event stream."
+repository = "https://github.com/broomva/life"
+
+[dependencies]
+prosopon-core     = { path = "../../../../prosopon/crates/prosopon-core" }
+prosopon-protocol = { path = "../../../../prosopon/crates/prosopon-protocol" }
+prosopon-sdk      = { path = "../../../../prosopon/crates/prosopon-sdk" }
+prosopon-daemon   = { path = "../../../../prosopon/crates/prosopon-daemon" }
+
+aios-protocol = { path = "../../aios/aios-protocol" }
+
+tokio     = { workspace = true, features = ["sync", "rt", "macros"] }
+tracing   = { workspace = true }
+thiserror = { workspace = true }
+anyhow    = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
