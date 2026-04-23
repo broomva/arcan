@@ -812,11 +812,10 @@ fn run_serve(
 
         let event_rx = runtime.subscribe_events();
 
-        let bind_result = tokio_runtime
-            .block_on(DaemonServer::bind(DaemonConfig {
-                addr,
-                surface: Some(glass_surface()),
-            }));
+        let bind_result = tokio_runtime.block_on(DaemonServer::bind(DaemonConfig {
+            addr,
+            surface: Some(glass_surface()),
+        }));
 
         match bind_result {
             Ok(server) => {
@@ -1380,7 +1379,13 @@ fn main() -> anyhow::Result<()> {
                 cli.default_tier.as_deref(),
             );
 
-            run_serve(&data_dir, &resolved, cli.console_dir, cli.prosopon_port, &tokio_runtime)
+            run_serve(
+                &data_dir,
+                &resolved,
+                cli.console_dir,
+                cli.prosopon_port,
+                &tokio_runtime,
+            )
         }
         Some(Command::Chat { session, url }) => {
             // File-based logging for TUI mode (don't clobber the terminal)

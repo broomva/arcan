@@ -10,10 +10,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bridge;
 pub mod error;
 pub mod state;
 pub mod translator;
-pub mod bridge;
 
 pub use bridge::ArcanProsoponBridge;
 pub use error::BridgeError;

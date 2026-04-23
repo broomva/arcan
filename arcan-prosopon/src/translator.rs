@@ -54,8 +54,10 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
         }
 
         EventKind::RunErrored { error } => {
-            let node = Node::new(Intent::Prose { text: error.clone() })
-                .attr("semantic_role", serde_json::json!("error"));
+            let node = Node::new(Intent::Prose {
+                text: error.clone(),
+            })
+            .attr("semantic_role", serde_json::json!("error"));
             vec![
                 ProsoponEvent::NodeAdded {
                     parent: state.scene_root.clone(),
@@ -70,7 +72,9 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
         }
 
         EventKind::UserMessage { content } => {
-            let prose = Node::new(Intent::Prose { text: content.clone() });
+            let prose = Node::new(Intent::Prose {
+                text: content.clone(),
+            });
             let section = Node::new(Intent::Section {
                 title: Some("User".into()),
                 collapsible: false,
@@ -82,8 +86,7 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             }]
         }
 
-        EventKind::AssistantTextDelta { delta, index }
-        | EventKind::TextDelta { delta, index } => {
+        EventKind::AssistantTextDelta { delta, index } | EventKind::TextDelta { delta, index } => {
             use prosopon_core::{ChunkPayload, StreamChunk, StreamId, StreamKind};
             let iteration = index.or(state.current_iteration).unwrap_or(0);
             let mut events = Vec::with_capacity(2);
@@ -92,8 +95,10 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                 Some(id) => id.clone(),
                 None => {
                     let id = StreamId::from_raw(format!("stream:iter-{iteration}"));
-                    let stream_node =
-                        Node::new(Intent::Stream { id: id.clone(), kind: StreamKind::Text });
+                    let stream_node = Node::new(Intent::Stream {
+                        id: id.clone(),
+                        kind: StreamKind::Text,
+                    });
                     events.push(ProsoponEvent::NodeAdded {
                         parent: state.scene_root.clone(),
                         node: stream_node,
@@ -111,7 +116,9 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                 id: stream_id,
                 chunk: StreamChunk {
                     seq: this_seq,
-                    payload: ChunkPayload::Text { text: delta.clone() },
+                    payload: ChunkPayload::Text {
+                        text: delta.clone(),
+                    },
                     final_: false,
                 },
             });
@@ -124,34 +131,54 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                 title: Some("Assistant".into()),
                 collapsible: false,
             })
-            .child(Node::new(Intent::Prose { text: content.clone() }));
+            .child(Node::new(Intent::Prose {
+                text: content.clone(),
+            }));
             vec![ProsoponEvent::NodeAdded {
                 parent: state.scene_root.clone(),
                 node: section,
             }]
         }
 
-        EventKind::ToolCallRequested { call_id, tool_name, arguments, .. } => {
+        EventKind::ToolCallRequested {
+            call_id,
+            tool_name,
+            arguments,
+            ..
+        } => {
             let node = Node::new(Intent::ToolCall {
                 name: tool_name.clone(),
                 args: arguments.clone(),
                 stream: None,
             })
             .with_id(tool_node_id(call_id));
-            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+            vec![ProsoponEvent::NodeAdded {
+                parent: state.scene_root.clone(),
+                node,
+            }]
         }
 
-        EventKind::ToolCallCompleted { call_id, result, status, .. } => {
+        EventKind::ToolCallCompleted {
+            call_id,
+            result,
+            status,
+            ..
+        } => {
             use aios_protocol::SpanStatus;
             let Some(c) = call_id.as_ref() else {
                 return Vec::new(); // no call_id → can't match a prior ToolCall; drop
             };
             let success = matches!(status, SpanStatus::Ok);
-            let result_node = Node::new(Intent::ToolResult { success, payload: result.clone() });
+            let result_node = Node::new(Intent::ToolResult {
+                success,
+                payload: result.clone(),
+            });
             vec![ProsoponEvent::NodeUpdated {
                 id: tool_node_id(c),
                 patch: NodePatch {
-                    children: Some(ChildrenPatch::Append { children: vec![result_node] }),
+                    children: Some(ChildrenPatch::Append {
+                        children: vec![result_node],
+                    }),
                     ..NodePatch::default()
                 },
             }]
@@ -166,23 +193,37 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             vec![ProsoponEvent::NodeUpdated {
                 id,
                 patch: NodePatch {
-                    children: Some(ChildrenPatch::Append { children: vec![result_node] }),
+                    children: Some(ChildrenPatch::Append {
+                        children: vec![result_node],
+                    }),
                     ..NodePatch::default()
                 },
             }]
         }
 
-        EventKind::ApprovalRequested { approval_id, tool_name, risk, .. } => {
+        EventKind::ApprovalRequested {
+            approval_id,
+            tool_name,
+            risk,
+            ..
+        } => {
             let node = Node::new(Intent::Confirm {
                 message: format!("Approve {tool_name}?"),
                 severity: severity_for(*risk),
             })
             .with_id(approval_node_id(approval_id))
             .attr("approval_id", serde_json::json!(approval_id.to_string()));
-            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+            vec![ProsoponEvent::NodeAdded {
+                parent: state.scene_root.clone(),
+                node,
+            }]
         }
 
-        EventKind::ApprovalResolved { approval_id, decision, .. } => {
+        EventKind::ApprovalResolved {
+            approval_id,
+            decision,
+            ..
+        } => {
             use prosopon_core::{Lifecycle, NodeStatus};
             let id = approval_node_id(approval_id);
             let ts = chrono::Utc::now();
@@ -196,7 +237,9 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                 },
                 ProsoponEvent::SignalChanged {
                     topic: Topic::from(format!("approval.{approval_id}").as_str()),
-                    value: SignalValue::Scalar(serde_json::json!(format!("{decision:?}").to_lowercase())),
+                    value: SignalValue::Scalar(serde_json::json!(
+                        format!("{decision:?}").to_lowercase()
+                    )),
                     ts,
                 },
             ]
@@ -208,7 +251,11 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             ts: chrono::Utc::now(),
         }],
 
-        EventKind::ContextCompacted { tokens_before, tokens_after, .. } => {
+        EventKind::ContextCompacted {
+            tokens_before,
+            tokens_after,
+            ..
+        } => {
             let ts = chrono::Utc::now();
             let node = Node::new(Intent::Prose {
                 text: format!("Compacted {tokens_before}→{tokens_after} tokens"),
@@ -220,7 +267,10 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
                     value: SignalValue::Scalar(serde_json::json!(*tokens_after)),
                     ts,
                 },
-                ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node },
+                ProsoponEvent::NodeAdded {
+                    parent: state.scene_root.clone(),
+                    node,
+                },
             ]
         }
 
@@ -230,22 +280,29 @@ pub fn translate(state: &mut TranslationState, kind: &EventKind) -> Vec<Prosopon
             ts: chrono::Utc::now(),
         }],
 
-        EventKind::PolicyEvaluated { tool_name, decision, .. } => vec![
-            ProsoponEvent::SignalChanged {
-                topic: Topic::from(format!("policy.{tool_name}").as_str()),
-                value: SignalValue::Scalar(
-                    serde_json::json!(format!("{decision:?}").to_lowercase()),
-                ),
-                ts: chrono::Utc::now(),
-            },
-        ],
+        EventKind::PolicyEvaluated {
+            tool_name,
+            decision,
+            ..
+        } => vec![ProsoponEvent::SignalChanged {
+            topic: Topic::from(format!("policy.{tool_name}").as_str()),
+            value: SignalValue::Scalar(serde_json::json!(format!("{decision:?}").to_lowercase())),
+            ts: chrono::Utc::now(),
+        }],
 
-        EventKind::KnowledgeSearched { query, result_count, .. } => {
+        EventKind::KnowledgeSearched {
+            query,
+            result_count,
+            ..
+        } => {
             let node = Node::new(Intent::Prose {
                 text: format!("Searched: {query} ({result_count})"),
             })
             .attr("emphasis", serde_json::json!("low"));
-            vec![ProsoponEvent::NodeAdded { parent: state.scene_root.clone(), node }]
+            vec![ProsoponEvent::NodeAdded {
+                parent: state.scene_root.clone(),
+                node,
+            }]
         }
 
         _ => Vec::new(),
@@ -307,7 +364,9 @@ mod tests {
 
     #[test]
     fn run_errored_emits_error_prose_and_status_signal() {
-        let kind = EventKind::RunErrored { error: "boom".into() };
+        let kind = EventKind::RunErrored {
+            error: "boom".into(),
+        };
         let events = translate(&mut st(), &kind);
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], ProsoponEvent::NodeAdded { .. }));
@@ -316,7 +375,9 @@ mod tests {
 
     #[test]
     fn unknown_variant_is_empty() {
-        let kind = EventKind::SessionClosed { reason: "idle".into() };
+        let kind = EventKind::SessionClosed {
+            reason: "idle".into(),
+        };
         assert!(translate(&mut st(), &kind).is_empty());
     }
 
@@ -343,21 +404,28 @@ mod tests {
         let mut store = SceneStore::new(scene);
 
         // Now a RunErrored — its NodeAdded must target the scene root.
-        let errs = translate(
-            &mut state,
-            &EventKind::RunErrored { error: "x".into() },
-        );
+        let errs = translate(&mut state, &EventKind::RunErrored { error: "x".into() });
         for ev in errs {
             store.apply(ev).expect("event must apply cleanly");
         }
 
-        let user = translate(&mut state, &EventKind::UserMessage { content: "q".into() });
+        let user = translate(
+            &mut state,
+            &EventKind::UserMessage {
+                content: "q".into(),
+            },
+        );
         for ev in user {
             store.apply(ev).expect("user message should apply");
         }
 
-        let delta =
-            translate(&mut state, &EventKind::TextDelta { delta: "a".into(), index: Some(0) });
+        let delta = translate(
+            &mut state,
+            &EventKind::TextDelta {
+                delta: "a".into(),
+                index: Some(0),
+            },
+        );
         for ev in delta {
             store.apply(ev).expect("text delta should apply");
         }
@@ -395,7 +463,9 @@ mod tests {
     #[test]
     fn user_message_adds_section_with_prose() {
         use prosopon_core::Intent;
-        let kind = EventKind::UserMessage { content: "hi".into() };
+        let kind = EventKind::UserMessage {
+            content: "hi".into(),
+        };
         let events = translate(&mut st(), &kind);
         assert_eq!(events.len(), 1);
         match &events[0] {
@@ -412,8 +482,14 @@ mod tests {
     fn first_text_delta_creates_stream_node_then_chunks() {
         let mut s = st();
         s.current_iteration = Some(3);
-        let first = EventKind::TextDelta { delta: "he".into(), index: Some(3) };
-        let second = EventKind::TextDelta { delta: "llo".into(), index: Some(3) };
+        let first = EventKind::TextDelta {
+            delta: "he".into(),
+            index: Some(3),
+        };
+        let second = EventKind::TextDelta {
+            delta: "llo".into(),
+            index: Some(3),
+        };
 
         let a = translate(&mut s, &first);
         let b = translate(&mut s, &second);
@@ -432,10 +508,18 @@ mod tests {
         let mut s = st();
         let a = translate(
             &mut s,
-            &EventKind::AssistantTextDelta { delta: "x".into(), index: Some(1) },
+            &EventKind::AssistantTextDelta {
+                delta: "x".into(),
+                index: Some(1),
+            },
         );
-        let b =
-            translate(&mut s, &EventKind::TextDelta { delta: "y".into(), index: Some(1) });
+        let b = translate(
+            &mut s,
+            &EventKind::TextDelta {
+                delta: "y".into(),
+                index: Some(1),
+            },
+        );
         // Same iteration (1) → a creates the stream, b only adds a chunk.
         assert_eq!(a.len(), 2);
         assert_eq!(b.len(), 1);
@@ -672,7 +756,10 @@ mod tests {
 
         let reset = translate(
             &mut state,
-            &EventKind::SessionCreated { name: "s".into(), config: serde_json::json!({}) },
+            &EventKind::SessionCreated {
+                name: "s".into(),
+                config: serde_json::json!({}),
+            },
         );
         let ProsoponEvent::SceneReset { scene } = reset.into_iter().next().unwrap() else {
             panic!()
