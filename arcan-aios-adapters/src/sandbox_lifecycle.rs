@@ -1,3 +1,8 @@
+// Phase 0 transitional: callers still reach `arcan_sandbox::SandboxProvider`
+// via the blanket `impl<T: HypervisorBackend> SandboxProvider for T`. Migration
+// to direct `HypervisorBackend` calls is deferred to a follow-up phase.
+#![allow(deprecated)]
+
 //! [`SandboxLifecycleObserver`] — tier-aware sandbox cleanup on run end.
 //!
 //! Implements [`ToolHarnessObserver::on_run_finished`] to clean up sandboxes

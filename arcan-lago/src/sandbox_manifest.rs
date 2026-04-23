@@ -1,3 +1,8 @@
+// Phase 0 transitional: accesses `arcan_sandbox::SandboxProvider` via the
+// blanket `impl<T: HypervisorBackend> SandboxProvider for T`. Migration to
+// direct `HypervisorBackend` is deferred to a follow-up phase.
+#![allow(deprecated)]
+
 //! Lago-backed sandbox filesystem manifest.
 //!
 //! Tracks every file written into a sandbox as a content-addressed entry in

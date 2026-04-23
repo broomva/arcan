@@ -17,6 +17,13 @@
 //!     └─ Arc<dyn SandboxEventSink>
 //! ```
 
+// BRO-852: `SandboxProvider` is deprecated in favour of
+// `aios_protocol::HypervisorBackend`. The orchestration layer still routes
+// through the legacy trait until BRO-853..855 migrate the provider crates;
+// silence deprecation warnings for this module so the crate stays clippy
+// clean during the transition.
+#![allow(deprecated)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

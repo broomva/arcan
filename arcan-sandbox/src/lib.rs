@@ -41,8 +41,11 @@ pub mod types;
 pub use capability::SandboxCapabilitySet;
 pub use error::SandboxError;
 pub use event::{SandboxEvent, SandboxEventKind};
+#[allow(deprecated)]
 pub use journaled::JournaledSandboxProvider;
+#[allow(deprecated)]
 pub use provider::SandboxProvider;
+#[allow(deprecated)]
 pub use service::{SandboxRegistry, SandboxService, SandboxServicePolicy, SandboxSession};
 pub use session_store::{
     InMemorySessionStore, SandboxSessionStore, SandboxSessionStoreExt, UpstashSessionStore,

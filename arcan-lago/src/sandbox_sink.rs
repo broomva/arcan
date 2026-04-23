@@ -1,3 +1,8 @@
+// Phase 0 transitional: consumes `arcan_sandbox::SandboxProvider` via the
+// blanket `impl<T: HypervisorBackend> SandboxProvider for T`. Migration to
+// direct `HypervisorBackend` is deferred to a follow-up phase.
+#![allow(deprecated)]
+
 //! Sandbox event sinks for the Lago persistence layer (BRO-257).
 //!
 //! # Sinks

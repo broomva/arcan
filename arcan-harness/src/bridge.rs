@@ -57,6 +57,7 @@ fn arcan_ctx_to_proto(ctx: &arcan_rt::ToolContext) -> proto_tool::ToolContext {
         run_id: ctx.run_id.clone(),
         session_id: ctx.session_id.clone(),
         iteration: ctx.iteration,
+        ..Default::default()
     }
 }
 
@@ -287,6 +288,7 @@ mod tests {
                 },
             ]),
             is_error: false,
+            usage: None,
         };
 
         let arcan_result = proto_result_to_arcan(proto_result);

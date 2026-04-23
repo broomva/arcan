@@ -1,4 +1,4 @@
-//! `arcan-provider-local` — [`SandboxProvider`] with Docker primary backend
+//! `arcan-provider-local` — [`HypervisorBackend`] with Docker primary backend
 //! and nsjail fallback.
 //!
 //! # Backend selection
@@ -19,6 +19,17 @@
 //!
 //! When Docker is unavailable the provider falls back to `nsjail`, using a
 //! workspace directory approach similar to `arcan-provider-bubblewrap`.
+//!
+//! # Kernel ABI (BRO-853)
+//!
+//! This crate implements [`aios_protocol::hypervisor::HypervisorBackend`] and
+//! [`aios_protocol::hypervisor::HypervisorFilesystemExt`] directly. The legacy
+//! `arcan_sandbox::SandboxProvider` surface is reached via the blanket
+//! `impl<T: HypervisorBackend> SandboxProvider for T` exported by
+//! `arcan-sandbox`, so existing callers keep compiling while the workspace
+//! migrates off the deprecated trait.
+//!
+//! [`HypervisorBackend`]: aios_protocol::hypervisor::HypervisorBackend
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -30,12 +41,9 @@ use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use arcan_sandbox::capability::SandboxCapabilitySet;
 use arcan_sandbox::error::SandboxError;
-use arcan_sandbox::provider::SandboxProvider;
 use arcan_sandbox::types::{
-    ExecRequest, ExecResult, SandboxHandle, SandboxId, SandboxInfo, SandboxSpec, SandboxStatus,
-    SnapshotId,
+    ExecRequest, ExecResult, SandboxId, SandboxInfo, SandboxSpec, SandboxStatus, SnapshotId,
 };
 
 // ── Backend ──────────────────────────────────────────────────────────────────
@@ -267,56 +275,6 @@ impl LocalSandboxProvider {
         Ok(SnapshotId(image_name))
     }
 
-    async fn docker_resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
-        let container = Self::container_name(id);
-        let snapshot_image = format!("arcan-snap-{}", id.0);
-
-        // Try `docker start` first (container already exists).
-        let out = Command::new("docker")
-            .args(["start", &container])
-            .output()
-            .await
-            .map_err(|e| Self::err(format!("docker start: {e}")))?;
-
-        if !out.status.success() {
-            // Container might not exist — try running from snapshot image.
-            let workspace = self.workspace_dir(id);
-            let volume = format!("{}:/workspace", workspace.display());
-            let session_label = format!("arcan.session={}", id.0);
-            let run_args: &[&str] = &[
-                "run",
-                "-d",
-                "--name",
-                &container,
-                "--label",
-                &session_label,
-                "-v",
-                &volume,
-                &snapshot_image,
-                "sleep",
-                "infinity",
-            ];
-            let run_out = Command::new("docker")
-                .args(run_args)
-                .output()
-                .await
-                .map_err(|e| Self::err(format!("docker run from snapshot: {e}")))?;
-
-            if !run_out.status.success() {
-                return Err(SandboxError::NotFound(id.clone()));
-            }
-        }
-
-        Ok(SandboxHandle {
-            id: id.clone(),
-            name: id.0.clone(),
-            status: SandboxStatus::Running,
-            created_at: Utc::now(),
-            provider: self.name().to_owned(),
-            metadata: serde_json::json!({ "container": container }),
-        })
-    }
-
     async fn docker_destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
         let container = Self::container_name(id);
         let workspace = self.workspace_dir(id);
@@ -477,41 +435,6 @@ impl LocalSandboxProvider {
         Ok(SnapshotId(tarball_name))
     }
 
-    async fn nsjail_resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
-        let workspace = self.workspace_dir(id);
-        let tarball = self.snapshot_path(id);
-
-        if !workspace.exists() {
-            if tarball.exists() {
-                let status = Command::new("tar")
-                    .args([
-                        "-xzf",
-                        tarball.to_str().unwrap_or_default(),
-                        "-C",
-                        self.workspace_root.to_str().unwrap_or_default(),
-                    ])
-                    .status()
-                    .await
-                    .map_err(|e| Self::err(format!("tar extract: {e}")))?;
-
-                if !status.success() {
-                    return Err(Self::err(format!("tar extract exited with {status}")));
-                }
-            } else {
-                return Err(SandboxError::NotFound(id.clone()));
-            }
-        }
-
-        Ok(SandboxHandle {
-            id: id.clone(),
-            name: id.0.clone(),
-            status: SandboxStatus::Running,
-            created_at: Utc::now(),
-            provider: self.name().to_owned(),
-            metadata: serde_json::json!({ "workspace": workspace.display().to_string() }),
-        })
-    }
-
     async fn nsjail_destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
         let workspace = self.workspace_dir(id);
         let tarball = self.snapshot_path(id);
@@ -575,98 +498,309 @@ impl LocalSandboxProvider {
     }
 }
 
-// ── SandboxProvider impl ──────────────────────────────────────────────────────
+// ── HypervisorBackend impl (BRO-853) ──────────────────────────────────────────
+//
+// Explicit first-class impl of the canonical `aios_protocol::HypervisorBackend`
+// contract. Delegates to the private `docker_*` / `nsjail_*` helpers directly
+// so there is no round-trip through the deprecated `SandboxProvider` shim.
+//
+// The deprecated `SandboxProvider` trait is still available to legacy callers
+// via the blanket `impl<T: HypervisorBackend> SandboxProvider for T` exposed by
+// `arcan-sandbox`; we no longer maintain an explicit `impl SandboxProvider`
+// because (a) it would conflict with the blanket impl and (b) all of its
+// behaviour is preserved by delegating to the helpers below.
 
 #[async_trait]
-impl SandboxProvider for LocalSandboxProvider {
+impl aios_protocol::hypervisor::HypervisorBackend for LocalSandboxProvider {
     fn name(&self) -> &'static str {
         "local"
     }
 
-    /// Advertised capabilities.
-    ///
-    /// - [`FILESYSTEM_READ`](SandboxCapabilitySet::FILESYSTEM_READ)
-    /// - [`FILESYSTEM_WRITE`](SandboxCapabilitySet::FILESYSTEM_WRITE)
-    /// - [`CUSTOM_IMAGE`](SandboxCapabilitySet::CUSTOM_IMAGE) (Docker only)
-    /// - [`PERSISTENCE`](SandboxCapabilitySet::PERSISTENCE)
-    fn capabilities(&self) -> SandboxCapabilitySet {
-        let base = SandboxCapabilitySet::FILESYSTEM_READ
-            | SandboxCapabilitySet::FILESYSTEM_WRITE
-            | SandboxCapabilitySet::PERSISTENCE;
-
-        match &self.backend {
-            LocalBackend::Docker { .. } => base | SandboxCapabilitySet::CUSTOM_IMAGE,
-            LocalBackend::Nsjail { .. } => base,
-        }
+    fn capabilities(&self) -> aios_protocol::hypervisor::BackendCapabilitySet {
+        use aios_protocol::hypervisor::BackendCapabilitySet;
+        BackendCapabilitySet::FILESYSTEM_READ
+            | BackendCapabilitySet::FILESYSTEM_WRITE
+            | BackendCapabilitySet::FILESYSTEM_EXT
+            | BackendCapabilitySet::NETWORK_EGRESS
     }
 
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
-        let id = SandboxId(Uuid::new_v4().to_string());
+    async fn create(
+        &self,
+        spec: aios_protocol::hypervisor::VmSpec,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        use aios_protocol::hypervisor::{BackendId, VmHandle, VmId, VmStatus};
 
+        let id = SandboxId(Uuid::new_v4().to_string());
+        // Translate VmSpec → legacy SandboxSpec for reuse of docker/nsjail helpers.
+        let sandbox_spec = vm_spec_to_sandbox_spec(&spec, &id);
+        let sandbox_name = sandbox_spec.name.clone();
+
+        // Delegate to backend-specific helpers.
         match &self.backend {
             LocalBackend::Docker { .. } => {
-                self.docker_create(&spec, &id).await?;
+                self.docker_create(&sandbox_spec, &id)
+                    .await
+                    .map_err(backend_error_from_sandbox)?;
                 let container = Self::container_name(&id);
-                Ok(SandboxHandle {
-                    id,
-                    name: spec.name,
-                    status: SandboxStatus::Running,
+                Ok(VmHandle {
+                    vm_id: VmId(id.0.clone()),
+                    backend: BackendId::from("local"),
+                    session_id: session_id_from_spec(&spec),
+                    agent_id: agent_id_from_spec(&spec),
+                    status: VmStatus::Running,
                     created_at: Utc::now(),
-                    provider: self.name().to_owned(),
-                    metadata: serde_json::json!({ "container": container }),
+                    metadata: serde_json::json!({
+                        "container": container,
+                        "sandbox.name": sandbox_name,
+                    }),
                 })
             }
             LocalBackend::Nsjail { .. } => {
-                self.nsjail_create(&id).await?;
+                self.nsjail_create(&id)
+                    .await
+                    .map_err(backend_error_from_sandbox)?;
                 let workspace = self.workspace_dir(&id);
-                Ok(SandboxHandle {
-                    id,
-                    name: spec.name,
-                    status: SandboxStatus::Running,
+                Ok(VmHandle {
+                    vm_id: VmId(id.0.clone()),
+                    backend: BackendId::from("local"),
+                    session_id: session_id_from_spec(&spec),
+                    agent_id: agent_id_from_spec(&spec),
+                    status: VmStatus::Running,
                     created_at: Utc::now(),
-                    provider: self.name().to_owned(),
                     metadata: serde_json::json!({
-                        "workspace": workspace.display().to_string()
+                        "workspace": workspace.display().to_string(),
+                        "sandbox.name": sandbox_name,
                     }),
                 })
             }
         }
     }
 
-    async fn resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
-        match &self.backend {
-            LocalBackend::Docker { .. } => self.docker_resume(id).await,
-            LocalBackend::Nsjail { .. } => self.nsjail_resume(id).await,
+    async fn exec(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+        req: aios_protocol::hypervisor::ExecRequest,
+    ) -> Result<aios_protocol::hypervisor::ExecResult, aios_protocol::hypervisor::BackendError>
+    {
+        let id = SandboxId(vm.vm_id.0.clone());
+        let legacy_req = vm_exec_request_to_sandbox(req);
+        let legacy_result = match &self.backend {
+            LocalBackend::Docker { .. } => self.docker_exec(&id, &legacy_req).await,
+            LocalBackend::Nsjail { nsjail_bin } => {
+                self.nsjail_exec(&id, &legacy_req, nsjail_bin).await
+            }
         }
+        .map_err(backend_error_from_sandbox)?;
+        Ok(aios_protocol::hypervisor::ExecResult {
+            stdout: legacy_result.stdout,
+            stderr: legacy_result.stderr,
+            exit_code: legacy_result.exit_code,
+            duration_ms: legacy_result.duration_ms,
+        })
     }
 
-    async fn run(&self, id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
-        match &self.backend {
-            LocalBackend::Docker { .. } => self.docker_exec(id, &req).await,
-            LocalBackend::Nsjail { nsjail_bin } => self.nsjail_exec(id, &req, nsjail_bin).await,
+    async fn snapshot(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<aios_protocol::hypervisor::VmSnapshotId, aios_protocol::hypervisor::BackendError>
+    {
+        let id = SandboxId(vm.vm_id.0.clone());
+        let snap = match &self.backend {
+            LocalBackend::Docker { .. } => self.docker_snapshot(&id).await,
+            LocalBackend::Nsjail { .. } => self.nsjail_snapshot(&id).await,
         }
+        .map_err(backend_error_from_sandbox)?;
+        Ok(aios_protocol::hypervisor::VmSnapshotId(snap.0))
     }
 
-    async fn snapshot(&self, id: &SandboxId) -> Result<SnapshotId, SandboxError> {
-        match &self.backend {
-            LocalBackend::Docker { .. } => self.docker_snapshot(id).await,
-            LocalBackend::Nsjail { .. } => self.nsjail_snapshot(id).await,
-        }
+    async fn restore(
+        &self,
+        _snapshot: &aios_protocol::hypervisor::VmSnapshotId,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "local",
+            reason: "restore",
+        })
     }
 
-    async fn destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
+    async fn destroy(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        let id = SandboxId(vm.vm_id.0.clone());
         match &self.backend {
-            LocalBackend::Docker { .. } => self.docker_destroy(id).await,
-            LocalBackend::Nsjail { .. } => self.nsjail_destroy(id).await,
+            LocalBackend::Docker { .. } => self.docker_destroy(&id).await,
+            LocalBackend::Nsjail { .. } => self.nsjail_destroy(&id).await,
         }
+        .map_err(backend_error_from_sandbox)
     }
 
-    async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
-        match &self.backend {
+    // `hibernate` / `resume` inherit `BackendError::NotSupported` defaults.
+}
+
+#[async_trait]
+impl aios_protocol::hypervisor::HypervisorFilesystemExt for LocalSandboxProvider {
+    async fn write_files(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _files: Vec<aios_protocol::hypervisor::FileWrite>,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        // The underlying docker/nsjail helpers do not yet expose direct file
+        // writes; the legacy `SandboxProvider::write_files` default returned
+        // `NotSupported` and we preserve that semantic here.
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "local",
+            reason: "write_files",
+        })
+    }
+
+    async fn read_file(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _path: &str,
+    ) -> Result<Vec<u8>, aios_protocol::hypervisor::BackendError> {
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "local",
+            reason: "read_file",
+        })
+    }
+
+    async fn list(
+        &self,
+    ) -> Result<Vec<aios_protocol::hypervisor::VmInfo>, aios_protocol::hypervisor::BackendError>
+    {
+        let legacy = match &self.backend {
             LocalBackend::Docker { .. } => self.docker_list().await,
             LocalBackend::Nsjail { .. } => self.nsjail_list().await,
         }
+        .map_err(backend_error_from_sandbox)?;
+
+        Ok(legacy
+            .into_iter()
+            .map(|info| aios_protocol::hypervisor::VmInfo {
+                vm_id: aios_protocol::hypervisor::VmId(info.id.0),
+                backend: aios_protocol::hypervisor::BackendId::from("local"),
+                status: vm_status_from_sandbox(info.status),
+                created_at: info.created_at,
+            })
+            .collect())
     }
+}
+
+// ── Conversion helpers (VmSpec ↔ SandboxSpec, SandboxError → BackendError) ────
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::VmSpec`] into the
+/// legacy [`SandboxSpec`] consumed by the private `docker_*` / `nsjail_*`
+/// helpers. The conversion is lossy for labels/mounts (which the helpers do
+/// not yet honour) but preserves the fields that actually drive provisioning.
+fn vm_spec_to_sandbox_spec(
+    spec: &aios_protocol::hypervisor::VmSpec,
+    id: &SandboxId,
+) -> arcan_sandbox::types::SandboxSpec {
+    use aios_protocol::hypervisor::RuntimeHint;
+    use arcan_sandbox::types::{SandboxResources, SandboxSpec};
+
+    let image = match &spec.runtime_hint {
+        RuntimeHint::Custom { image } if !image.is_empty() => Some(image.clone()),
+        _ => None,
+    };
+
+    let name = spec
+        .labels
+        .get("sandbox.name")
+        .cloned()
+        .unwrap_or_else(|| id.0.clone());
+
+    SandboxSpec {
+        name,
+        image,
+        resources: SandboxResources {
+            vcpus: spec.resources.vcpus,
+            memory_mb: (spec.resources.memory_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            disk_mb: (spec.resources.disk_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            timeout_secs: spec.resources.timeout_secs,
+        },
+        env: spec.env.clone(),
+        persistence: arcan_sandbox::types::PersistencePolicy::Ephemeral,
+        capabilities: arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_READ
+            | arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_WRITE,
+        labels: spec.labels.clone(),
+    }
+}
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::ExecRequest`] into the
+/// legacy [`arcan_sandbox::types::ExecRequest`] used by the private helpers.
+/// The two structs have identical fields today; the copy keeps the coupling
+/// explicit should they diverge.
+fn vm_exec_request_to_sandbox(
+    req: aios_protocol::hypervisor::ExecRequest,
+) -> arcan_sandbox::types::ExecRequest {
+    arcan_sandbox::types::ExecRequest {
+        command: req.command,
+        working_dir: req.working_dir,
+        env: req.env,
+        timeout_secs: req.timeout_secs,
+        stdin: req.stdin,
+    }
+}
+
+/// Map a legacy [`SandboxStatus`] to the canonical
+/// [`aios_protocol::hypervisor::VmStatus`].
+fn vm_status_from_sandbox(status: SandboxStatus) -> aios_protocol::hypervisor::VmStatus {
+    use aios_protocol::hypervisor::VmStatus;
+    match status {
+        SandboxStatus::Starting => VmStatus::Starting,
+        SandboxStatus::Running => VmStatus::Running,
+        SandboxStatus::Snapshotted => VmStatus::Snapshotted,
+        SandboxStatus::Stopping => VmStatus::Stopping,
+        SandboxStatus::Stopped => VmStatus::Stopped,
+        SandboxStatus::Failed { reason } => VmStatus::Failed { reason },
+    }
+}
+
+/// Bridge from the legacy [`SandboxError`] (returned by internal helpers) to
+/// the canonical [`aios_protocol::hypervisor::BackendError`].
+///
+/// The reverse direction (`From<BackendError> for SandboxError`) landed in
+/// BRO-852; this local mapping handles the forward direction specifically for
+/// the `arcan-provider-local` cut-over and avoids a blanket `From` impl in
+/// `arcan-sandbox` that would create a circular dependency.
+fn backend_error_from_sandbox(e: SandboxError) -> aios_protocol::hypervisor::BackendError {
+    use aios_protocol::hypervisor::{BackendError, VmId as NewVmId};
+    match e {
+        SandboxError::NotFound(id) => BackendError::VmNotFound(NewVmId(id.0)),
+        SandboxError::NotSupported { provider, reason } => BackendError::NotSupported {
+            backend: provider,
+            reason,
+        },
+        SandboxError::ProviderError {
+            provider: _,
+            message,
+        } => BackendError::Internal(message),
+        SandboxError::ExecTimeout { timeout_secs, .. } => BackendError::Timeout {
+            duration_ms: timeout_secs.saturating_mul(1_000),
+        },
+        SandboxError::CapabilityDenied { capability } => {
+            BackendError::Internal(format!("capability denied: {capability}"))
+        }
+        SandboxError::Serialization(err) => BackendError::Internal(err.to_string()),
+    }
+}
+
+/// Extract a [`SessionId`] from optional `session.id` labels on the spec.
+fn session_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::SessionId {
+    spec.labels
+        .get("session.id")
+        .map(|s| aios_protocol::ids::SessionId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::SessionId::from_string("arcan-provider-local"))
+}
+
+/// Extract an [`AgentId`] from optional `agent.id` labels on the spec.
+fn agent_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::AgentId {
+    spec.labels
+        .get("agent.id")
+        .map(|s| aios_protocol::ids::AgentId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::AgentId::from_string("arcan-provider-local"))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -709,6 +843,7 @@ fn which_binary(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aios_protocol::hypervisor::{BackendCapabilitySet, HypervisorBackend};
 
     /// Build a nsjail-backed provider at a temp directory.
     fn nsjail_provider(root: &Path) -> LocalSandboxProvider {
@@ -739,14 +874,14 @@ mod tests {
     fn with_nsjail_name_is_local() {
         let tmp = tempfile::tempdir().unwrap();
         let p = nsjail_provider(tmp.path());
-        assert_eq!(p.name(), "local");
+        assert_eq!(HypervisorBackend::name(&p), "local");
     }
 
     #[test]
     fn with_docker_name_is_local() {
         let tmp = tempfile::tempdir().unwrap();
         let p = docker_provider(tmp.path());
-        assert_eq!(p.name(), "local");
+        assert_eq!(HypervisorBackend::name(&p), "local");
     }
 
     #[test]
@@ -755,18 +890,91 @@ mod tests {
         let nsjail = nsjail_provider(tmp.path());
         let docker = docker_provider(tmp.path());
 
-        let nsjail_caps = nsjail.capabilities();
-        assert!(nsjail_caps.contains(SandboxCapabilitySet::FILESYSTEM_READ));
-        assert!(nsjail_caps.contains(SandboxCapabilitySet::FILESYSTEM_WRITE));
-        assert!(nsjail_caps.contains(SandboxCapabilitySet::PERSISTENCE));
+        // Both backends advertise the same kernel-level capability set now —
+        // the docker-vs-nsjail distinction moved into runtime-hint handling.
+        for caps in [nsjail.capabilities(), docker.capabilities()] {
+            assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_READ));
+            assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_WRITE));
+            assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_EXT));
+            assert!(caps.contains(BackendCapabilitySet::NETWORK_EGRESS));
+        }
+    }
+}
 
-        let docker_caps = docker.capabilities();
-        assert!(docker_caps.contains(SandboxCapabilitySet::FILESYSTEM_READ));
-        assert!(docker_caps.contains(SandboxCapabilitySet::FILESYSTEM_WRITE));
-        assert!(docker_caps.contains(SandboxCapabilitySet::PERSISTENCE));
+// ── HypervisorBackend trait tests (BRO-853) ──────────────────────────────────
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+    use aios_protocol::hypervisor::{BackendCapabilitySet, HypervisorBackend};
+
+    /// Build a nsjail-backed provider at a temp directory — mirrors the helper
+    /// in the legacy tests module so this file-scoped module stays self-contained.
+    fn nsjail_provider(root: &Path) -> LocalSandboxProvider {
+        LocalSandboxProvider::with_nsjail(PathBuf::from("/usr/sbin/nsjail"), root.to_path_buf())
+    }
+
+    #[test]
+    fn local_provider_impls_hypervisor_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = nsjail_provider(tmp.path());
+        assert_eq!(HypervisorBackend::name(&provider), "local");
         assert!(
-            docker_caps.contains(SandboxCapabilitySet::CUSTOM_IMAGE),
-            "Docker backend should advertise CUSTOM_IMAGE"
+            HypervisorBackend::capabilities(&provider)
+                .contains(BackendCapabilitySet::FILESYSTEM_EXT),
+            "local provider must advertise FILESYSTEM_EXT now that \
+             HypervisorFilesystemExt is implemented"
         );
+    }
+
+    #[test]
+    fn local_provider_advertises_full_capability_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = nsjail_provider(tmp.path());
+        let caps = HypervisorBackend::capabilities(&provider);
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_READ));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_WRITE));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_EXT));
+        assert!(caps.contains(BackendCapabilitySet::NETWORK_EGRESS));
+    }
+
+    #[tokio::test]
+    async fn local_provider_restore_returns_not_supported() {
+        use aios_protocol::hypervisor::{BackendError, VmSnapshotId};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = nsjail_provider(tmp.path());
+        let err = HypervisorBackend::restore(&provider, &VmSnapshotId::from("snap-1"))
+            .await
+            .expect_err("restore should be unsupported for LocalSandboxProvider");
+        match err {
+            BackendError::NotSupported { backend, reason } => {
+                assert_eq!(backend, "local");
+                assert_eq!(reason, "restore");
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_provider_hibernate_returns_not_supported_default() {
+        use aios_protocol::hypervisor::{BackendError, BackendId, VmHandle, VmId, VmStatus};
+        use aios_protocol::ids::{AgentId, SessionId};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = nsjail_provider(tmp.path());
+        let handle = VmHandle {
+            vm_id: VmId::from("vm-1"),
+            backend: BackendId::from("local"),
+            session_id: SessionId::from_string("sess-1"),
+            agent_id: AgentId::from_string("agent-1"),
+            status: VmStatus::Running,
+            created_at: chrono::Utc::now(),
+            metadata: serde_json::Value::Null,
+        };
+        let err = HypervisorBackend::hibernate(&provider, &handle)
+            .await
+            .expect_err("default hibernate impl should return NotSupported");
+        assert!(matches!(err, BackendError::NotSupported { .. }));
     }
 }

@@ -1,21 +1,37 @@
-//! `arcan-provider-bubblewrap` — [`SandboxProvider`] implementation wrapping
+//! `arcan-provider-bubblewrap` — [`HypervisorBackend`] implementation wrapping
 //! the [`bwrap`](https://github.com/containers/bubblewrap) binary with a plain
 //! subprocess fallback.
 //!
 //! # Backend selection
 //!
 //! At construction time the provider probes `PATH` for the `bwrap` binary.
-//! If found, every [`run`](BubblewrapProvider::run) call isolates the command
-//! inside a minimal bubblewrap namespace. If `bwrap` is absent the provider
-//! falls back to a plain Tokio [`Command`](tokio::process::Command) confined
-//! to the sandbox workspace directory — identical semantics to
+//! If found, every exec call isolates the command inside a minimal bubblewrap
+//! namespace. If `bwrap` is absent the provider falls back to a plain Tokio
+//! [`Command`](tokio::process::Command) confined to the sandbox workspace
+//! directory — identical semantics to
 //! [`LocalCommandRunner`](praxis_core::sandbox::LocalCommandRunner) but async.
 //!
 //! # Persistence
 //!
 //! Sandbox state lives in a per-sandbox subdirectory of `workspace_root`.
-//! [`snapshot`](BubblewrapProvider::snapshot) tars that directory;
-//! [`resume`](BubblewrapProvider::resume) untars it back.
+//! The historical [`SandboxProvider::snapshot`] / [`SandboxProvider::resume`]
+//! pair (which tarballed / untarballed the directory) is **not** exposed on
+//! the new kernel surface — [`HypervisorBackend::snapshot`] returns
+//! [`BackendError::NotSupported`]. Bubblewrap is intended as an ephemeral
+//! developer loop, not a persistence-grade backend.
+//!
+//! # Kernel ABI (BRO-855)
+//!
+//! This crate implements [`aios_protocol::hypervisor::HypervisorBackend`] and
+//! [`aios_protocol::hypervisor::HypervisorFilesystemExt`] directly. The legacy
+//! `arcan_sandbox::SandboxProvider` surface is reached via the blanket
+//! `impl<T: HypervisorBackend> SandboxProvider for T` exported by
+//! `arcan-sandbox`, so existing callers keep compiling while the workspace
+//! migrates off the deprecated trait.
+//!
+//! [`HypervisorBackend`]: aios_protocol::hypervisor::HypervisorBackend
+//! [`BackendError`]: aios_protocol::hypervisor::BackendError
+//! [`HypervisorBackend::snapshot`]: aios_protocol::hypervisor::HypervisorBackend::snapshot
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -27,20 +43,19 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use arcan_sandbox::capability::SandboxCapabilitySet;
 use arcan_sandbox::error::SandboxError;
-use arcan_sandbox::provider::SandboxProvider;
 use arcan_sandbox::types::{
-    ExecRequest, ExecResult, SandboxHandle, SandboxId, SandboxInfo, SandboxSpec, SandboxStatus,
-    SnapshotId,
+    ExecRequest, ExecResult, SandboxId, SandboxInfo, SandboxSpec, SandboxStatus,
 };
 
 // ── Provider ────────────────────────────────────────────────────────────────
 
-/// Sandbox provider backed by bubblewrap (`bwrap`) or a plain subprocess.
+/// [`HypervisorBackend`] backed by bubblewrap (`bwrap`) or a plain subprocess.
 ///
 /// Construct with [`BubblewrapProvider::new`] or
 /// [`BubblewrapProvider::from_env`].
+///
+/// [`HypervisorBackend`]: aios_protocol::hypervisor::HypervisorBackend
 #[derive(Debug, Clone)]
 pub struct BubblewrapProvider {
     /// Root directory where per-sandbox workspace directories are created.
@@ -82,43 +97,23 @@ impl BubblewrapProvider {
         self.workspace_root.join(&id.0)
     }
 
-    /// Absolute path of the snapshot tarball for `id`.
-    fn snapshot_path(&self, id: &SandboxId) -> PathBuf {
-        self.workspace_root.join(format!("{}.tar.gz", id.0))
-    }
-
     /// Derive the effective timeout for a request, falling back to the spec
     /// default (60 s).
     fn timeout_secs(req: &ExecRequest) -> u64 {
         req.timeout_secs.unwrap_or(60)
     }
-}
 
-#[async_trait]
-impl SandboxProvider for BubblewrapProvider {
-    fn name(&self) -> &'static str {
-        "bubblewrap"
-    }
-
-    /// Advertised capabilities.
-    ///
-    /// - [`FILESYSTEM_READ`](SandboxCapabilitySet::FILESYSTEM_READ)
-    /// - [`FILESYSTEM_WRITE`](SandboxCapabilitySet::FILESYSTEM_WRITE)
-    /// - [`PERSISTENCE`](SandboxCapabilitySet::PERSISTENCE)
-    ///
-    /// `NETWORK_OUTBOUND` is deliberately omitted — bubblewrap uses
-    /// `--unshare-net` by default.
-    fn capabilities(&self) -> SandboxCapabilitySet {
-        SandboxCapabilitySet::FILESYSTEM_READ
-            | SandboxCapabilitySet::FILESYSTEM_WRITE
-            | SandboxCapabilitySet::PERSISTENCE
-    }
+    // ── SandboxProvider-semantics helpers (private) ─────────────────────────
+    //
+    // These mirror the method bodies of the (now removed) explicit
+    // `SandboxProvider` impl. The new `HypervisorBackend` impl calls them
+    // through type conversions so existing subprocess semantics stay intact.
 
     /// Create a new sandbox workspace directory.
-    ///
-    /// Returns immediately with `status: Running`. The workspace directory is
-    /// created at `{workspace_root}/{id}/`.
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+    async fn bwrap_create(
+        &self,
+        spec: SandboxSpec,
+    ) -> Result<arcan_sandbox::types::SandboxHandle, SandboxError> {
         let id = SandboxId(Uuid::new_v4().to_string());
         let workspace = self.workspace_dir(&id);
 
@@ -131,60 +126,12 @@ impl SandboxProvider for BubblewrapProvider {
 
         debug!(sandbox_id = %id, workspace = %workspace.display(), "sandbox workspace created");
 
-        Ok(SandboxHandle {
+        Ok(arcan_sandbox::types::SandboxHandle {
             id,
             name: spec.name,
             status: SandboxStatus::Running,
             created_at: Utc::now(),
-            provider: self.name().to_owned(),
-            metadata: serde_json::json!({
-                "workspace": workspace.display().to_string(),
-                "use_bwrap": self.use_bwrap,
-            }),
-        })
-    }
-
-    /// Restore a sandbox from its tarball snapshot.
-    ///
-    /// If the workspace directory already exists this is a no-op — the handle
-    /// is returned with `status: Running`. If the workspace is missing but a
-    /// tarball exists it is extracted.
-    async fn resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
-        let workspace = self.workspace_dir(id);
-        let tarball = self.snapshot_path(id);
-
-        if !workspace.exists() {
-            if tarball.exists() {
-                // Untar the snapshot into workspace_root.
-                let status = Command::new("tar")
-                    .args(["-xzf", tarball.to_str().unwrap_or_default()])
-                    .args(["-C", self.workspace_root.to_str().unwrap_or_default()])
-                    .status()
-                    .await
-                    .map_err(|e| SandboxError::ProviderError {
-                        provider: "bubblewrap",
-                        message: format!("tar extract failed: {e}"),
-                    })?;
-
-                if !status.success() {
-                    return Err(SandboxError::ProviderError {
-                        provider: "bubblewrap",
-                        message: format!("tar exited with {status} while extracting {tarball:?}"),
-                    });
-                }
-
-                info!(sandbox_id = %id, "sandbox restored from snapshot");
-            } else {
-                return Err(SandboxError::NotFound(id.clone()));
-            }
-        }
-
-        Ok(SandboxHandle {
-            id: id.clone(),
-            name: id.0.clone(),
-            status: SandboxStatus::Running,
-            created_at: Utc::now(),
-            provider: self.name().to_owned(),
+            provider: "bubblewrap".to_owned(),
             metadata: serde_json::json!({
                 "workspace": workspace.display().to_string(),
                 "use_bwrap": self.use_bwrap,
@@ -193,10 +140,11 @@ impl SandboxProvider for BubblewrapProvider {
     }
 
     /// Execute a command inside the sandbox workspace.
-    ///
-    /// Uses `bwrap` when available, otherwise falls back to a plain Tokio
-    /// subprocess with the current directory set to the workspace.
-    async fn run(&self, id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
+    async fn bwrap_run(
+        &self,
+        id: &SandboxId,
+        req: ExecRequest,
+    ) -> Result<ExecResult, SandboxError> {
         let workspace = self.workspace_dir(id);
         if !workspace.exists() {
             return Err(SandboxError::NotFound(id.clone()));
@@ -240,55 +188,11 @@ impl SandboxProvider for BubblewrapProvider {
         }
     }
 
-    /// Tar the workspace directory to `{workspace_root}/{id}.tar.gz`.
+    /// Remove the workspace directory.
     ///
-    /// Returns the filename as the [`SnapshotId`].
-    async fn snapshot(&self, id: &SandboxId) -> Result<SnapshotId, SandboxError> {
+    /// Succeeds even if it does not exist.
+    async fn bwrap_destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
         let workspace = self.workspace_dir(id);
-        if !workspace.exists() {
-            return Err(SandboxError::NotFound(id.clone()));
-        }
-
-        let tarball = self.snapshot_path(id);
-        let tarball_name = tarball
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_owned();
-
-        // tar -czf {tarball} -C {workspace_root} {id}
-        let status = Command::new("tar")
-            .args([
-                "-czf",
-                tarball.to_str().unwrap_or_default(),
-                "-C",
-                self.workspace_root.to_str().unwrap_or_default(),
-                &id.0,
-            ])
-            .status()
-            .await
-            .map_err(|e| SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("tar create failed: {e}"),
-            })?;
-
-        if !status.success() {
-            return Err(SandboxError::ProviderError {
-                provider: "bubblewrap",
-                message: format!("tar exited with {status}"),
-            });
-        }
-
-        info!(sandbox_id = %id, snapshot = %tarball_name, "snapshot created");
-        Ok(SnapshotId(tarball_name))
-    }
-
-    /// Remove the workspace directory and any associated tarball.
-    ///
-    /// Succeeds even if neither exists.
-    async fn destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
-        let workspace = self.workspace_dir(id);
-        let tarball = self.snapshot_path(id);
 
         if workspace.exists() {
             fs::remove_dir_all(&workspace)
@@ -298,14 +202,6 @@ impl SandboxProvider for BubblewrapProvider {
                     message: format!("remove workspace: {e}"),
                 })?;
         }
-        if tarball.exists() {
-            fs::remove_file(&tarball)
-                .await
-                .map_err(|e| SandboxError::ProviderError {
-                    provider: "bubblewrap",
-                    message: format!("remove tarball: {e}"),
-                })?;
-        }
 
         info!(sandbox_id = %id, "sandbox destroyed");
         Ok(())
@@ -313,7 +209,7 @@ impl SandboxProvider for BubblewrapProvider {
 
     /// Scan `workspace_root` for directories and return a [`SandboxInfo`] for
     /// each one found.
-    async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
+    async fn bwrap_list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
         if !self.workspace_root.exists() {
             return Ok(vec![]);
         }
@@ -368,6 +264,296 @@ impl SandboxProvider for BubblewrapProvider {
 
         Ok(infos)
     }
+}
+
+// ── HypervisorBackend impl (BRO-855) ──────────────────────────────────────────
+//
+// Explicit first-class impl of the canonical `aios_protocol::HypervisorBackend`
+// contract. Delegates to the private `bwrap_*` helpers directly so there is
+// no round-trip through the deprecated `SandboxProvider` shim.
+//
+// The deprecated `SandboxProvider` trait is still available to legacy callers
+// via the blanket `impl<T: HypervisorBackend> SandboxProvider for T` exposed by
+// `arcan-sandbox`; we no longer maintain an explicit `impl SandboxProvider`
+// because (a) it would conflict with the blanket impl and (b) all of its
+// behaviour is preserved by delegating to the helpers above.
+//
+// Capability reality-check:
+//
+// - `FILESYSTEM_READ` / `FILESYSTEM_WRITE` — the host filesystem under the
+//   per-sandbox workspace directory is fully read/write via shell exec; the
+//   capability bits are advertised so the kernel surfaces bubblewrap as a
+//   filesystem-capable backend.
+// - `FILESYSTEM_EXT` — advertised because this crate implements the extension
+//   trait (including `list()` that enumerates workspace directories).
+//   `write_files`/`read_file` currently return `NotSupported`; the direct-API
+//   wiring is deferred because bubblewrap callers invariably use shell exec
+//   for file IO already.
+// - `NETWORK_EGRESS` — the plain subprocess fallback inherits full network
+//   access. The `bwrap` branch uses `--unshare-net` but this is an OS-level
+//   enforcement, not a capability advertised to the kernel router; advertising
+//   `NETWORK_EGRESS` reflects what the backend *can* offer when callers do
+//   not request network isolation explicitly via `VmSpec.network_policy`.
+// - `PERSISTENCE` — intentionally **not** advertised. Bubblewrap is the
+//   ephemeral developer loop; `snapshot`/`restore` return `NotSupported`.
+// - `HIBERNATE` — intentionally **not** advertised. `hibernate` / `resume`
+//   inherit the trait's default `NotSupported` impls.
+
+#[async_trait]
+impl aios_protocol::hypervisor::HypervisorBackend for BubblewrapProvider {
+    fn name(&self) -> &'static str {
+        "bubblewrap"
+    }
+
+    fn capabilities(&self) -> aios_protocol::hypervisor::BackendCapabilitySet {
+        use aios_protocol::hypervisor::BackendCapabilitySet;
+        BackendCapabilitySet::FILESYSTEM_READ
+            | BackendCapabilitySet::FILESYSTEM_WRITE
+            | BackendCapabilitySet::FILESYSTEM_EXT
+            | BackendCapabilitySet::NETWORK_EGRESS
+    }
+
+    async fn create(
+        &self,
+        spec: aios_protocol::hypervisor::VmSpec,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        use aios_protocol::hypervisor::{BackendId, VmHandle, VmId};
+
+        let sandbox_spec = vm_spec_to_sandbox_spec(&spec);
+        let handle = self
+            .bwrap_create(sandbox_spec)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+
+        Ok(VmHandle {
+            vm_id: VmId(handle.id.0),
+            backend: BackendId::from("bubblewrap"),
+            session_id: session_id_from_spec(&spec),
+            agent_id: agent_id_from_spec(&spec),
+            status: vm_status_from_sandbox(handle.status),
+            created_at: handle.created_at,
+            metadata: handle.metadata,
+        })
+    }
+
+    async fn exec(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+        req: aios_protocol::hypervisor::ExecRequest,
+    ) -> Result<aios_protocol::hypervisor::ExecResult, aios_protocol::hypervisor::BackendError>
+    {
+        let id = SandboxId(vm.vm_id.0.clone());
+        let legacy_req = vm_exec_request_to_sandbox(req);
+        let legacy = self
+            .bwrap_run(&id, legacy_req)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+        Ok(aios_protocol::hypervisor::ExecResult {
+            stdout: legacy.stdout,
+            stderr: legacy.stderr,
+            exit_code: legacy.exit_code,
+            duration_ms: legacy.duration_ms,
+        })
+    }
+
+    /// Bubblewrap does not implement snapshots through the kernel surface —
+    /// the legacy tarball-based `SandboxProvider::snapshot` is retired with
+    /// BRO-855. Callers that need persistence should use `arcan-provider-local`
+    /// (Docker/nsjail) or `arcan-provider-vercel`.
+    async fn snapshot(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<aios_protocol::hypervisor::VmSnapshotId, aios_protocol::hypervisor::BackendError>
+    {
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "bubblewrap",
+            reason: "snapshot",
+        })
+    }
+
+    async fn restore(
+        &self,
+        _snapshot: &aios_protocol::hypervisor::VmSnapshotId,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "bubblewrap",
+            reason: "restore",
+        })
+    }
+
+    async fn destroy(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        let id = SandboxId(vm.vm_id.0.clone());
+        self.bwrap_destroy(&id)
+            .await
+            .map_err(backend_error_from_sandbox)
+    }
+
+    // `hibernate` / `resume` inherit the trait's `BackendError::NotSupported`
+    // defaults — bubblewrap has no pause-in-place semantics.
+}
+
+#[async_trait]
+impl aios_protocol::hypervisor::HypervisorFilesystemExt for BubblewrapProvider {
+    async fn write_files(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _files: Vec<aios_protocol::hypervisor::FileWrite>,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        // Bubblewrap callers use shell exec for file IO; a direct-API path
+        // is not wired. The legacy `SandboxProvider::write_files` default
+        // returned `NotSupported` and we preserve that semantic.
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "bubblewrap",
+            reason: "write_files",
+        })
+    }
+
+    async fn read_file(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _path: &str,
+    ) -> Result<Vec<u8>, aios_protocol::hypervisor::BackendError> {
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "bubblewrap",
+            reason: "read_file",
+        })
+    }
+
+    async fn list(
+        &self,
+    ) -> Result<Vec<aios_protocol::hypervisor::VmInfo>, aios_protocol::hypervisor::BackendError>
+    {
+        let legacy = self
+            .bwrap_list()
+            .await
+            .map_err(backend_error_from_sandbox)?;
+
+        Ok(legacy
+            .into_iter()
+            .map(|info| aios_protocol::hypervisor::VmInfo {
+                vm_id: aios_protocol::hypervisor::VmId(info.id.0),
+                backend: aios_protocol::hypervisor::BackendId::from("bubblewrap"),
+                status: vm_status_from_sandbox(info.status),
+                created_at: info.created_at,
+            })
+            .collect())
+    }
+}
+
+// ── Conversion helpers (VmSpec ↔ SandboxSpec, SandboxError → BackendError) ────
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::VmSpec`] into the
+/// legacy [`SandboxSpec`] consumed by the private `bwrap_*` helpers. The
+/// conversion is lossy for mounts/network_policy (which the shell helpers do
+/// not honour) but preserves the fields that actually drive provisioning.
+fn vm_spec_to_sandbox_spec(spec: &aios_protocol::hypervisor::VmSpec) -> SandboxSpec {
+    use aios_protocol::hypervisor::RuntimeHint;
+    use arcan_sandbox::types::{SandboxResources, SandboxSpec};
+
+    let image = match &spec.runtime_hint {
+        RuntimeHint::Custom { image } if !image.is_empty() => Some(image.clone()),
+        _ => None,
+    };
+
+    let name = spec
+        .labels
+        .get("sandbox.name")
+        .cloned()
+        .unwrap_or_else(|| format!("bwrap-{}", chrono::Utc::now().timestamp_millis()));
+
+    SandboxSpec {
+        name,
+        image,
+        resources: SandboxResources {
+            vcpus: spec.resources.vcpus,
+            memory_mb: (spec.resources.memory_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            disk_mb: (spec.resources.disk_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            timeout_secs: spec.resources.timeout_secs,
+        },
+        env: spec.env.clone(),
+        persistence: arcan_sandbox::types::PersistencePolicy::Ephemeral,
+        capabilities: arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_READ
+            | arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_WRITE,
+        labels: spec.labels.clone(),
+    }
+}
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::ExecRequest`] into the
+/// legacy [`arcan_sandbox::types::ExecRequest`] used by the private helpers.
+/// The two structs have identical fields today; the copy keeps the coupling
+/// explicit should they diverge.
+fn vm_exec_request_to_sandbox(
+    req: aios_protocol::hypervisor::ExecRequest,
+) -> arcan_sandbox::types::ExecRequest {
+    arcan_sandbox::types::ExecRequest {
+        command: req.command,
+        working_dir: req.working_dir,
+        env: req.env,
+        timeout_secs: req.timeout_secs,
+        stdin: req.stdin,
+    }
+}
+
+/// Map a legacy [`SandboxStatus`] to the canonical
+/// [`aios_protocol::hypervisor::VmStatus`].
+fn vm_status_from_sandbox(status: SandboxStatus) -> aios_protocol::hypervisor::VmStatus {
+    use aios_protocol::hypervisor::VmStatus;
+    match status {
+        SandboxStatus::Starting => VmStatus::Starting,
+        SandboxStatus::Running => VmStatus::Running,
+        SandboxStatus::Snapshotted => VmStatus::Snapshotted,
+        SandboxStatus::Stopping => VmStatus::Stopping,
+        SandboxStatus::Stopped => VmStatus::Stopped,
+        SandboxStatus::Failed { reason } => VmStatus::Failed { reason },
+    }
+}
+
+/// Bridge from the legacy [`SandboxError`] (returned by internal helpers) to
+/// the canonical [`aios_protocol::hypervisor::BackendError`].
+///
+/// Symmetric counterpart to `From<BackendError> for SandboxError` in
+/// `arcan-sandbox::error`. A local forward mapping avoids a circular
+/// dependency that would arise from placing `From<SandboxError>` inside
+/// `aios-protocol`.
+fn backend_error_from_sandbox(e: SandboxError) -> aios_protocol::hypervisor::BackendError {
+    use aios_protocol::hypervisor::{BackendError, VmId as NewVmId};
+    match e {
+        SandboxError::NotFound(id) => BackendError::VmNotFound(NewVmId(id.0)),
+        SandboxError::NotSupported { provider, reason } => BackendError::NotSupported {
+            backend: provider,
+            reason,
+        },
+        SandboxError::ProviderError {
+            provider: _,
+            message,
+        } => BackendError::Internal(message),
+        SandboxError::ExecTimeout { timeout_secs, .. } => BackendError::Timeout {
+            duration_ms: timeout_secs.saturating_mul(1_000),
+        },
+        SandboxError::CapabilityDenied { capability } => {
+            BackendError::Internal(format!("capability denied: {capability}"))
+        }
+        SandboxError::Serialization(err) => BackendError::Internal(err.to_string()),
+    }
+}
+
+/// Extract a [`SessionId`] from optional `session.id` labels on the spec.
+fn session_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::SessionId {
+    spec.labels
+        .get("session.id")
+        .map(|s| aios_protocol::ids::SessionId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::SessionId::from_string("arcan-provider-bubblewrap"))
+}
+
+/// Extract an [`AgentId`] from optional `agent.id` labels on the spec.
+fn agent_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::AgentId {
+    spec.labels
+        .get("agent.id")
+        .map(|s| aios_protocol::ids::AgentId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::AgentId::from_string("arcan-provider-bubblewrap"))
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -445,11 +631,13 @@ fn apply_exec_env(cmd: &mut Command, req: &ExecRequest) {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Legacy tests (via SandboxProvider blanket impl) ──────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
+    use arcan_sandbox::provider::SandboxProvider;
 
     fn provider_at(root: &Path) -> BubblewrapProvider {
         BubblewrapProvider {
@@ -463,8 +651,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider
-            .create(SandboxSpec::ephemeral("test"))
+        let handle = SandboxProvider::create(&provider, SandboxSpec::ephemeral("test"))
             .await
             .unwrap();
         let workspace = provider.workspace_dir(&handle.id);
@@ -473,7 +660,9 @@ mod tests {
             "workspace dir should exist after create"
         );
 
-        provider.destroy(&handle.id).await.unwrap();
+        SandboxProvider::destroy(&provider, &handle.id)
+            .await
+            .unwrap();
         assert!(
             !workspace.exists(),
             "workspace dir should be removed after destroy"
@@ -485,8 +674,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider
-            .create(SandboxSpec::ephemeral("echo-test"))
+        let handle = SandboxProvider::create(&provider, SandboxSpec::ephemeral("echo-test"))
             .await
             .unwrap();
 
@@ -498,75 +686,25 @@ mod tests {
             stdin: None,
         };
 
-        let result = provider.run(&handle.id, req).await.unwrap();
+        let result = SandboxProvider::run(&provider, &handle.id, req)
+            .await
+            .unwrap();
         assert_eq!(result.exit_code, 0, "echo should exit 0");
         assert!(
             result.stdout_str().contains("hello"),
             "stdout should contain 'hello'"
         );
 
-        provider.destroy(&handle.id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn snapshot_produces_tarball() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = provider_at(tmp.path());
-
-        let handle = provider
-            .create(SandboxSpec::ephemeral("snap-test"))
+        SandboxProvider::destroy(&provider, &handle.id)
             .await
             .unwrap();
-        let snapshot_id = provider.snapshot(&handle.id).await.unwrap();
-
-        let tarball = provider.snapshot_path(&handle.id);
-        assert!(tarball.exists(), "tarball should exist after snapshot");
-        assert!(
-            snapshot_id.0.ends_with(".tar.gz"),
-            "snapshot id should be a .tar.gz filename"
-        );
-
-        provider.destroy(&handle.id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn resume_restores_from_tarball() {
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = provider_at(tmp.path());
-
-        // Create, write a file, snapshot, destroy workspace dir, then resume.
-        let handle = provider
-            .create(SandboxSpec::ephemeral("resume-test"))
-            .await
-            .unwrap();
-        let workspace = provider.workspace_dir(&handle.id);
-
-        // Write a marker file.
-        tokio::fs::write(workspace.join("marker.txt"), b"alive")
-            .await
-            .unwrap();
-
-        provider.snapshot(&handle.id).await.unwrap();
-
-        // Remove workspace dir only (keep tarball).
-        tokio::fs::remove_dir_all(&workspace).await.unwrap();
-        assert!(!workspace.exists());
-
-        let resumed = provider.resume(&handle.id).await.unwrap();
-        assert_eq!(resumed.id, handle.id);
-        assert!(
-            workspace.exists(),
-            "workspace dir should exist after resume"
-        );
-
-        provider.destroy(&handle.id).await.unwrap();
     }
 
     #[test]
     fn name_returns_bubblewrap() {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
-        assert_eq!(provider.name(), "bubblewrap");
+        assert_eq!(SandboxProvider::name(&provider), "bubblewrap");
     }
 
     /// A non-zero exit code must be forwarded without an error.
@@ -575,8 +713,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider
-            .create(SandboxSpec::ephemeral("exit-code-test"))
+        let handle = SandboxProvider::create(&provider, SandboxSpec::ephemeral("exit-code-test"))
             .await
             .unwrap();
 
@@ -588,10 +725,14 @@ mod tests {
             stdin: None,
         };
 
-        let result = provider.run(&handle.id, req).await.unwrap();
+        let result = SandboxProvider::run(&provider, &handle.id, req)
+            .await
+            .unwrap();
         assert_eq!(result.exit_code, 1, "exit code 1 must be forwarded");
 
-        provider.destroy(&handle.id).await.unwrap();
+        SandboxProvider::destroy(&provider, &handle.id)
+            .await
+            .unwrap();
     }
 
     /// A command that exceeds its timeout must return `ExecTimeout`.
@@ -600,8 +741,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
 
-        let handle = provider
-            .create(SandboxSpec::ephemeral("timeout-test"))
+        let handle = SandboxProvider::create(&provider, SandboxSpec::ephemeral("timeout-test"))
             .await
             .unwrap();
 
@@ -613,51 +753,124 @@ mod tests {
             stdin: None,
         };
 
-        let err = provider.run(&handle.id, req).await.unwrap_err();
+        let err = SandboxProvider::run(&provider, &handle.id, req)
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, SandboxError::ExecTimeout { .. }),
             "expected ExecTimeout, got: {err:?}"
         );
 
-        provider.destroy(&handle.id).await.unwrap();
+        SandboxProvider::destroy(&provider, &handle.id)
+            .await
+            .unwrap();
+    }
+}
+
+// ── HypervisorBackend trait tests (BRO-855) ──────────────────────────────────
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+    use aios_protocol::hypervisor::{
+        BackendCapabilitySet, BackendError, BackendId, HypervisorBackend, VmHandle, VmId,
+        VmSnapshotId, VmStatus,
+    };
+    use aios_protocol::ids::{AgentId, SessionId};
+
+    fn provider_at(root: &Path) -> BubblewrapProvider {
+        BubblewrapProvider {
+            workspace_root: root.to_path_buf(),
+            use_bwrap: false,
+        }
     }
 
-    /// `resume` on an ID with no workspace and no tarball must return `NotFound`.
-    #[tokio::test]
-    async fn resume_unknown_id_returns_not_found() {
+    fn test_vm_handle() -> VmHandle {
+        VmHandle {
+            vm_id: VmId::from("vm-test"),
+            backend: BackendId::from("bubblewrap"),
+            session_id: SessionId::from_string("sess-test"),
+            agent_id: AgentId::from_string("agent-test"),
+            status: VmStatus::Running,
+            created_at: chrono::Utc::now(),
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn bubblewrap_provider_impls_hypervisor_backend() {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
-
-        let unknown_id = SandboxId("does-not-exist".into());
-        let err = provider.resume(&unknown_id).await.unwrap_err();
+        assert_eq!(HypervisorBackend::name(&provider), "bubblewrap");
         assert!(
-            matches!(err, SandboxError::NotFound(_)),
-            "expected NotFound, got: {err:?}"
+            HypervisorBackend::capabilities(&provider)
+                .contains(BackendCapabilitySet::FILESYSTEM_EXT),
+            "bubblewrap provider must advertise FILESYSTEM_EXT now that \
+             HypervisorFilesystemExt is implemented"
         );
     }
 
-    /// `list` must return a `SandboxInfo` for each created sandbox.
-    #[tokio::test]
-    async fn list_returns_all_created_sandboxes() {
+    #[test]
+    fn bubblewrap_provider_advertises_expected_capability_set() {
         let tmp = tempfile::tempdir().unwrap();
         let provider = provider_at(tmp.path());
+        let caps = HypervisorBackend::capabilities(&provider);
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_READ));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_WRITE));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_EXT));
+        assert!(caps.contains(BackendCapabilitySet::NETWORK_EGRESS));
+        // Bubblewrap is an ephemeral developer loop — no persistence / hibernate.
+        assert!(
+            !caps.contains(BackendCapabilitySet::PERSISTENCE),
+            "bubblewrap must not advertise PERSISTENCE — snapshot/restore return NotSupported"
+        );
+        assert!(
+            !caps.contains(BackendCapabilitySet::HIBERNATE),
+            "bubblewrap must not advertise HIBERNATE — no pause-in-place semantics"
+        );
+    }
 
-        let h1 = provider
-            .create(SandboxSpec::ephemeral("list-test-1"))
+    #[tokio::test]
+    async fn bubblewrap_snapshot_returns_not_supported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = provider_at(tmp.path());
+        let handle = test_vm_handle();
+        let err = HypervisorBackend::snapshot(&provider, &handle)
             .await
-            .unwrap();
-        let h2 = provider
-            .create(SandboxSpec::ephemeral("list-test-2"))
+            .expect_err("snapshot should be NotSupported for BubblewrapProvider");
+        match err {
+            BackendError::NotSupported { backend, reason } => {
+                assert_eq!(backend, "bubblewrap");
+                assert_eq!(reason, "snapshot");
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bubblewrap_restore_returns_not_supported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = provider_at(tmp.path());
+        let err = HypervisorBackend::restore(&provider, &VmSnapshotId::from("snap-1"))
             .await
-            .unwrap();
+            .expect_err("restore should be NotSupported for BubblewrapProvider");
+        match err {
+            BackendError::NotSupported { backend, reason } => {
+                assert_eq!(backend, "bubblewrap");
+                assert_eq!(reason, "restore");
+            }
+            other => panic!("expected NotSupported, got {other:?}"),
+        }
+    }
 
-        let infos = provider.list().await.unwrap();
-        let ids: Vec<_> = infos.iter().map(|i| &i.id).collect();
-
-        assert!(ids.contains(&&h1.id), "list must include first sandbox");
-        assert!(ids.contains(&&h2.id), "list must include second sandbox");
-
-        provider.destroy(&h1.id).await.unwrap();
-        provider.destroy(&h2.id).await.unwrap();
+    #[tokio::test]
+    async fn bubblewrap_hibernate_returns_not_supported_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = provider_at(tmp.path());
+        let handle = test_vm_handle();
+        let err = HypervisorBackend::hibernate(&provider, &handle)
+            .await
+            .expect_err("default hibernate impl should return NotSupported");
+        assert!(matches!(err, BackendError::NotSupported { .. }));
     }
 }

@@ -1,3 +1,9 @@
+// Phase 0 transitional: selects `arcan_sandbox::SandboxProvider` backends. The
+// backends satisfy the deprecated trait via the blanket
+// `impl<T: HypervisorBackend> SandboxProvider for T`. Migration to direct
+// `HypervisorBackend` construction is deferred to a follow-up phase.
+#![allow(deprecated)]
+
 //! Sandbox backend selection from the `ARCAN_SANDBOX_BACKEND` environment variable.
 //!
 //! # Supported values

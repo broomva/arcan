@@ -15,6 +15,7 @@ default = []
 sandbox-vercel = []
 
 [dependencies]
+aios-protocol.workspace = true
 arcan-sandbox.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

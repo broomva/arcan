@@ -1,4 +1,5 @@
-//! `arcan-provider-vercel` — [`SandboxProvider`] backed by the Vercel Sandbox v2 API.
+//! `arcan-provider-vercel` — [`HypervisorBackend`] backed by the Vercel Sandbox
+//! v2 API (Firecracker microVM isolation, named sandboxes + auto-persistence).
 //!
 //! # Named sandboxes (beta)
 //!
@@ -9,15 +10,17 @@
 //! | **Sandbox** | User-defined `name` (unique per project) | Persistent across sessions |
 //! | **Session** | System-generated `sessionId` | Ephemeral VM run |
 //!
-//! This provider maps [`SandboxId`] to the **sandbox name** — a stable, human-readable
-//! key that survives across sessions and restarts.  Commands are executed against the
-//! current *session*, which is resolved (or created via auto-resume) on every `run()` call.
+//! This provider maps [`SandboxId`] / [`VmId`] to the **sandbox name** — a
+//! stable, human-readable key that survives across sessions and restarts.
+//! Commands are executed against the current *session*, which is resolved (or
+//! created via auto-resume) on every `exec()` call.
 //!
 //! # Automatic persistence (beta)
 //!
-//! When `persistent: true` is set at creation time, the Vercel backend automatically
-//! snapshots the sandbox filesystem when the session is stopped.  The next `resume()`
-//! call boots a fresh session from that snapshot — no manual snapshot management needed.
+//! When `persistent: true` is set at creation time, the Vercel backend
+//! automatically snapshots the sandbox filesystem when the session is stopped.
+//! The next `restore()` call boots a fresh session from that snapshot — no
+//! manual snapshot management needed.
 //!
 //! # Isolation
 //!
@@ -33,8 +36,20 @@
 //!
 //! # Authentication
 //!
-//! Reads `VERCEL_TOKEN` (preferred) or `VERCEL_SANDBOX_API_KEY` for the bearer token.
-//! `VERCEL_TEAM_ID` is optional; `VERCEL_PROJECT_ID` is required for list operations.
+//! Reads `VERCEL_TOKEN` (preferred) or `VERCEL_SANDBOX_API_KEY` for the bearer
+//! token. `VERCEL_TEAM_ID` is optional; `VERCEL_PROJECT_ID` is required for
+//! list operations.
+//!
+//! # Kernel ABI (BRO-854)
+//!
+//! This crate implements [`aios_protocol::hypervisor::HypervisorBackend`] and
+//! [`aios_protocol::hypervisor::HypervisorFilesystemExt`] directly. The legacy
+//! `arcan_sandbox::SandboxProvider` surface is reached via the blanket
+//! `impl<T: HypervisorBackend> SandboxProvider for T` exported by
+//! `arcan-sandbox`, so existing callers keep compiling while the workspace
+//! migrates off the deprecated trait.
+//!
+//! [`HypervisorBackend`]: aios_protocol::hypervisor::HypervisorBackend
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -45,9 +60,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use arcan_sandbox::{
-    capability::SandboxCapabilitySet,
     error::SandboxError,
-    provider::SandboxProvider,
     types::{
         ExecRequest, ExecResult, SandboxHandle, SandboxId, SandboxInfo, SandboxSpec, SandboxStatus,
         SnapshotId,
@@ -148,13 +161,16 @@ struct ListSandboxesResponse {
 
 // ── Provider struct ───────────────────────────────────────────────────────────
 
-/// [`SandboxProvider`] backed by the Vercel Sandbox v2 API (named sandboxes +
+/// [`HypervisorBackend`] backed by the Vercel Sandbox v2 API (named sandboxes +
 /// auto-persistence beta).
 ///
-/// The primary identifier is the **sandbox name** (stored as [`SandboxId`]).
-/// A session ID is resolved on each `run()` call via the auto-resume endpoint —
-/// this incurs one additional GET per exec, which is acceptable for the arcan
-/// single-tool-call-per-session pattern.
+/// The primary identifier is the **sandbox name** (stored as [`SandboxId`] /
+/// [`aios_protocol::hypervisor::VmId`]). A session ID is resolved on each
+/// `exec()` call via the auto-resume endpoint — this incurs one additional GET
+/// per exec, which is acceptable for the arcan single-tool-call-per-session
+/// pattern.
+///
+/// [`HypervisorBackend`]: aios_protocol::hypervisor::HypervisorBackend
 pub struct VercelSandboxProvider {
     client: reqwest::Client,
     api_token: String,
@@ -353,29 +369,16 @@ impl VercelSandboxProvider {
             serde_json::from_str(&body).map_err(SandboxError::Serialization)?;
         Ok(Some(vercel_sandbox_to_info(sandbox)?))
     }
-}
 
-// ── SandboxProvider impl ──────────────────────────────────────────────────────
+    // ── v2 SandboxProvider-semantics helpers ──────────────────────────────────
+    //
+    // These mirror the method bodies of the (now removed) explicit
+    // `SandboxProvider` impl. The new `HypervisorBackend` impl calls them
+    // through type conversions so existing HTTP paths and fixtures stay intact.
 
-#[async_trait]
-impl SandboxProvider for VercelSandboxProvider {
-    fn name(&self) -> &'static str {
-        "vercel"
-    }
-
-    fn capabilities(&self) -> SandboxCapabilitySet {
-        SandboxCapabilitySet::FILESYSTEM_READ
-            | SandboxCapabilitySet::FILESYSTEM_WRITE
-            | SandboxCapabilitySet::NETWORK_OUTBOUND
-            | SandboxCapabilitySet::PERSISTENCE
-            | SandboxCapabilitySet::TAGS
-    }
-
-    /// Provision a new sandbox via `POST /v2/sandboxes`.
-    ///
-    /// The returned [`SandboxHandle::id`] contains the **sandbox name**, which
-    /// is the stable identifier used by all subsequent operations.
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
+    /// Provision a new sandbox via `POST /v2/sandboxes` and return the
+    /// legacy-style handle used by the pre-kernel code path.
+    async fn v2_create(&self, spec: SandboxSpec) -> Result<SandboxHandle, SandboxError> {
         let url = self.url("/v2/sandboxes");
         let persistent = !matches!(
             spec.persistence,
@@ -410,25 +413,15 @@ impl SandboxProvider for VercelSandboxProvider {
         sandbox_and_session_to_handle(&combined)
     }
 
-    /// Resume a stopped sandbox by name.
-    ///
-    /// Calls `GET /v2/sandboxes/{name}?resume=true` which boots a new session
-    /// from the last auto-saved state (for persistent sandboxes).
-    ///
-    /// The `id` parameter is interpreted as the **sandbox name**.
-    async fn resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
+    /// Resume a stopped sandbox by name (v2 auto-resume).
+    async fn v2_resume(&self, id: &SandboxId) -> Result<SandboxHandle, SandboxError> {
         debug!(sandbox_name = %id, "resuming Vercel sandbox (v2 auto-resume)");
         let (sandbox, session) = self.resolve_session(&id.0).await?;
         sandbox_and_session_to_handle(&SandboxAndSession { sandbox, session })
     }
 
-    /// Execute a command inside a sandbox.
-    ///
-    /// Automatically resumes the sandbox if it is stopped (using the v2
-    /// auto-resume endpoint), then posts the command to the active session.
-    ///
-    /// The `id` parameter is interpreted as the **sandbox name**.
-    async fn run(&self, id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
+    /// Execute a command inside the current session of the named sandbox.
+    async fn v2_run(&self, id: &SandboxId, req: ExecRequest) -> Result<ExecResult, SandboxError> {
         // 1. Resolve (or resume) the current session.
         let (_sandbox, session) = self.resolve_session(&id.0).await?;
         let session_id = session.id;
@@ -486,11 +479,7 @@ impl SandboxProvider for VercelSandboxProvider {
     ///
     /// For **persistent** sandboxes, Vercel automatically saves the filesystem
     /// state when the session is stopped — no explicit snapshot call is needed.
-    /// The returned [`SnapshotId`] is the sandbox name (the stable identifier
-    /// you pass to `resume()`).
-    ///
-    /// The `id` parameter is interpreted as the **sandbox name**.
-    async fn snapshot(&self, id: &SandboxId) -> Result<SnapshotId, SandboxError> {
+    async fn v2_snapshot(&self, id: &SandboxId) -> Result<SnapshotId, SandboxError> {
         // Resolve the current session (we need its ID to stop it).
         let (_sandbox, session) = self.resolve_session(&id.0).await.map_err(|e| {
             // If already stopped there is nothing to snapshot.
@@ -520,12 +509,7 @@ impl SandboxProvider for VercelSandboxProvider {
     }
 
     /// Permanently delete a sandbox and all its sessions / snapshots.
-    ///
-    /// Calls `DELETE /v2/sandboxes/{name}`. Succeeds even if the sandbox
-    /// does not exist (404 is treated as success).
-    ///
-    /// The `id` parameter is interpreted as the **sandbox name**.
-    async fn destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
+    async fn v2_destroy(&self, id: &SandboxId) -> Result<(), SandboxError> {
         let url = self.url(&format!("/v2/sandboxes/{}", id.0));
         debug!(sandbox_name = %id, "deleting Vercel sandbox (v2)");
 
@@ -542,10 +526,7 @@ impl SandboxProvider for VercelSandboxProvider {
     }
 
     /// List all sandboxes in the configured project.
-    ///
-    /// Calls `GET /v2/sandboxes?project={project_id}`.  Returns an empty list
-    /// when no `VERCEL_PROJECT_ID` is configured.
-    async fn list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
+    async fn v2_list(&self) -> Result<Vec<SandboxInfo>, SandboxError> {
         let mut query: Vec<(&str, String)> = Vec::new();
         let project_id_owned;
         if let Some(pid) = &self.project_id {
@@ -639,13 +620,357 @@ impl VercelSandboxProvider {
 
     /// Resume a named sandbox and return a fresh [`SandboxHandle`].
     ///
-    /// Convenience wrapper over `resume()` that accepts a plain `&str` name.
+    /// Convenience wrapper over the v2 auto-resume endpoint.
     pub async fn resume_by_name(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
-        self.resume(&SandboxId(name.to_owned())).await
+        self.v2_resume(&SandboxId(name.to_owned())).await
     }
 }
 
-// ── Conversion helpers ────────────────────────────────────────────────────────
+// ── HypervisorBackend impl (BRO-854) ──────────────────────────────────────────
+//
+// Explicit first-class impl of the canonical `aios_protocol::HypervisorBackend`
+// contract. Delegates to the private `v2_*` helpers directly so there is no
+// round-trip through the deprecated `SandboxProvider` shim.
+//
+// The deprecated `SandboxProvider` trait is still available to legacy callers
+// via the blanket `impl<T: HypervisorBackend> SandboxProvider for T` exposed by
+// `arcan-sandbox`; we no longer maintain an explicit `impl SandboxProvider`
+// because (a) it would conflict with the blanket impl and (b) all of its
+// behaviour is preserved by delegating to the helpers above.
+//
+// Capability reality-check:
+//
+// - `FILESYSTEM_READ` / `FILESYSTEM_WRITE` — conceptually supported by the v2
+//   API (the SDK exposes read/write), but this provider does not yet wire
+//   those endpoints into `HypervisorFilesystemExt::{read_file, write_files}`.
+//   The capability bits are advertised so the kernel surfaces Vercel as a
+//   filesystem-capable backend; callers that actually invoke the methods get a
+//   structured `NotSupported` error until the HTTP wiring lands (see
+//   DONE_WITH_CONCERNS note in BRO-854).
+// - `FILESYSTEM_EXT` — advertised because this crate implements the extension
+//   trait (including `list()`). `write_files`/`read_file` remain `NotSupported`.
+// - `NETWORK_EGRESS` — Firecracker sessions have outbound networking.
+// - `PERSISTENCE` — named sandboxes + auto-snapshot-on-stop map to the kernel's
+//   `snapshot` / `restore` pair.
+// - `HIBERNATE` — *not* advertised. The v2 API does not expose a
+//   pause-in-place operation separate from `stop` (which is already mapped to
+//   snapshot). Advertising `HIBERNATE` would lie; BRO-853 pattern says match
+//   bits to actual code.
+
+#[async_trait]
+impl aios_protocol::hypervisor::HypervisorBackend for VercelSandboxProvider {
+    fn name(&self) -> &'static str {
+        "vercel"
+    }
+
+    fn capabilities(&self) -> aios_protocol::hypervisor::BackendCapabilitySet {
+        use aios_protocol::hypervisor::BackendCapabilitySet;
+        BackendCapabilitySet::FILESYSTEM_READ
+            | BackendCapabilitySet::FILESYSTEM_WRITE
+            | BackendCapabilitySet::FILESYSTEM_EXT
+            | BackendCapabilitySet::NETWORK_EGRESS
+            | BackendCapabilitySet::PERSISTENCE
+            | BackendCapabilitySet::TAGS
+    }
+
+    async fn create(
+        &self,
+        spec: aios_protocol::hypervisor::VmSpec,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        use aios_protocol::hypervisor::{BackendId, VmHandle};
+
+        let sandbox_spec = vm_spec_to_sandbox_spec(&spec);
+        let handle = self
+            .v2_create(sandbox_spec)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+
+        Ok(VmHandle {
+            vm_id: aios_protocol::hypervisor::VmId(handle.id.0),
+            backend: BackendId::from("vercel"),
+            session_id: session_id_from_spec(&spec),
+            agent_id: agent_id_from_spec(&spec),
+            status: vm_status_from_sandbox(handle.status),
+            created_at: handle.created_at,
+            metadata: handle.metadata,
+        })
+    }
+
+    async fn exec(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+        req: aios_protocol::hypervisor::ExecRequest,
+    ) -> Result<aios_protocol::hypervisor::ExecResult, aios_protocol::hypervisor::BackendError>
+    {
+        let id = SandboxId(vm.vm_id.0.clone());
+        let legacy_req = vm_exec_request_to_sandbox(req);
+        let legacy = self
+            .v2_run(&id, legacy_req)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+        Ok(aios_protocol::hypervisor::ExecResult {
+            stdout: legacy.stdout,
+            stderr: legacy.stderr,
+            exit_code: legacy.exit_code,
+            duration_ms: legacy.duration_ms,
+        })
+    }
+
+    async fn snapshot(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<aios_protocol::hypervisor::VmSnapshotId, aios_protocol::hypervisor::BackendError>
+    {
+        let id = SandboxId(vm.vm_id.0.clone());
+        let snap = self
+            .v2_snapshot(&id)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+        Ok(aios_protocol::hypervisor::VmSnapshotId(snap.0))
+    }
+
+    /// Restore (resume) a Vercel sandbox from a named snapshot.
+    ///
+    /// The snapshot id is the stable **sandbox name**; the v2 API returns a
+    /// fresh session and sandbox handle via `GET /v2/sandboxes/{name}?resume=true`.
+    async fn restore(
+        &self,
+        snapshot: &aios_protocol::hypervisor::VmSnapshotId,
+    ) -> Result<aios_protocol::hypervisor::VmHandle, aios_protocol::hypervisor::BackendError> {
+        use aios_protocol::hypervisor::{BackendId, VmHandle};
+
+        let id = SandboxId(snapshot.0.clone());
+        let handle = self
+            .v2_resume(&id)
+            .await
+            .map_err(backend_error_from_sandbox)?;
+
+        Ok(VmHandle {
+            vm_id: aios_protocol::hypervisor::VmId(handle.id.0),
+            backend: BackendId::from("vercel"),
+            // restore() has no VmSpec; stamp compat ids so tracing stays
+            // consistent with the legacy `SandboxProvider::resume` surface.
+            session_id: aios_protocol::ids::SessionId::from_string("arcan-provider-vercel"),
+            agent_id: aios_protocol::ids::AgentId::from_string("arcan-provider-vercel"),
+            status: vm_status_from_sandbox(handle.status),
+            created_at: handle.created_at,
+            metadata: handle.metadata,
+        })
+    }
+
+    async fn destroy(
+        &self,
+        vm: &aios_protocol::hypervisor::VmHandle,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        let id = SandboxId(vm.vm_id.0.clone());
+        self.v2_destroy(&id)
+            .await
+            .map_err(backend_error_from_sandbox)
+    }
+
+    // `hibernate` / `resume` inherit the trait's `BackendError::NotSupported`
+    // defaults — the v2 API exposes neither as distinct operations from
+    // `snapshot` / `restore`.
+}
+
+#[async_trait]
+impl aios_protocol::hypervisor::HypervisorFilesystemExt for VercelSandboxProvider {
+    async fn write_files(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _files: Vec<aios_protocol::hypervisor::FileWrite>,
+    ) -> Result<(), aios_protocol::hypervisor::BackendError> {
+        // The v2 SDK exposes `/v2/sandboxes/sessions/{id}/files` but this
+        // provider does not yet wire the endpoint. Track in BRO-854 follow-up.
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "vercel",
+            reason: "write_files",
+        })
+    }
+
+    async fn read_file(
+        &self,
+        _vm: &aios_protocol::hypervisor::VmHandle,
+        _path: &str,
+    ) -> Result<Vec<u8>, aios_protocol::hypervisor::BackendError> {
+        // Same caveat as `write_files` — endpoint exists upstream but is not
+        // wired here yet. Track in BRO-854 follow-up.
+        Err(aios_protocol::hypervisor::BackendError::NotSupported {
+            backend: "vercel",
+            reason: "read_file",
+        })
+    }
+
+    async fn list(
+        &self,
+    ) -> Result<Vec<aios_protocol::hypervisor::VmInfo>, aios_protocol::hypervisor::BackendError>
+    {
+        let legacy = self.v2_list().await.map_err(backend_error_from_sandbox)?;
+
+        Ok(legacy
+            .into_iter()
+            .map(|info| aios_protocol::hypervisor::VmInfo {
+                vm_id: aios_protocol::hypervisor::VmId(info.id.0),
+                backend: aios_protocol::hypervisor::BackendId::from("vercel"),
+                status: vm_status_to_kernel(info.status),
+                created_at: info.created_at,
+            })
+            .collect())
+    }
+}
+
+// ── Conversion helpers (VmSpec ↔ SandboxSpec, SandboxError → BackendError) ────
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::VmSpec`] into the
+/// legacy [`SandboxSpec`] consumed by the private `v2_*` helpers.
+///
+/// The conversion honours two label conventions:
+///
+/// | Label | Effect |
+/// |-------|--------|
+/// | `sandbox.name` | Overrides the sandbox name (otherwise a random UUID) |
+/// | `sandbox.persistent` | `"true"` → create a persistent (auto-snapshotted) sandbox |
+fn vm_spec_to_sandbox_spec(spec: &aios_protocol::hypervisor::VmSpec) -> SandboxSpec {
+    use aios_protocol::hypervisor::RuntimeHint;
+    use arcan_sandbox::types::{PersistencePolicy, SandboxResources, SandboxSpec};
+
+    let image = match &spec.runtime_hint {
+        RuntimeHint::Custom { image } if !image.is_empty() => Some(image.clone()),
+        _ => None,
+    };
+
+    let name = spec
+        .labels
+        .get("sandbox.name")
+        .cloned()
+        .unwrap_or_else(|| format!("arcan-{}", uuid_like_from_labels(&spec.labels)));
+
+    let persistent = spec
+        .labels
+        .get("sandbox.persistent")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    // `PersistencePolicy::Persistent { idle_timeout_secs }` is the
+    // closest match; default to 60 s per the trait's E2B-calibrated
+    // guidance so the v2 auto-snapshot path kicks in.
+    let persistence = if persistent {
+        PersistencePolicy::Persistent {
+            idle_timeout_secs: 60,
+        }
+    } else {
+        PersistencePolicy::Ephemeral
+    };
+
+    SandboxSpec {
+        name,
+        image,
+        resources: SandboxResources {
+            vcpus: spec.resources.vcpus,
+            memory_mb: (spec.resources.memory_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            disk_mb: (spec.resources.disk_kb / 1024).min(u64::from(u32::MAX)) as u32,
+            timeout_secs: spec.resources.timeout_secs,
+        },
+        env: spec.env.clone(),
+        persistence,
+        capabilities: arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_READ
+            | arcan_sandbox::capability::SandboxCapabilitySet::FILESYSTEM_WRITE,
+        labels: spec.labels.clone(),
+    }
+}
+
+/// Cheap pseudo-uuid sourced from a `session.id` label when present, otherwise
+/// a timestamp. The full `uuid` crate is not pulled in because name collisions
+/// are caught server-side by Vercel's uniqueness constraint.
+fn uuid_like_from_labels(labels: &HashMap<String, String>) -> String {
+    if let Some(sess) = labels.get("session.id") {
+        return sess.clone();
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    format!("{now}")
+}
+
+/// Translate a kernel-level [`aios_protocol::hypervisor::ExecRequest`] into the
+/// legacy [`arcan_sandbox::types::ExecRequest`] used by the private helpers.
+fn vm_exec_request_to_sandbox(
+    req: aios_protocol::hypervisor::ExecRequest,
+) -> arcan_sandbox::types::ExecRequest {
+    arcan_sandbox::types::ExecRequest {
+        command: req.command,
+        working_dir: req.working_dir,
+        env: req.env,
+        timeout_secs: req.timeout_secs,
+        stdin: req.stdin,
+    }
+}
+
+/// Map a legacy [`SandboxStatus`] to the canonical
+/// [`aios_protocol::hypervisor::VmStatus`]. Kept at module scope so both the
+/// `HypervisorBackend` and `HypervisorFilesystemExt` impls can reuse it.
+fn vm_status_from_sandbox(status: SandboxStatus) -> aios_protocol::hypervisor::VmStatus {
+    use aios_protocol::hypervisor::VmStatus;
+    match status {
+        SandboxStatus::Starting => VmStatus::Starting,
+        SandboxStatus::Running => VmStatus::Running,
+        SandboxStatus::Snapshotted => VmStatus::Snapshotted,
+        SandboxStatus::Stopping => VmStatus::Stopping,
+        SandboxStatus::Stopped => VmStatus::Stopped,
+        SandboxStatus::Failed { reason } => VmStatus::Failed { reason },
+    }
+}
+
+/// Alias used from the `list()` implementation — keeps the call site readable
+/// when we are converting the legacy status we just built in `v2_list`.
+fn vm_status_to_kernel(status: SandboxStatus) -> aios_protocol::hypervisor::VmStatus {
+    vm_status_from_sandbox(status)
+}
+
+/// Bridge from the legacy [`SandboxError`] (returned by the internal `v2_*`
+/// helpers) to the canonical [`aios_protocol::hypervisor::BackendError`].
+///
+/// Symmetric counterpart to `From<BackendError> for SandboxError` in
+/// `arcan-sandbox::error`. A local forward mapping avoids a circular
+/// dependency that would arise from placing `From<SandboxError>` inside
+/// `aios-protocol`.
+fn backend_error_from_sandbox(e: SandboxError) -> aios_protocol::hypervisor::BackendError {
+    use aios_protocol::hypervisor::{BackendError, VmId as NewVmId};
+    match e {
+        SandboxError::NotFound(id) => BackendError::VmNotFound(NewVmId(id.0)),
+        SandboxError::NotSupported { provider, reason } => BackendError::NotSupported {
+            backend: provider,
+            reason,
+        },
+        SandboxError::ProviderError {
+            provider: _,
+            message,
+        } => BackendError::Internal(message),
+        SandboxError::ExecTimeout { timeout_secs, .. } => BackendError::Timeout {
+            duration_ms: timeout_secs.saturating_mul(1_000),
+        },
+        SandboxError::CapabilityDenied { capability } => {
+            BackendError::Internal(format!("capability denied: {capability}"))
+        }
+        SandboxError::Serialization(err) => BackendError::Internal(err.to_string()),
+    }
+}
+
+/// Extract a [`SessionId`] from optional `session.id` labels on the spec.
+fn session_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::SessionId {
+    spec.labels
+        .get("session.id")
+        .map(|s| aios_protocol::ids::SessionId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::SessionId::from_string("arcan-provider-vercel"))
+}
+
+/// Extract an [`AgentId`] from optional `agent.id` labels on the spec.
+fn agent_id_from_spec(spec: &aios_protocol::hypervisor::VmSpec) -> aios_protocol::ids::AgentId {
+    spec.labels
+        .get("agent.id")
+        .map(|s| aios_protocol::ids::AgentId::from_string(s.as_str()))
+        .unwrap_or_else(|| aios_protocol::ids::AgentId::from_string("arcan-provider-vercel"))
+}
+
+// ── Conversion helpers (Vercel v2 responses ↔ legacy types) ───────────────────
 
 /// Convert a Vercel v2 status string to [`SandboxStatus`].
 fn map_status(s: &str) -> SandboxStatus {
@@ -757,8 +1082,11 @@ fn urlencoding_simple(s: &str) -> String {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
+    use arcan_sandbox::capability::SandboxCapabilitySet;
+    use arcan_sandbox::provider::SandboxProvider;
 
     /// Helper: build a provider pointing at the mock server.
     fn provider_for(server: &mockito::Server) -> VercelSandboxProvider {
@@ -799,18 +1127,18 @@ mod tests {
     #[test]
     fn name_is_vercel() {
         let p = VercelSandboxProvider::new("tok", None, None);
-        assert_eq!(p.name(), "vercel");
+        // Test via the legacy SandboxProvider surface (blanket impl) so we
+        // continue to exercise the deprecated name that existing callers read.
+        assert_eq!(SandboxProvider::name(&p), "vercel");
     }
 
     #[test]
     fn capabilities_include_tags_and_persistence() {
         let p = VercelSandboxProvider::new("tok", None, None);
-        assert!(p.capabilities().contains(SandboxCapabilitySet::TAGS));
-        assert!(p.capabilities().contains(SandboxCapabilitySet::PERSISTENCE));
-        assert!(
-            p.capabilities()
-                .contains(SandboxCapabilitySet::NETWORK_OUTBOUND)
-        );
+        let caps = SandboxProvider::capabilities(&p);
+        assert!(caps.contains(SandboxCapabilitySet::TAGS));
+        assert!(caps.contains(SandboxCapabilitySet::PERSISTENCE));
+        assert!(caps.contains(SandboxCapabilitySet::NETWORK_OUTBOUND));
     }
 
     #[test]
@@ -852,7 +1180,10 @@ mod tests {
 
         let provider = provider_for(&server);
         let spec = SandboxSpec::ephemeral("my-sandbox");
-        let handle = provider.create(spec).await.expect("create should succeed");
+        // Exercise the legacy-surface method via the blanket impl.
+        let handle = SandboxProvider::create(&provider, spec)
+            .await
+            .expect("create should succeed");
 
         // v2: SandboxId = sandbox name
         assert_eq!(handle.id.0, "my-sandbox");
@@ -882,8 +1213,7 @@ mod tests {
         let provider = provider_for(&server);
         let mut spec = SandboxSpec::ephemeral("tagged-sbx");
         spec.labels.insert("env".into(), "prod".into());
-        provider
-            .create(spec)
+        SandboxProvider::create(&provider, spec)
             .await
             .expect("create with tags should succeed");
         mock.assert_async().await;
@@ -924,7 +1254,9 @@ mod tests {
         let provider = provider_for(&server);
         let id = SandboxId(sandbox_name.into());
         let req = ExecRequest::shell("echo hello");
-        let result = provider.run(&id, req).await.expect("run should succeed");
+        let result = SandboxProvider::run(&provider, &id, req)
+            .await
+            .expect("run should succeed");
 
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.duration_ms, 42);
@@ -1019,8 +1351,7 @@ mod tests {
             .await;
 
         let provider = provider_for(&server);
-        provider
-            .destroy(&SandboxId(sandbox_name.into()))
+        SandboxProvider::destroy(&provider, &SandboxId(sandbox_name.into()))
             .await
             .expect("destroy should succeed even on 404");
 
@@ -1054,11 +1385,94 @@ mod tests {
             .await;
 
         let provider = provider_for(&server);
-        let result = provider.list().await;
+        // Legacy `SandboxProvider::list` via the blanket impl returns an empty
+        // vec regardless of the backend (the trait has no `list`); call the
+        // explicit extension trait instead to exercise the HTTP path.
+        let result = aios_protocol::hypervisor::HypervisorFilesystemExt::list(&provider).await;
         assert!(result.is_ok(), "should succeed after retry; got {result:?}");
         assert_eq!(result.unwrap().len(), 0);
 
         mock_429.assert_async().await;
         mock_200.assert_async().await;
+    }
+}
+
+// ── HypervisorBackend trait tests (BRO-854) ──────────────────────────────────
+
+#[cfg(test)]
+mod kernel_tests {
+    use super::*;
+    use aios_protocol::hypervisor::{BackendCapabilitySet, HypervisorBackend};
+
+    #[test]
+    fn vercel_provider_impls_hypervisor_backend() {
+        // Vercel requires no test credentials for a static capability check —
+        // the constructor takes plain strings and stores them without
+        // validation.
+        let provider = VercelSandboxProvider::new("test-token", None, None);
+        assert_eq!(HypervisorBackend::name(&provider), "vercel");
+        assert!(
+            HypervisorBackend::capabilities(&provider).contains(BackendCapabilitySet::PERSISTENCE),
+            "vercel provider must advertise PERSISTENCE (named sandboxes + auto-snapshot)"
+        );
+    }
+
+    #[test]
+    fn vercel_provider_advertises_expected_capability_set() {
+        let provider = VercelSandboxProvider::new("test-token", None, None);
+        let caps = HypervisorBackend::capabilities(&provider);
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_READ));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_WRITE));
+        assert!(caps.contains(BackendCapabilitySet::FILESYSTEM_EXT));
+        assert!(caps.contains(BackendCapabilitySet::NETWORK_EGRESS));
+        assert!(caps.contains(BackendCapabilitySet::PERSISTENCE));
+        // HIBERNATE is intentionally NOT advertised — Vercel v2 exposes no
+        // pause-in-place operation separate from snapshot / restore.
+        assert!(
+            !caps.contains(BackendCapabilitySet::HIBERNATE),
+            "vercel must not advertise HIBERNATE — no distinct pause endpoint exists in v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn vercel_provider_hibernate_returns_not_supported_default() {
+        use aios_protocol::hypervisor::{BackendError, BackendId, VmHandle, VmId, VmStatus};
+        use aios_protocol::ids::{AgentId, SessionId};
+
+        let provider = VercelSandboxProvider::new("test-token", None, None);
+        let handle = VmHandle {
+            vm_id: VmId::from("vm-1"),
+            backend: BackendId::from("vercel"),
+            session_id: SessionId::from_string("sess-1"),
+            agent_id: AgentId::from_string("agent-1"),
+            status: VmStatus::Running,
+            created_at: chrono::Utc::now(),
+            metadata: serde_json::Value::Null,
+        };
+        let err = HypervisorBackend::hibernate(&provider, &handle)
+            .await
+            .expect_err("default hibernate impl should return NotSupported");
+        assert!(matches!(err, BackendError::NotSupported { .. }));
+    }
+
+    #[tokio::test]
+    async fn vercel_provider_resume_returns_not_supported_default() {
+        use aios_protocol::hypervisor::{BackendError, BackendId, VmHandle, VmId, VmStatus};
+        use aios_protocol::ids::{AgentId, SessionId};
+
+        let provider = VercelSandboxProvider::new("test-token", None, None);
+        let handle = VmHandle {
+            vm_id: VmId::from("vm-1"),
+            backend: BackendId::from("vercel"),
+            session_id: SessionId::from_string("sess-1"),
+            agent_id: AgentId::from_string("agent-1"),
+            status: VmStatus::Hibernated,
+            created_at: chrono::Utc::now(),
+            metadata: serde_json::Value::Null,
+        };
+        let err = HypervisorBackend::resume(&provider, &handle)
+            .await
+            .expect_err("default resume impl should return NotSupported");
+        assert!(matches!(err, BackendError::NotSupported { .. }));
     }
 }

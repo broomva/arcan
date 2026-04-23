@@ -18,6 +18,14 @@
 //! let handle = journaled.create(spec).await?;
 //! ```
 
+// BRO-852: `SandboxProvider` itself is deprecated in favour of
+// `aios_protocol::HypervisorBackend`. The journaled decorator is still
+// load-bearing for legacy callers until BRO-853..855 migrate the backends;
+// silence the deprecation noise for this module so the crate stays
+// clippy-clean. External consumers that build a `JournaledSandboxProvider`
+// against a raw `SandboxProvider` implementation will still see the warning.
+#![allow(deprecated)]
+
 use sha2::{Digest, Sha256};
 
 use crate::error::SandboxError;

@@ -8,12 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "SandboxProvider implementation with Docker primary backend and nsjail fallback"
+description = "HypervisorBackend implementation with Docker primary backend and nsjail fallback"
 
 [lints]
 workspace = true
 
 [dependencies]
+aios-protocol.workspace = true
 arcan-sandbox.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true

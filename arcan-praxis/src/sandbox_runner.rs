@@ -1,3 +1,8 @@
+// Phase 0 transitional: bridges `arcan_sandbox::SandboxProvider` via the
+// blanket `impl<T: HypervisorBackend> SandboxProvider for T`. Migration to
+// direct `HypervisorBackend` is deferred to a follow-up phase.
+#![allow(deprecated)]
+
 //! `SandboxCommandRunner` — async [`SandboxProvider`] bridge for [`CommandRunner`].
 //!
 //! The Praxis tool layer uses the synchronous [`CommandRunner`] trait (from

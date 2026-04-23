@@ -1271,6 +1271,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test".into(),
             iteration: 0,
+            ..Default::default()
         }
     }
 
