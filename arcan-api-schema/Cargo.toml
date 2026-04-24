@@ -1,0 +1,15 @@
+[package]
+name = "arcan-api-schema"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license = "MIT"
+description = "HTTP API DTOs for arcand — schema-only, no runtime dependencies."
+repository = "https://github.com/broomva/life"
+
+[dependencies]
+aios-protocol.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
