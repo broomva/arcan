@@ -4,3 +4,6 @@ pub use arcan_harness as harness;
 pub use arcan_provider as provider;
 pub use arcan_store as store;
 pub use arcand as daemon;
+
+#[cfg(feature = "schema")]
+pub use arcan_api_schema as schema;

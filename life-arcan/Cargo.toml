@@ -8,6 +8,11 @@ repository.workspace = true
 homepage.workspace = true
 description = "Agent daemon and runtime facade for the Life Agent OS — re-exports arcan-core, arcand, arcan-harness, arcan-store, arcan-provider, and arcan-aios-adapters"
 
+[features]
+default = ["runtime"]
+runtime = []
+schema = ["dep:arcan-api-schema"]
+
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.3.0" }
 arcand = { path = "../arcand", version = "0.3.0" }
@@ -15,6 +20,7 @@ arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
 arcan-store = { path = "../arcan-store", version = "0.3.0" }
 arcan-provider = { path = "../arcan-provider", version = "0.3.0" }
 arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
+arcan-api-schema = { workspace = true, optional = true }
 
 [lints]
 workspace = true
