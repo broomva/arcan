@@ -33,6 +33,11 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# `urlencoding` is not in [workspace.dependencies] — pinned directly here for
+# `read_file`'s query-parameter encoding (see Phase 3 Task 8). Adding to the
+# workspace-wide list would force every crate to take the dep on first build,
+# so it stays local until a second consumer needs it.
+urlencoding = "2"
 uuid.workspace = true
 
 [dev-dependencies]

@@ -41,19 +41,23 @@ mod error;
 mod types;
 
 use aios_protocol::hypervisor::{
-    BackendCapabilitySet, BackendError, ExecRequest, ExecResult, HypervisorBackend, VmHandle,
-    VmSnapshotId, VmSpec,
+    BackendCapabilitySet, BackendError, BackendId, ExecRequest, ExecResult, FileWrite,
+    HypervisorBackend, HypervisorFilesystemExt, VmHandle, VmId, VmInfo, VmSnapshotId, VmSpec,
 };
 use aios_protocol::ids::{AgentId, SessionId};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::Method;
 use tracing::{debug, instrument};
 
 pub use error::CubeError;
 
 use client::CubeClient;
-use convert::{create_vm_req_from_spec, exec_req_from, exec_result_from_resp, vm_handle_from_resp};
-use types::{SnapshotResp, VmResp};
+use convert::{
+    create_vm_req_from_spec, exec_req_from, exec_result_from_resp, status_from_resp,
+    vm_handle_from_resp,
+};
+use types::{FileWriteEntry, ReadFileResp, SnapshotResp, VmListResp, VmResp, WriteFilesReq};
 
 /// Stable backend name used by the kernel for routing + observability.
 const BACKEND_NAME: &str = "cube";
@@ -251,6 +255,101 @@ impl HypervisorBackend for CubeProvider {
     }
 }
 
+#[async_trait]
+impl HypervisorFilesystemExt for CubeProvider {
+    #[instrument(
+        skip(self, vm, files),
+        fields(
+            backend = BACKEND_NAME,
+            vm_id = %vm.vm_id,
+            file_count = files.len(),
+            session_id = %self.session_id,
+        ),
+    )]
+    async fn write_files(&self, vm: &VmHandle, files: Vec<FileWrite>) -> Result<(), BackendError> {
+        let body = WriteFilesReq {
+            files: files
+                .into_iter()
+                .map(|f| FileWriteEntry {
+                    path: f.path,
+                    mode: f.mode,
+                    content_b64: STANDARD.encode(&f.content),
+                })
+                .collect(),
+        };
+        let path = format!("/api/v1/vms/{}/files", vm.vm_id);
+        // Cube returns either `{}` or `204 No Content` — both decode into
+        // `serde_json::Value`'s `Null`/`Object` variants without a custom
+        // type, so we discard the body here.
+        let _: serde_json::Value = self
+            .client
+            .request(Method::POST, &path, &body)
+            .await
+            .map_err(|e| e.into_backend_error(Some(vm.vm_id.clone()), None))?;
+        Ok(())
+    }
+
+    #[instrument(
+        skip(self, vm),
+        fields(
+            backend = BACKEND_NAME,
+            vm_id = %vm.vm_id,
+            path = %path,
+            session_id = %self.session_id,
+        ),
+    )]
+    async fn read_file(&self, vm: &VmHandle, path: &str) -> Result<Vec<u8>, BackendError> {
+        // The Cube API takes the guest path through a query parameter, so
+        // we percent-encode it here. `urlencoding::encode` returns a
+        // `Cow<str>` that we drop into the format string verbatim — the
+        // `vm.vm_id` segment is opaque to Cube and never contains a
+        // `?`/`&`, so we don't need to encode it separately.
+        let encoded = urlencoding::encode(path);
+        let url_path = format!("/api/v1/vms/{}/files?path={}", vm.vm_id, encoded);
+        let resp: ReadFileResp = self
+            .client
+            .request_no_body(Method::GET, &url_path)
+            .await
+            .map_err(|e| e.into_backend_error(Some(vm.vm_id.clone()), None))?;
+        STANDARD
+            .decode(resp.content_b64)
+            .map_err(|e| BackendError::Internal(format!("read_file decode: {e}")))
+    }
+
+    #[instrument(skip(self), fields(backend = BACKEND_NAME, session_id = %self.session_id))]
+    async fn list(&self) -> Result<Vec<VmInfo>, BackendError> {
+        let resp: VmListResp = self
+            .client
+            .request_no_body(Method::GET, "/api/v1/vms")
+            .await
+            .map_err(|e| e.into_backend_error(None, None))?;
+        Ok(resp
+            .vms
+            .into_iter()
+            .map(|item| VmInfo {
+                vm_id: VmId::from(item.id),
+                backend: BackendId::from(BACKEND_NAME),
+                status: status_from_resp(item.status),
+                created_at: item.created_at,
+            })
+            .collect())
+    }
+}
+
+// ── Compile-time trait checks ────────────────────────────────────────────────
+//
+// These const blocks force the compiler to verify that `CubeProvider` honours
+// both the [`HypervisorBackend`] base contract and the
+// [`HypervisorFilesystemExt`] extension. If a future trait change adds, drops,
+// or renames a method, the workspace will stop compiling here — which is the
+// fastest possible failure mode (no runtime, no test suite needed).
+const _: () = {
+    const fn _assert_backend<T: HypervisorBackend + ?Sized>() {}
+    const fn _assert_filesystem_ext<T: HypervisorFilesystemExt + ?Sized>() {}
+    _assert_backend::<CubeProvider>();
+    _assert_filesystem_ext::<CubeProvider>();
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,16 +400,13 @@ mod tests {
         assert_eq!(provider.agent_id.as_str(), "agent-7");
     }
 
-    /// Compile-time assertion that `CubeProvider` implements
-    /// [`HypervisorBackend`] — if the trait signature changes upstream,
-    /// this stops compiling first.
-    #[allow(dead_code)]
-    fn _assert_impls_hypervisor_backend() {
-        fn _accept<T: HypervisorBackend>() {}
-        _accept::<CubeProvider>();
-    }
-
-    /// Compile-time assertion that `CubeProvider` is dyn-compatible.
+    /// Compile-time assertion that `CubeProvider` is dyn-compatible for
+    /// both traits. The trait-level `const _` blocks above already verify
+    /// implementation completeness, so this only checks the dyn-safety
+    /// boundary that the kernel relies on for `Arc<dyn HypervisorBackend>`.
     #[allow(dead_code)]
     fn _assert_dyn_safe(_: &dyn HypervisorBackend) {}
+
+    #[allow(dead_code)]
+    fn _assert_dyn_safe_fs_ext(_: &dyn HypervisorFilesystemExt) {}
 }
