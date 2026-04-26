@@ -10,5 +10,6 @@
 #![warn(missing_docs)]
 
 mod error;
+mod types;
 
 pub use error::CubeError;
