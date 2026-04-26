@@ -52,9 +52,7 @@ use tracing::{debug, instrument};
 pub use error::CubeError;
 
 use client::CubeClient;
-use convert::{
-    create_vm_req_from_spec, exec_req_from, exec_result_from_resp, vm_handle_from_resp,
-};
+use convert::{create_vm_req_from_spec, exec_req_from, exec_result_from_resp, vm_handle_from_resp};
 use types::{SnapshotResp, VmResp};
 
 /// Stable backend name used by the kernel for routing + observability.
