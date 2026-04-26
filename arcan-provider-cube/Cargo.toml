@@ -1,0 +1,43 @@
+[package]
+name = "arcan-provider-cube"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "CubeSandbox API v1 backend for the Life Agent OS hypervisor ABI (self-hosted µVM isolation via Cloud Hypervisor + KVM)"
+
+[features]
+default = []
+# Reserved for future TLS/auth variants. Empty in v0.
+sandbox-cube = []
+
+[dependencies]
+aios-protocol.workspace = true
+arcan-sandbox.workspace = true
+async-trait.workspace = true
+bitflags.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+# reqwest is pinned to rustls (no native-tls) for static builds + cross-compile
+# to the Hetzner AX41 target. This deliberately diverges from the workspace
+# reqwest (which uses default native-tls) — Cargo cannot override workspace
+# `default-features` from a member, so we declare reqwest directly here.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+mockito = "1"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+
+[lints]
+workspace = true
