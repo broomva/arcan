@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod client;
 mod error;
 mod types;
 
