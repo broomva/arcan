@@ -7,6 +7,10 @@
 //! ## Functions
 //!
 //! - [`reconstruct_agent_self`] — replay Anima events from Lago to build `AgentSelf`
+//! - [`reconstruct_agent_self_with_custody`] — reconstruct using an
+//!   `Arc<dyn AnimaCustody>` (Spec D D-Sub-A path; the custody handle is
+//!   the production-grade abstraction over `InProcessAnima` /
+//!   `VaultTransitAnima` / `WebCryptoAnima` / etc.)
 //! - [`emit_soul_genesis`] — write a soul genesis event to the Lago journal
 //! - [`inject_anima_context`] — merge agent identity info into `AppState`
 
@@ -16,8 +20,9 @@ use std::sync::Arc;
 use anima_core::agent_self::AgentSelf;
 use anima_core::belief::AgentBelief;
 use anima_core::event::AnimaEventKind;
-use anima_core::identity::AgentIdentity;
+use anima_core::identity::{AgentIdentity, LifecycleState};
 use anima_core::soul::AgentSoul;
+use anima_identity::custody::AnimaCustodyHandle;
 use anima_lago::genesis::{create_genesis_event, reconstruct_soul};
 use anima_lago::projection;
 use arcan_core::protocol::{StatePatch, StatePatchFormat, StatePatchSource};
@@ -101,6 +106,48 @@ pub fn reconstruct_agent_self(
     // Assemble AgentSelf (using unchecked constructor since data comes from
     // our own trusted journal)
     Ok(AgentSelf::from_parts_unchecked(soul, identity, belief))
+}
+
+/// Reconstruct an [`AgentSelf`] using an `Arc<dyn AnimaCustody>` for the
+/// cryptographic identity (Spec D D-Sub-A).
+///
+/// This is the production-grade entry point: instead of taking a passive
+/// [`AgentIdentity`] data struct, the caller passes a [`AnimaCustodyHandle`]
+/// resolved at construction time (e.g. `InProcessAnima::generate_dev()`,
+/// `VaultTransitAnima::open(...)`, `WebCryptoAnima::resolve_passkey(...)`).
+///
+/// The bridge derives the public-key half of `AgentIdentity` from the
+/// custody handle and replays the journal exactly as
+/// [`reconstruct_agent_self`] does.
+pub fn reconstruct_agent_self_with_custody(
+    journal: &Arc<dyn Journal>,
+    session_id: &SessionId,
+    branch_id: &BranchId,
+    agent_id: impl Into<String>,
+    host_id: impl Into<String>,
+    custody: AnimaCustodyHandle,
+) -> AnimaBridgeResult<AgentSelf> {
+    let identity = AgentIdentity {
+        agent_id: agent_id.into(),
+        host_id: host_id.into(),
+        // Custody trait returns the SEC1-compressed P-256 pubkey (33 bytes)
+        // for current-era backends; legacy Ed25519 verifiers walk the
+        // rotation chain on the AgentIdentityDocument.
+        auth_public_key: custody.auth_pubkey().to_vec(),
+        wallet_address: custody.wallet_address().cloned().ok_or_else(|| {
+            AnimaBridgeError::AgentSelfConstruction(
+                "custody backend did not resolve a wallet address (browser-only deployments must \
+                 pair with a server-side wallet backend before reconstructing AgentSelf)"
+                    .into(),
+            )
+        })?,
+        did: Some(custody.user_did().to_string()),
+        lifecycle: LifecycleState::Active,
+        created_at: chrono::Utc::now(),
+        expires_at: None,
+        seed_blob_ref: None,
+    };
+    reconstruct_agent_self(journal, session_id, branch_id, identity)
 }
 
 /// Write a soul genesis event to the Lago journal.
@@ -423,6 +470,68 @@ mod tests {
             result.unwrap_err(),
             AnimaBridgeError::NoSoulGenesis { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn reconstruct_with_custody_handle() {
+        // Spec D D-Sub-A: arcan reconstructs AgentSelf via the custody trait
+        // rather than a passive AgentIdentity struct. Verify the bridge
+        // builds a valid AgentSelf when given an InProcessAnima handle.
+        use anima_identity::InProcessAnima;
+
+        let journal = make_journal();
+        let session_id = SessionId::new();
+        let branch_id = BranchId::from("main");
+
+        let custody = InProcessAnima::generate_dev().unwrap();
+        // Build a soul whose root_key matches the custody's auth pubkey
+        // (33-byte SEC1-compressed P-256 point). AgentSelf::new validates
+        // identity.auth_public_key == soul.root_public_key.
+        let soul = anima_core::soul::SoulBuilder::new(
+            "custody-test-agent",
+            "test bridge with custody handle",
+            custody.auth_pubkey().to_vec(),
+        )
+        .build();
+
+        let custody_clone = custody.clone();
+        let seq = tokio::task::spawn_blocking({
+            let journal = journal.clone();
+            let session_id = session_id.clone();
+            let branch_id = branch_id.clone();
+            let soul = soul.clone();
+            move || emit_soul_genesis(&journal, &session_id, &branch_id, &soul)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(seq, 1);
+
+        let agent_self = tokio::task::spawn_blocking({
+            let journal = journal.clone();
+            let session_id = session_id.clone();
+            let branch_id = branch_id.clone();
+            move || {
+                reconstruct_agent_self_with_custody(
+                    &journal,
+                    &session_id,
+                    &branch_id,
+                    "agt_custody_001",
+                    "host_arcan_test",
+                    custody_clone,
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(agent_self.name(), "custody-test-agent");
+        assert_eq!(agent_self.soul_hash(), soul.soul_hash());
+        // The reconstructed identity carries the P-256 DID from custody
+        let did = agent_self.did().unwrap();
+        assert!(did.starts_with("did:key:zDn"));
+        assert_eq!(did, custody.user_did());
     }
 
     #[test]

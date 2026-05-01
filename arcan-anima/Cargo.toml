@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 arcan-core = { path = "../arcan-core", version = "0.3.0" }
 anima-core.workspace = true
+anima-identity = { path = "../../anima/anima-identity", version = "0.3.0" }
 anima-lago.workspace = true
 lago-core.workspace = true
 lago-journal.workspace = true
