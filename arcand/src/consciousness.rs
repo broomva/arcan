@@ -717,6 +717,7 @@ impl SessionConsciousness {
                     proposed_tool: run_context.proposed_tool,
                     system_prompt: run_context.system_prompt.clone(),
                     allowed_tools: run_context.allowed_tools.clone(),
+                    kind: aios_runtime::TickKind::Direct,
                 },
             )
             .instrument(agent_span.clone())
@@ -787,6 +788,7 @@ impl SessionConsciousness {
                                 proposed_tool: None,
                                 system_prompt: run_context.system_prompt.clone(),
                                 allowed_tools: run_context.allowed_tools.clone(),
+                                kind: aios_runtime::TickKind::Direct,
                             },
                         )
                         .instrument(agent_span.clone())

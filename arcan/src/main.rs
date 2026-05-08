@@ -785,7 +785,7 @@ fn run_serve(
     let turn_middlewares: Vec<Arc<dyn TurnMiddleware>> =
         vec![Arc::new(KnowledgeEventMiddleware::new(event_store.clone()))];
 
-    let runtime = Arc::new(KernelRuntime::with_turn_middlewares(
+    let kernel_runtime = KernelRuntime::with_turn_middlewares(
         RuntimeConfig::new(data_dir.to_path_buf()),
         event_store,
         provider_adapter,
@@ -793,7 +793,22 @@ fn run_serve(
         approvals,
         policy_gate,
         turn_middlewares,
-    ));
+    );
+
+    // Register the ergon-workflow tick dispatcher (BRO-1001). No
+    // workflows are registered by default — adopting daemons override
+    // this section to register their concrete `ergon::Workflow` impls
+    // before the runtime starts serving. Until any are registered,
+    // `TickKind::Workflow` ticks fail with "unknown workflow", which
+    // matches the spec's expectation of opt-in workflow support.
+    let workflow_registry = Arc::new(arcan_ergon::WorkflowRegistry::new());
+    let workflow_inputs = Arc::new(arcan_ergon::runner::WorkflowRunInputs::empty());
+    let workflow_dispatcher: Arc<dyn aios_runtime::WorkflowTickDispatcher> = Arc::new(
+        arcan_ergon::ErgonWorkflowDispatcher::new(workflow_registry, workflow_inputs),
+    );
+    let kernel_runtime = kernel_runtime.with_workflow_dispatcher(workflow_dispatcher);
+
+    let runtime = Arc::new(kernel_runtime);
 
     // Wire the broadcast sender now that the runtime exists.
     *streaming_sender.lock().unwrap() = Some(runtime.event_sender());

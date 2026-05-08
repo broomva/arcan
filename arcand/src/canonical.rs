@@ -1822,6 +1822,7 @@ async fn run_session(
                 proposed_tool,
                 system_prompt: system_prompt.clone(),
                 allowed_tools: combined_allowed_tools.clone(),
+                kind: aios_runtime::TickKind::Direct,
             },
         )
         .instrument(agent_span.clone())
@@ -1847,6 +1848,7 @@ async fn run_session(
                             proposed_tool: None,
                             system_prompt: system_prompt.clone(),
                             allowed_tools: combined_allowed_tools.clone(),
+                            kind: aios_runtime::TickKind::Direct,
                         },
                     )
                     .instrument(agent_span.clone())
