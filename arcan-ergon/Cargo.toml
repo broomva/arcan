@@ -38,5 +38,15 @@ aios-events.workspace = true
 aios-policy.workspace = true
 aios-sandbox.workspace = true
 aios-tools.workspace = true
+# `arcan-provider` + `arcan-aios-adapters` pull in real LLM-backed
+# Provider implementations (Anthropic, OpenAI-compatible, ...) so the
+# `tests/anthropic_workflow.rs` integration test can drive an
+# end-to-end workflow tick against a live Anthropic endpoint when
+# `ANTHROPIC_API_KEY` is set. The test is `#[ignore]`'d so it never
+# runs in CI.
+arcan-provider = { path = "../arcan-provider", version = "0.3.0" }
+arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
+arcan-core = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+tracing-subscriber = { workspace = true }
