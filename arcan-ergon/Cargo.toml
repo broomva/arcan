@@ -38,6 +38,11 @@ aios-events.workspace = true
 aios-policy.workspace = true
 aios-sandbox.workspace = true
 aios-tools.workspace = true
+# `tests/agents_fixtures.rs` (BRO-1010) compiles each blessed agent's
+# input/output schemas through the same `jsonschema` validator the
+# production `record_answer` path uses, so a malformed schema fails
+# in CI rather than at first inference.
+jsonschema = { workspace = true }
 # `arcan-provider` + `arcan-aios-adapters` pull in real LLM-backed
 # Provider implementations (Anthropic, OpenAI-compatible, ...) so the
 # `tests/anthropic_workflow.rs` integration test can drive an

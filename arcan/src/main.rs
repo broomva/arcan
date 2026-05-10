@@ -109,6 +109,15 @@ struct Cli {
     /// Requires `--features prosopon` at build time; silently ignored otherwise.
     #[arg(long, global = true, value_name = "ADDR")]
     prosopon_port: Option<std::net::SocketAddr>,
+
+    /// Directory to load authored agents from (`<dir>/<name>.md` files).
+    /// Defaults to `./agents/` relative to the binary's CWD. If the
+    /// directory does not exist, arcan logs a warning and starts with
+    /// an empty agent registry — `spawn_agent` calls then fail-closed
+    /// with a model-visible `unknown_agent` error rather than crashing.
+    /// See `agents/README.md` for the authoring format.
+    #[arg(long, global = true, env = "ARCAN_AGENTS_DIR", value_name = "DIR")]
+    agents_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -473,6 +482,7 @@ fn run_serve(
     resolved: &ResolvedConfig,
     console_dir: Option<PathBuf>,
     prosopon_port: Option<std::net::SocketAddr>,
+    agents_dir: Option<PathBuf>,
     tokio_runtime: &tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
     // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
@@ -802,16 +812,51 @@ fn run_serve(
     // `TickKind::Workflow` ticks fail with "unknown workflow", which
     // matches the spec's expectation of opt-in workflow support.
     //
-    // Also wire the spawn_agent substrate (BRO-1007b): an empty
-    // `AgentRegistry` is registered so workflows that wish to use
-    // `spawn_agent` from within their autonomous loop can resolve
-    // sub-agents by name. BRO-1010 will populate this from
-    // `agents/<name>.md` files at startup; for now it ships empty
-    // so `spawn_agent` calls return a model-visible
-    // `unknown_agent` error rather than crashing.
+    // Wire the spawn_agent substrate (BRO-1007b + BRO-1010): authored
+    // agents are loaded from `<agents_dir>/<name>.md` (default
+    // `./agents/`) via [`ergon::FsAgentRegistry::load`]. If the
+    // directory does not exist or no agents are present, arcan falls
+    // back to an empty [`ergon::InMemoryAgentRegistry`] with a
+    // warning, so `spawn_agent` calls fail-closed with
+    // `unknown_agent` rather than crashing the boot. The blessed
+    // agents shipped in `agents/` (general, goal-pursuer, goal-judge)
+    // populate this on a normal install.
     let workflow_registry = Arc::new(arcan_ergon::WorkflowRegistry::new());
-    let agent_registry: Arc<dyn ergon::AgentRegistry> =
-        Arc::new(ergon::InMemoryAgentRegistry::new());
+    let agents_dir_resolved = agents_dir.unwrap_or_else(|| PathBuf::from("agents"));
+    let agent_registry: Arc<dyn ergon::AgentRegistry> = if agents_dir_resolved.is_dir() {
+        match ergon::FsAgentRegistry::load(&agents_dir_resolved) {
+            Ok(registry) => {
+                // Bring the `AgentRegistry::len` trait method into scope to count
+                // the loaded agents for the boot log.
+                use ergon::AgentRegistry as _;
+                let count = tokio_runtime.block_on(registry.len());
+                tracing::info!(
+                    target: "arcan.agents",
+                    "loaded {count} authored agent(s) from {dir}",
+                    count = count,
+                    dir = agents_dir_resolved.display(),
+                );
+                Arc::new(registry)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "arcan.agents",
+                    "failed to load agents from `{dir}`: {err}; starting with empty registry",
+                    dir = agents_dir_resolved.display(),
+                    err = e,
+                );
+                Arc::new(ergon::InMemoryAgentRegistry::new())
+            }
+        }
+    } else {
+        tracing::warn!(
+            target: "arcan.agents",
+            "no agents directory at `{dir}`; spawn_agent calls will return unknown_agent. \
+             Pass --agents-dir or place authored agents in ./agents/. See agents/README.md.",
+            dir = agents_dir_resolved.display(),
+        );
+        Arc::new(ergon::InMemoryAgentRegistry::new())
+    };
     let workflow_inputs = Arc::new(
         arcan_ergon::runner::WorkflowRunInputs::empty().with_agent_registry(agent_registry),
     );
@@ -1411,6 +1456,7 @@ fn main() -> anyhow::Result<()> {
                 &resolved,
                 cli.console_dir,
                 cli.prosopon_port,
+                cli.agents_dir,
                 &tokio_runtime,
             )
         }
