@@ -56,6 +56,9 @@ const REQUIRED_BLESSED_AGENTS: &[&str] = &[
     "general",
     "goal-judge",
     "goal-pursuer",
+    // BRO-1011 — meta-agents (no production self-modification)
+    "nous-judge",
+    "nous-promoter",
     // BRO-1012 — bookkeeping (Nous gate scorers + synthesizer)
     "bookkeeping-novelty",
     "bookkeeping-relevance",
