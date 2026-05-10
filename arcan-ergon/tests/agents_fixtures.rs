@@ -51,7 +51,17 @@ fn agents_dir() -> PathBuf {
 
 /// Names every release of arcan must ship. Adding a new blessed
 /// agent? Append its name here AND add a row to `agents/README.md`.
-const REQUIRED_BLESSED_AGENTS: &[&str] = &["general", "goal-judge", "goal-pursuer"];
+const REQUIRED_BLESSED_AGENTS: &[&str] = &[
+    // BRO-1010 — first authored agents
+    "general",
+    "goal-judge",
+    "goal-pursuer",
+    // BRO-1012 — bookkeeping (Nous gate scorers + synthesizer)
+    "bookkeeping-novelty",
+    "bookkeeping-relevance",
+    "bookkeeping-specificity",
+    "bookkeeping-synthesizer",
+];
 
 #[tokio::test]
 async fn fs_registry_loads_blessed_agents_directory() {
