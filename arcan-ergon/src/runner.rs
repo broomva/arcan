@@ -29,7 +29,7 @@ use crate::registry::{BoxedWorkflowExecutor, WorkflowRegistry};
 use crate::runtime_handle::ModeRuntimeHandle;
 use crate::tools::ToolHarnessAdapter;
 use aios_runtime::{WorkflowTickInvocation, WorkflowTickOutcome};
-use ergon::{BufferSink, HookRegistry, StepCtx, ToolDefinition};
+use ergon::{AgentRegistry, BufferSink, HookRegistry, RecursionContext, StepCtx, ToolDefinition};
 use ergon_life_hooks::{AnimaAttestHook, AutonomicBudgetHook, NousScoreHook, PraxisCapabilityHook};
 use std::sync::Arc;
 
@@ -44,16 +44,57 @@ pub struct WorkflowRunInputs {
     /// each tool's name to its required [`aios_protocol::Capability`]
     /// tokens. Tools missing from the map are denied fail-closed.
     pub tool_capabilities: ToolCapabilityMap,
+    /// Optional agent registry for `spawn_agent` tool dispatch
+    /// (BRO-1007b). When set, the model can invoke registered
+    /// sub-agents from within its autonomous loop. When `None`,
+    /// `spawn_agent` calls return a model-visible
+    /// `no_registry_configured` error.
+    pub agent_registry: Option<Arc<dyn AgentRegistry>>,
+    /// Recursion guardrail policy for spawn_agent (BRO-1007b).
+    /// Workflow ticks always create a fresh root [`RecursionContext`]
+    /// from these limits — there's no per-tick state to carry over,
+    /// since each tick is a new bounded computation.
+    pub max_recursion_depth: u32,
+    /// Cap on total agent invocations within a single workflow tick
+    /// (top-level + descendants). Default
+    /// [`ergon::DEFAULT_MAX_INVOCATIONS`].
+    pub max_invocations: u32,
 }
 
 impl WorkflowRunInputs {
     /// Construct minimal inputs (no tools advertised, empty capability
-    /// map) — useful for workflows that only call the model.
+    /// map, no agent registry) — useful for workflows that only call
+    /// the model.
     pub fn empty() -> Self {
         Self {
             tool_definitions: Vec::new(),
             tool_capabilities: ToolCapabilityMap::new(),
+            agent_registry: None,
+            max_recursion_depth: ergon::DEFAULT_MAX_RECURSION_DEPTH,
+            max_invocations: ergon::DEFAULT_MAX_INVOCATIONS,
         }
+    }
+
+    /// Builder: attach an agent registry so `spawn_agent` can resolve
+    /// sub-agents.
+    #[must_use]
+    pub fn with_agent_registry(mut self, registry: Arc<dyn AgentRegistry>) -> Self {
+        self.agent_registry = Some(registry);
+        self
+    }
+
+    /// Builder: cap recursion depth for spawn_agent (default 8).
+    #[must_use]
+    pub fn with_max_recursion_depth(mut self, depth: u32) -> Self {
+        self.max_recursion_depth = depth;
+        self
+    }
+
+    /// Builder: cap total agent invocations per workflow tick.
+    #[must_use]
+    pub fn with_max_invocations(mut self, n: u32) -> Self {
+        self.max_invocations = n;
+        self
     }
 }
 
@@ -125,6 +166,18 @@ pub async fn run_workflow_as_tick(
         runtime,
         trace,
     );
+
+    // Attach the spawn-agent substrate (BRO-1007b). Always create a
+    // fresh root recursion context per tick — recursion limits are
+    // per-tick, not per-session. If no agent registry is configured,
+    // spawn_agent calls fail-closed with a model-visible error.
+    let recursion = RecursionContext::root()
+        .with_max_depth(inputs.max_recursion_depth)
+        .with_max_invocations(inputs.max_invocations);
+    ctx = ctx.with_recursion(recursion);
+    if let Some(registry) = inputs.agent_registry.as_ref() {
+        ctx = ctx.with_agent_registry(Arc::clone(registry));
+    }
 
     // Optional: seed the autonomous loop with the user's objective so
     // workflows whose execute() body calls run_inference_streaming()

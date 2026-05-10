@@ -801,8 +801,20 @@ fn run_serve(
     // before the runtime starts serving. Until any are registered,
     // `TickKind::Workflow` ticks fail with "unknown workflow", which
     // matches the spec's expectation of opt-in workflow support.
+    //
+    // Also wire the spawn_agent substrate (BRO-1007b): an empty
+    // `AgentRegistry` is registered so workflows that wish to use
+    // `spawn_agent` from within their autonomous loop can resolve
+    // sub-agents by name. BRO-1010 will populate this from
+    // `agents/<name>.md` files at startup; for now it ships empty
+    // so `spawn_agent` calls return a model-visible
+    // `unknown_agent` error rather than crashing.
     let workflow_registry = Arc::new(arcan_ergon::WorkflowRegistry::new());
-    let workflow_inputs = Arc::new(arcan_ergon::runner::WorkflowRunInputs::empty());
+    let agent_registry: Arc<dyn ergon::AgentRegistry> =
+        Arc::new(ergon::InMemoryAgentRegistry::new());
+    let workflow_inputs = Arc::new(
+        arcan_ergon::runner::WorkflowRunInputs::empty().with_agent_registry(agent_registry),
+    );
     let workflow_dispatcher: Arc<dyn aios_runtime::WorkflowTickDispatcher> = Arc::new(
         arcan_ergon::ErgonWorkflowDispatcher::new(workflow_registry, workflow_inputs),
     );
