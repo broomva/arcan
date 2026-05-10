@@ -14,6 +14,14 @@ description = "Rust agent runtime with streaming, tool execution, and event-sour
 name = "arcan"
 path = "src/main.rs"
 
+# Library target so integration tests in `tests/` can exercise the
+# binary's public submodules (e.g. `arcan::agent_cmd`) directly. The
+# library's surface is intentionally narrow — see `src/lib.rs` for the
+# exact re-exports. (BRO-1008)
+[lib]
+name = "arcan"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
 
@@ -97,6 +105,11 @@ chrono.workspace = true
 nix = { version = "0.31.2", features = ["signal", "term"] }
 fastrand = "2"
 crossterm = "0.29"
+# `arcan agent test --dry-run` validates user-supplied input JSON against
+# an authored agent's `input_schema`. We use the same `jsonschema` crate
+# that ergon's runtime uses for `record_answer` validation, so the CLI's
+# accept/reject judgement matches what the runtime would do (BRO-1008).
+jsonschema = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

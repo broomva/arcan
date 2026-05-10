@@ -1,3 +1,7 @@
+// `agent_cmd` lives in the library half of this crate (see
+// `src/lib.rs`) so integration tests can exercise it directly. The
+// binary just re-uses the same module via `arcan::agent_cmd`.
+use arcan::agent_cmd;
 mod cli_run;
 mod config;
 mod consolidator;
@@ -197,6 +201,13 @@ enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// Inspect, scaffold, and dry-run validate authored agents
+    /// (`agents/<name>.md` files). See agents/README.md for the
+    /// authoring format. (BRO-1008)
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
     /// Interactive REPL with slash commands (single-process, no daemon)
     Shell {
         /// Session ID to use (creates new if not provided)
@@ -233,6 +244,52 @@ enum SkillsAction {
     Sync,
     /// Show skill discovery directories
     Dirs,
+}
+
+#[derive(Subcommand)]
+enum AgentAction {
+    /// List every agent loaded from `<--agents-dir>/<name>.md`
+    /// with model, max_turns, and the first line of instructions.
+    List,
+    /// Pretty-print the full `AgentSpec` (schemas, tools,
+    /// instructions) for one agent.
+    Show {
+        /// The agent name (matches the filename stem under
+        /// `<--agents-dir>`).
+        name: String,
+    },
+    /// Scaffold a new `<--agents-dir>/<name>.md` from a template.
+    /// Refuses to overwrite an existing file.
+    New {
+        /// Stable agent name (becomes both the filename stem and
+        /// the `name:` frontmatter field).
+        name: String,
+        /// Override the default model (`claude-sonnet-4-5-20250929`).
+        #[arg(long)]
+        model: Option<String>,
+        /// Override the default placeholder body. Useful for
+        /// pasting an existing prompt into a fresh scaffold.
+        #[arg(long)]
+        instructions: Option<String>,
+    },
+    /// Validate an input JSON document against an agent's
+    /// `input_schema` without invoking the LLM. Live execution
+    /// (without `--dry-run`) is deferred to a follow-up PR.
+    Test {
+        /// The agent name (matches the filename stem under
+        /// `<--agents-dir>`).
+        name: String,
+        /// Input JSON. Either a literal JSON document
+        /// (`'{"key": 1}'`) or `@<path>` to read from a file.
+        #[arg(long)]
+        input: String,
+        /// Validate against `input_schema` only — do not execute.
+        /// Currently the only supported mode; bare `arcan agent
+        /// test` (without `--dry-run`) is rejected with an
+        /// explanatory error.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1563,6 +1620,47 @@ fn main() -> anyhow::Result<()> {
                 cli.default_tier.as_deref(),
             );
             run_skills(&data_dir, &resolved, &action)
+        }
+        Some(Command::Agent { action }) => {
+            // Agent CLI handlers are filesystem-only — no daemon, no
+            // provider stack, no telemetry initialization needed. We
+            // build a current-thread tokio runtime so the async
+            // `AgentRegistry::get` / `names` paths still work without
+            // pulling in the multi-thread executor.
+            let agents_dir = agent_cmd::resolve_agents_dir(cli.agents_dir);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async move {
+                match action {
+                    AgentAction::List => agent_cmd::list(&agents_dir).await,
+                    AgentAction::Show { name } => agent_cmd::show(&agents_dir, &name).await,
+                    AgentAction::New {
+                        name,
+                        model,
+                        instructions,
+                    } => agent_cmd::new_agent(
+                        &agents_dir,
+                        &name,
+                        model.as_deref(),
+                        instructions.as_deref(),
+                    ),
+                    AgentAction::Test {
+                        name,
+                        input,
+                        dry_run,
+                    } => {
+                        if !dry_run {
+                            return Err(anyhow::anyhow!(
+                                "live `arcan agent test` execution is not yet supported in this \
+                                 build — pass --dry-run to validate the input against the agent's \
+                                 input_schema. See BRO-1008 follow-ups for the live-LLM path."
+                            ));
+                        }
+                        agent_cmd::test_dry_run(&agents_dir, &name, &input).await
+                    }
+                }
+            })
         }
         Some(Command::Shell {
             session,
