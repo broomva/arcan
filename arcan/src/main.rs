@@ -122,6 +122,14 @@ struct Cli {
     /// See `agents/README.md` for the authoring format.
     #[arg(long, global = true, env = "ARCAN_AGENTS_DIR", value_name = "DIR")]
     agents_dir: Option<PathBuf>,
+
+    /// Bind arcand's substrate-plane gRPC server (`arcan.v1.AgentSubstrate`)
+    /// on this Unix-domain socket alongside the HTTP `:3000` server.
+    /// When unset, the gRPC server is NOT started — Topology-A users
+    /// keep the existing HTTP-only experience. Topology-B operators
+    /// set this so lifed's arcan-proxy can dial in. BRO-1016.
+    #[arg(long, global = true, env = "ARCAN_UDS_SOCKET", value_name = "PATH")]
+    uds_socket: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -337,6 +345,54 @@ async fn shutdown_signal() {
     tracing::info!("Shutting down gracefully, draining connections...");
 }
 
+/// Bind arcand's substrate-plane gRPC server (`arcan.v1.AgentSubstrate`)
+/// on a Unix-domain socket. Mirrors the soma pattern at
+/// `crates/life-kernel/soma/src/listener/unix.rs` — remove any stale
+/// socket, ensure the parent directory exists, bind, then serve until
+/// the workspace shutdown signal fires.
+///
+/// BRO-1016: this is the entry point lifed's `arcan-proxy` reaches in
+/// Topology B. The HTTP `:3000` server (Topology A) keeps running
+/// alongside this one — both share the same `Arc<KernelRuntime>`.
+async fn serve_substrate_uds(
+    socket_path: PathBuf,
+    runtime: Arc<aios_runtime::KernelRuntime>,
+) -> anyhow::Result<()> {
+    use arcan_substrate_proto::arcan::v1::agent_substrate_server::AgentSubstrateServer;
+
+    if let Some(parent) = socket_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("create parent dir {}: {e}", parent.display()))?;
+    }
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path)
+            .map_err(|e| anyhow::anyhow!("unlink stale socket {}: {e}", socket_path.display()))?;
+    }
+
+    let listener = tokio::net::UnixListener::bind(&socket_path)
+        .map_err(|e| anyhow::anyhow!("bind {}: {e}", socket_path.display()))?;
+
+    tracing::info!(
+        socket = %socket_path.display(),
+        "arcan substrate-plane gRPC listening (arcan.v1.AgentSubstrate)"
+    );
+
+    let service = arcand::substrate::SubstrateService::new(runtime);
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+
+    tonic::transport::Server::builder()
+        .add_service(AgentSubstrateServer::new(service))
+        .serve_with_incoming_shutdown(incoming, shutdown_signal())
+        .await
+        .map_err(|e| anyhow::anyhow!("substrate serve: {e}"))?;
+
+    // Clean up the socket file on graceful shutdown. Best-effort.
+    let _ = std::fs::remove_file(&socket_path);
+    Ok(())
+}
+
 /// Resolve the effective data directory.
 ///
 /// Priority:
@@ -540,6 +596,7 @@ fn run_serve(
     console_dir: Option<PathBuf>,
     prosopon_port: Option<std::net::SocketAddr>,
     agents_dir: Option<PathBuf>,
+    uds_socket: Option<PathBuf>,
     tokio_runtime: &tokio::runtime::Runtime,
 ) -> anyhow::Result<()> {
     // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
@@ -1034,6 +1091,10 @@ fn run_serve(
             )));
         }
 
+        // BRO-1016: keep an Arc<KernelRuntime> handle alive after the
+        // HTTP router takes ownership of one, so the optional
+        // substrate-plane gRPC server can share the same runtime.
+        let runtime_for_substrate = Arc::clone(&runtime);
         let mut router = arcand::canonical::create_canonical_router_with_skills(
             runtime,
             provider_handle,
@@ -1049,6 +1110,28 @@ fn run_serve(
             resolved.bare,           // minimal prompt for small-context models
             resolved.default_tier.as_deref(), // OSS tier override
         );
+
+        // ── Optional substrate-plane gRPC server (Topology B) ─────────
+        //
+        // When `--uds-socket <PATH>` (or `ARCAN_UDS_SOCKET`) is set, bind
+        // `arcan.v1.AgentSubstrate` on the configured Unix-domain
+        // socket. This is ADDITIVE to the HTTP `:3000` server below —
+        // both run concurrently on a single shared `KernelRuntime`.
+        // BRO-1016 closes the Topology B substrate-stub gap captured in
+        // `research/entities/concept/topology-b-substrate-stub-gap.md`.
+        if let Some(socket_path) = uds_socket.clone() {
+            let substrate_runtime = runtime_for_substrate.clone();
+            tokio::spawn(async move {
+                if let Err(err) = serve_substrate_uds(socket_path, substrate_runtime).await {
+                    tracing::error!(error = %err, "substrate-plane gRPC server exited with error");
+                }
+            });
+        } else {
+            tracing::debug!(
+                "substrate-plane gRPC server NOT bound — pass --uds-socket <PATH> or set \
+                 ARCAN_UDS_SOCKET to enable Topology-B routing"
+            );
+        }
 
         // --- Console UI ---
         #[cfg(feature = "console")]
@@ -1514,6 +1597,7 @@ fn main() -> anyhow::Result<()> {
                 cli.console_dir,
                 cli.prosopon_port,
                 cli.agents_dir,
+                cli.uds_socket,
                 &tokio_runtime,
             )
         }

@@ -5,3 +5,4 @@ pub mod mcp_registry;
 pub mod mock;
 pub mod rate_limit;
 pub mod rcs_observer;
+pub mod substrate;
