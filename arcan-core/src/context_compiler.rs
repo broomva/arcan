@@ -81,8 +81,14 @@ pub struct CompiledContext {
     pub dropped_blocks: Vec<ContextBlockKind>,
 }
 
-/// Estimate token count using ~4 chars per token heuristic.
-fn estimate_tokens(text: &str) -> usize {
+/// Approximate token-count via 4-chars/token heuristic. Sufficient for
+/// Claude Code's compact-window budgeting (±5% tolerance). Exposed for
+/// `lifegw-anthropic-codec` and J-Sub-F per Spec J L10-D7 — the same
+/// 4-chars/token mechanism is mirrored verbatim in
+/// `life_vigil::tokens::estimate_tokens` so lifegw can consume it
+/// without taking a forbidden `arcan-core` dep (Spec C₃ §11.2 L4-D13).
+/// Keep the two implementations in lock-step.
+pub fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(4).max(1)
 }
 
