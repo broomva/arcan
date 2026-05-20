@@ -196,8 +196,13 @@ async fn dispatch_message_streams_real_substrate_events() {
     let sid = "bro-1016-dispatch";
     let _ = proxy.create_agent(sid).await.expect("create_agent");
 
+    // BRO-1206: `dispatch_message` accepts an optional per-call model
+    // override. The arcan substrate gRPC wire ignores it (the substrate
+    // proto doesn't carry a `model` field); HTTP-backed backends honour
+    // it. This Topology B e2e test exercises the gRPC path so the
+    // override is irrelevant — pass `None`.
     let mut stream = proxy
-        .dispatch_message(sid, "Hello, substrate!")
+        .dispatch_message(sid, "Hello, substrate!", None)
         .await
         .expect("dispatch_message");
 
