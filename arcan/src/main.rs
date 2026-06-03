@@ -2,6 +2,7 @@
 // `src/lib.rs`) so integration tests can exercise it directly. The
 // binary just re-uses the same module via `arcan::agent_cmd`.
 use arcan::agent_cmd;
+mod chronos_wiring;
 mod cli_run;
 mod config;
 mod consolidator;
@@ -143,6 +144,15 @@ enum Command {
         /// Approval timeout in seconds (default 300 = 5 minutes)
         #[arg(long)]
         approval_timeout: Option<u64>,
+
+        /// Enable the Chronos M2 kernel wake-loop (opt-in). Wakes drive `tick_on_branch`.
+        #[arg(long, env = "ARCAN_CHRONOS_ENABLED")]
+        chronos: bool,
+
+        /// Bind address for the Chronos HTTP wake-ingest API (e.g. `127.0.0.1:3737`).
+        /// Requires `--chronos`. Unset ⇒ heartbeat-only.
+        #[arg(long, env = "ARCAN_CHRONOS_HTTP_BIND")]
+        chronos_http_bind: Option<std::net::SocketAddr>,
     },
     /// Launch the TUI client (auto-starts daemon if needed)
     Chat {
@@ -598,6 +608,8 @@ fn run_serve(
     agents_dir: Option<PathBuf>,
     uds_socket: Option<PathBuf>,
     tokio_runtime: &tokio::runtime::Runtime,
+    chronos_enabled: bool,
+    chronos_http_bind: Option<std::net::SocketAddr>,
 ) -> anyhow::Result<()> {
     // The Tokio runtime is entered (via `_rt_guard` in main) but NOT blocked
     // on yet.  This means:
@@ -983,6 +995,14 @@ fn run_serve(
 
     // Wire the broadcast sender now that the runtime exists.
     *streaming_sender.lock().unwrap() = Some(runtime.event_sender());
+
+    // --- Chronos M2 — kernel wake handoff (opt-in via `--chronos`) ---
+    // Spawns the wake-loop + HTTP wake-ingest API onto the entered tokio runtime; tasks queue now
+    // and run once the server's `block_on` starts. A plain `arcan serve` (no `--chronos`) skips
+    // this entirely, so the default runtime path is byte-for-byte unchanged.
+    if chronos_enabled {
+        chronos_wiring::spawn_chronos(Arc::clone(&runtime), journal.clone(), chronos_http_bind);
+    }
 
     // ── Prosopon display-server sidecar (opt-in via `--features prosopon`) ──
     //
@@ -1558,6 +1578,8 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Serve {
             max_iterations,
             approval_timeout,
+            chronos,
+            chronos_http_bind,
         }) => {
             // Build the Tokio runtime FIRST.  Vigil's OTLP exporter uses
             // tonic which calls `Endpoint::connect_lazy()` → `TokioExecutor`
@@ -1599,6 +1621,8 @@ fn main() -> anyhow::Result<()> {
                 cli.agents_dir,
                 cli.uds_socket,
                 &tokio_runtime,
+                chronos,
+                chronos_http_bind,
             )
         }
         Some(Command::Chat { session, url }) => {

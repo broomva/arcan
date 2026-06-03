@@ -72,6 +72,11 @@ lago-journal.workspace = true
 lago-lance.workspace = true
 lago-policy.workspace = true
 lago-store.workspace = true
+# Chronos M2 — kernel wake handoff (opt-in via `arcan serve --chronos`)
+chronos-core.workspace = true
+chronos-triggers.workspace = true
+chronos-lago.workspace = true
+chronos-api.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
