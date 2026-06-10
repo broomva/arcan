@@ -8,11 +8,14 @@
 //! 2. Construct port-backed [`crate::ModelProviderAdapter`] +
 //!    [`crate::ToolHarnessAdapter`] for this tick.
 //! 3. Build a [`ergon::HookRegistry`] holding the four
-//!    `ergon-life-hooks` auto-hooks (each wrapped over the BRO-1001
-//!    minimum-viable adapter from [`crate::hooks`]).
-//! 4. Create a [`ergon::StepCtx`] with a [`ergon::BufferSink`] (the
-//!    tick's stream events accumulate there; the kernel surfaces them
-//!    afterwards via the standard journal mechanisms).
+//!    `ergon-life-hooks` auto-hooks — capability gating always real
+//!    ([`KernelCapabilityResolver`]); budget / scorer / attester use
+//!    the host-wired adapters from [`WorkflowRunInputs`] when present
+//!    and permissive noops otherwise.
+//! 4. Create a [`ergon::StepCtx`] whose sink is a [`ergon::BufferSink`]
+//!    (feeds `events_emitted` accounting) fanned out with the host's
+//!    durable per-session sink (e.g. `ergon_life_sinks::LagoSink`)
+//!    when a [`StreamSinkFactory`] is wired.
 //! 5. Drive the workflow through [`ergon::WorkflowExecutor::run`] via
 //!    the type-erased registry entry's `run_json`.
 //! 6. Return a [`aios_runtime::WorkflowTickOutcome`] with the JSON
@@ -28,10 +31,27 @@ use crate::provider::ModelProviderAdapter;
 use crate::registry::{BoxedWorkflowExecutor, WorkflowRegistry};
 use crate::runtime_handle::ModeRuntimeHandle;
 use crate::tools::ToolHarnessAdapter;
+use aios_protocol::{BranchId, SessionId};
 use aios_runtime::{WorkflowTickInvocation, WorkflowTickOutcome};
-use ergon::{AgentRegistry, BufferSink, HookRegistry, RecursionContext, StepCtx, ToolDefinition};
-use ergon_life_hooks::{AnimaAttestHook, AutonomicBudgetHook, NousScoreHook, PraxisCapabilityHook};
+use ergon::{
+    AgentRegistry, BufferSink, FanoutSink, HookRegistry, RecursionContext, StepCtx, StreamSink,
+    ToolDefinition,
+};
+use ergon_life_hooks::{
+    AnimaAttestHook, AutonomicBudgetHook, BudgetGate, NousScoreHook, PraxisCapabilityHook,
+    ResponseScorer, SoulAttester,
+};
 use std::sync::Arc;
+
+/// Per-invocation stream-sink constructor. arcand wires this at boot
+/// with a closure that builds a substrate-coupled sink (e.g.
+/// `ergon_life_sinks::LagoSink`) for the tick's session + branch —
+/// this is how workflow stream events reach the durable lago journal
+/// without `arcan-ergon` taking a `lago-*` dependency (see the crate
+/// CLAUDE.md "Don't" list: substrate sinks plumb in via
+/// [`WorkflowRunInputs`], not direct deps).
+pub type StreamSinkFactory =
+    Arc<dyn Fn(&SessionId, &BranchId) -> Arc<dyn StreamSink> + Send + Sync>;
 
 /// Optional construction inputs for [`run_workflow_as_tick`] that
 /// arcand wires per-deployment.
@@ -59,6 +79,23 @@ pub struct WorkflowRunInputs {
     /// (top-level + descendants). Default
     /// [`ergon::DEFAULT_MAX_INVOCATIONS`].
     pub max_invocations: u32,
+    /// Optional per-invocation durable stream sink constructor. When
+    /// set, the tick's stream events fan out to the constructed sink
+    /// in addition to the in-memory buffer (closing the audited
+    /// "workflow stream events never reach lago" gap). When `None`
+    /// (tests, minimal embedders), events stay buffer-only.
+    pub stream_sink_factory: Option<StreamSinkFactory>,
+    /// Optional real budget gate consulted `on_pre_inference`. When
+    /// `None`, the permissive [`NoopBudgetGate`] stands in.
+    pub budget_gate: Option<Arc<dyn BudgetGate>>,
+    /// Optional real response scorer fired `on_post_inference` (e.g.
+    /// `ergon_nous_adapter::NousAdapter`). When `None`, the
+    /// [`NoopResponseScorer`] stands in.
+    pub response_scorer: Option<Arc<dyn ResponseScorer>>,
+    /// Optional real soul attester fired at workflow start/end (e.g.
+    /// `ergon_anima_adapter::AgentAttestationAdapter`). When `None`,
+    /// the [`NoopSoulAttester`] stands in.
+    pub soul_attester: Option<Arc<dyn SoulAttester>>,
 }
 
 impl WorkflowRunInputs {
@@ -72,6 +109,10 @@ impl WorkflowRunInputs {
             agent_registry: None,
             max_recursion_depth: ergon::DEFAULT_MAX_RECURSION_DEPTH,
             max_invocations: ergon::DEFAULT_MAX_INVOCATIONS,
+            stream_sink_factory: None,
+            budget_gate: None,
+            response_scorer: None,
+            soul_attester: None,
         }
     }
 
@@ -80,6 +121,38 @@ impl WorkflowRunInputs {
     #[must_use]
     pub fn with_agent_registry(mut self, registry: Arc<dyn AgentRegistry>) -> Self {
         self.agent_registry = Some(registry);
+        self
+    }
+
+    /// Builder: attach a per-invocation durable stream-sink factory
+    /// (e.g. one constructing `ergon_life_sinks::LagoSink` over the
+    /// host's lago journal).
+    #[must_use]
+    pub fn with_stream_sink_factory(mut self, factory: StreamSinkFactory) -> Self {
+        self.stream_sink_factory = Some(factory);
+        self
+    }
+
+    /// Builder: attach a real budget gate (replaces [`NoopBudgetGate`]).
+    #[must_use]
+    pub fn with_budget_gate(mut self, gate: Arc<dyn BudgetGate>) -> Self {
+        self.budget_gate = Some(gate);
+        self
+    }
+
+    /// Builder: attach a real response scorer (replaces
+    /// [`NoopResponseScorer`]).
+    #[must_use]
+    pub fn with_response_scorer(mut self, scorer: Arc<dyn ResponseScorer>) -> Self {
+        self.response_scorer = Some(scorer);
+        self
+    }
+
+    /// Builder: attach a real soul attester (replaces
+    /// [`NoopSoulAttester`]).
+    #[must_use]
+    pub fn with_soul_attester(mut self, attester: Arc<dyn SoulAttester>) -> Self {
+        self.soul_attester = Some(attester);
         self
     }
 
@@ -137,24 +210,49 @@ pub async fn run_workflow_as_tick(
     // 3. Assemble the auto-hook registry. Order is significant: the
     //    spec mandates auto-hooks fire BEFORE user hooks. User-supplied
     //    hooks aren't in scope for BRO-1001; once they are, append
-    //    them here after the four auto-hooks.
+    //    them here after the four auto-hooks. The budget / scorer /
+    //    attester slots use the host-wired real adapters when present
+    //    (see [`WorkflowRunInputs`]) and fall back to the permissive
+    //    noops otherwise (tests, minimal embedders).
     let cap_resolver = Arc::new(KernelCapabilityResolver::new(
         invocation.policy_gate.clone(),
         invocation.session_id.clone(),
         inputs.tool_capabilities.clone(),
     ));
+    let budget_gate: Arc<dyn BudgetGate> = inputs
+        .budget_gate
+        .clone()
+        .unwrap_or_else(|| Arc::new(NoopBudgetGate));
+    let response_scorer: Arc<dyn ResponseScorer> = inputs
+        .response_scorer
+        .clone()
+        .unwrap_or_else(|| Arc::new(NoopResponseScorer));
+    let soul_attester: Arc<dyn SoulAttester> = inputs
+        .soul_attester
+        .clone()
+        .unwrap_or_else(|| Arc::new(NoopSoulAttester));
     let hook_registry = HookRegistry::default()
         .with(PraxisCapabilityHook::new(cap_resolver))
-        .with(AutonomicBudgetHook::new(Arc::new(NoopBudgetGate)))
-        .with(NousScoreHook::new(Arc::new(NoopResponseScorer)))
-        .with(AnimaAttestHook::new(Arc::new(NoopSoulAttester)));
+        .with(AutonomicBudgetHook::new(budget_gate))
+        .with(NousScoreHook::new(response_scorer))
+        .with(AnimaAttestHook::new(soul_attester));
 
-    // 4. Build the StepCtx. We use a BufferSink — durable / OTel /
-    //    upstream sinks (LagoSink, VigilSink, LifegwSink) will be
-    //    fanned in via a FanoutSink in the follow-up that lands those
-    //    impls (BRO-999b). For BRO-1001 we capture events in memory
-    //    and account their count in WorkflowTickOutcome.
-    let sink: Arc<BufferSink> = Arc::new(BufferSink::new());
+    // 4. Build the StepCtx sink. The in-memory buffer always runs (it
+    //    feeds `WorkflowTickOutcome.events_emitted`); when the host
+    //    wired a durable sink factory, fan events out to the
+    //    constructed per-session sink as well — this is how workflow
+    //    stream events reach the lago journal (`lago replay --tree`
+    //    visibility). Durable-sink failures short-circuit the fanout
+    //    by design (backpressure + durability-first, see
+    //    `ergon::FanoutSink`).
+    let buffer: Arc<BufferSink> = Arc::new(BufferSink::new());
+    let sink: Arc<dyn StreamSink> = match inputs.stream_sink_factory.as_ref() {
+        Some(factory) => Arc::new(FanoutSink::new(vec![
+            buffer.clone() as Arc<dyn StreamSink>,
+            factory(invocation.session_id, invocation.branch_id),
+        ])),
+        None => buffer.clone() as Arc<dyn StreamSink>,
+    };
     let trace = tracing::Span::current();
     let mut ctx = StepCtx::new(
         invocation.session_id.clone(),
@@ -162,7 +260,7 @@ pub async fn run_workflow_as_tick(
         provider,
         tools,
         Arc::new(hook_registry),
-        sink.clone() as Arc<dyn ergon::StreamSink>,
+        sink,
         runtime,
         trace,
     );
@@ -192,7 +290,7 @@ pub async fn run_workflow_as_tick(
         .await?;
 
     // 6. Tally stream events for the kernel's accounting.
-    let events_emitted = sink.len().await as u64;
+    let events_emitted = buffer.len().await as u64;
 
     Ok(WorkflowTickOutcome {
         events_emitted,

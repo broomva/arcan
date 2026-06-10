@@ -49,6 +49,9 @@ autonomic-controller.workspace = true
 arcan-aios-adapters = { path = "../arcan-aios-adapters", version = "0.3.0" }
 arcan-ergon = { path = "../arcan-ergon", version = "0.3.0" }
 ergon.workspace = true
+ergon-life-hooks.workspace = true
+ergon-life-sinks.workspace = true
+ergon-nous-adapter.workspace = true
 arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
 praxis-core.workspace = true
 praxis-tools.workspace = true

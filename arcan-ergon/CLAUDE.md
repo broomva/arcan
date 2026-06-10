@@ -41,7 +41,7 @@ L0 — Kernel contract (aios-protocol)
 | `runtime_handle`  | `ModeRuntimeHandle` — `ergon::RuntimeHandle` over a captured `OperatingMode` |
 | `provider`        | `ModelProviderAdapter` — `ergon::Provider` over `ModelProviderPort` |
 | `tools`           | `ToolHarnessAdapter` — `ergon::ToolRegistry` over `ToolHarnessPort` |
-| `hooks`           | The four `ergon-life-hooks` adapter-trait implementations (capability + 3 noops) |
+| `hooks`           | `KernelCapabilityResolver` (always real) + the three noop fallbacks used when the host wires no real adapter via `WorkflowRunInputs` |
 | `runner`          | `run_workflow_as_tick` — the workflow body executor |
 | `dispatcher`      | `ErgonWorkflowDispatcher` — `WorkflowTickDispatcher` impl wired into the kernel |
 
@@ -82,20 +82,33 @@ L0 — Kernel contract (aios-protocol)
    the registered praxis tools at startup). Tools missing from the
    map are denied fail-closed.
 
-2. **`NoopBudgetGate` / `NoopResponseScorer` / `NoopSoulAttester`.**
-   The spec's intent is that all four auto-hooks have real
-   substrate-backed implementations. The BRO-1001 minimum ships only
-   capability-gating as functional; the other three are permissive
-   stand-ins. Real autonomic / nous / anima implementations land in
-   follow-up tickets without changing the public surface.
+2. **Real auto-hook adapters wire in via `WorkflowRunInputs`**
+   *(closed 2026-06-10, harness Phase-2 gap closure)*. The runner
+   uses host-supplied `budget_gate` / `response_scorer` /
+   `soul_attester` when present and falls back to the permissive
+   noops otherwise (tests, minimal embedders). The real adapters:
+   `arcan::ergon_wiring::EconomicBudgetGate` (Autonomic economic
+   advisory — Hibernate denies, Hustle clamps `max_tokens`),
+   `ergon_nous_adapter::NousAdapter` (evaluator-registry fan-out,
+   fail-open per evaluator), `ergon_anima_adapter::
+   AgentAttestationAdapter` (custody-signed JWS session boundaries —
+   implemented + tested; arcan serve wires it once a custody
+   identity config exists, until then the noop fallback warns at
+   boot).
 
-3. **`BufferSink` instead of `FanoutSink(LagoSink, VigilSink, LifegwSink)`.**
-   Substrate-coupled stream sinks (BRO-999b follow-up) aren't in
-   this crate's dep graph yet. We capture stream events in memory
-   and account their count in `WorkflowTickOutcome.events_emitted`
-   for the kernel's bookkeeping. When the substrate sinks land, the
-   `runner.rs::run_workflow_as_tick` body grows a `FanoutSink`
-   composing them in.
+3. **Durable stream sink fans in via `WorkflowRunInputs::
+   stream_sink_factory`** *(closed 2026-06-10)*. The runner composes
+   `FanoutSink([BufferSink, factory(session, branch)])` per
+   invocation — the buffer still feeds `events_emitted` accounting;
+   the factory-built sink (arcan serve wires
+   `ergon_life_sinks::LagoSink` over the same lago journal the
+   kernel's `EventStorePort` uses) makes workflow stream events
+   visible to `lago replay`. Direct `EventStorePort::append` from
+   the dispatcher is deliberately NOT used: the kernel owns a
+   per-branch sequence counter and the store enforces strict
+   sequence continuity — dispatcher-side appends would desync it.
+   lago assigns its own sequences, so the `lago_core::Journal` path
+   is collision-free.
 
 ## Useful commands
 

@@ -9,6 +9,7 @@ mod consolidator;
 mod daemon;
 mod embedding;
 mod ephemeral_journal;
+mod ergon_wiring;
 mod factory;
 mod markdown;
 mod memory_observer;
@@ -861,7 +862,7 @@ fn run_serve(
         tool_definitions,
         streaming_sender.clone(),
     )
-    .with_economic_handle(economic_handle);
+    .with_economic_handle(economic_handle.clone());
 
     // The skill catalog is now injected per-session in arcand/src/canonical.rs,
     // filtered by the session's tier policy (BRO-214).
@@ -983,9 +984,46 @@ fn run_serve(
         );
         Arc::new(ergon::InMemoryAgentRegistry::new())
     };
-    let workflow_inputs = Arc::new(
-        arcan_ergon::runner::WorkflowRunInputs::empty().with_agent_registry(agent_registry),
+    // Harness Phase-2 gap closure (2026-06-10): workflow ticks get the
+    // real substrate wiring instead of buffer-only sinks + noop hooks.
+    // - stream events fan out to a per-session LagoSink over the SAME
+    //   journal the kernel's EventStorePort writes to → `lago replay`
+    //   sees workflow ticks;
+    // - inference passes the Autonomic economic gate (Hibernate denies,
+    //   Hustle clamps max_tokens) — mirroring the Direct path;
+    // - responses are scored through the Nous evaluator registry when
+    //   it initialized.
+    // Anima soul attestation stays on the Noop fallback until arcan
+    // serve grows a custody identity config (the adapter itself is
+    // implemented + tested in `ergon-anima-adapter`; wiring requires
+    // a stable agent DID, which a boot-time `generate_dev()` key would
+    // not provide).
+    let mut workflow_inputs = arcan_ergon::runner::WorkflowRunInputs::empty()
+        .with_agent_registry(agent_registry)
+        .with_stream_sink_factory(ergon_wiring::lago_stream_sink_factory(journal.clone()))
+        .with_budget_gate(Arc::new(ergon_wiring::EconomicBudgetGate::new(
+            economic_handle,
+        )));
+    // The Direct-path observer owns its registry instance, so build a
+    // second one for the workflow scorer — the heuristic evaluators
+    // are stateless, two instances are equivalent.
+    match nous_heuristics::default_registry() {
+        Ok(registry) => {
+            workflow_inputs = workflow_inputs.with_response_scorer(Arc::new(
+                ergon_nous_adapter::NousAdapter::new(Arc::new(registry)),
+            ));
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "ergon workflow ticks: Nous registry unavailable — response scoring falls back to noop"
+            );
+        }
+    }
+    tracing::warn!(
+        "ergon workflow ticks: anima custody not configured — soul attestation falls back to noop"
     );
+    let workflow_inputs = Arc::new(workflow_inputs);
     let workflow_dispatcher: Arc<dyn aios_runtime::WorkflowTickDispatcher> = Arc::new(
         arcan_ergon::ErgonWorkflowDispatcher::new(workflow_registry, workflow_inputs),
     );

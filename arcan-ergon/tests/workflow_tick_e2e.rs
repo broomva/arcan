@@ -356,3 +356,226 @@ fn event_kind_name(kind: &aios_protocol::EventKind) -> String {
         other => format!("{other:?}").chars().take(40).collect(),
     }
 }
+
+/// Harness Phase-2 gap closure: a fully-wired `WorkflowRunInputs`
+/// (stream-sink factory + real budget gate / scorer / attester) drives
+/// every adapter during a workflow tick that runs one inference turn.
+mod fully_wired {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use ergon::{InferenceRequest, Message, ModelRequest, ModelResponse, StreamEvent, StreamSink};
+    use ergon_life_hooks::{BudgetGate, ResponseScorer, SoulAttester};
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Mutex<Vec<StreamEvent>>,
+    }
+
+    #[async_trait]
+    impl StreamSink for RecordingSink {
+        async fn emit(&self, event: StreamEvent) -> std::result::Result<(), ErgonError> {
+            self.events.lock().await.push(event);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingGate {
+        calls: AtomicU32,
+    }
+
+    #[async_trait]
+    impl BudgetGate for RecordingGate {
+        async fn allow_inference(
+            &self,
+            _req: &mut ModelRequest,
+        ) -> std::result::Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingScorer {
+        calls: AtomicU32,
+    }
+
+    #[async_trait]
+    impl ResponseScorer for RecordingScorer {
+        async fn score(
+            &self,
+            _response: &ModelResponse,
+        ) -> std::result::Result<serde_json::Value, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({"recorded": true}))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingAttester {
+        starts: AtomicU32,
+        ends: AtomicU32,
+    }
+
+    #[async_trait]
+    impl SoulAttester for RecordingAttester {
+        async fn sign_session_start(
+            &self,
+            _session_id: &ergon::SessionId,
+            _workflow_name: &str,
+        ) -> std::result::Result<(), String> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn sign_session_end(
+            &self,
+            _session_id: &ergon::SessionId,
+            _workflow_name: &str,
+            _ok: bool,
+        ) -> std::result::Result<(), String> {
+            self.ends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Workflow that runs exactly one inference turn so the
+    /// pre/post-inference hooks (budget gate + scorer) fire.
+    struct InferringWorkflow;
+
+    #[async_trait]
+    impl Workflow for InferringWorkflow {
+        type Input = Greeting;
+        type Output = Reply;
+
+        fn name(&self) -> &str {
+            "test.inferring"
+        }
+
+        fn role(&self) -> Role {
+            Role::default()
+        }
+
+        async fn execute(
+            &self,
+            ctx: &mut StepCtx<'_>,
+            input: Greeting,
+        ) -> std::result::Result<Reply, ErgonError> {
+            ctx.push_message(Message::user_text(format!("greet {}", input.name)));
+            let request = InferenceRequest::new("echo-1".to_owned()).with_max_turns(1);
+            let response = ctx.run_inference_streaming(&request).await?;
+            Ok(Reply {
+                message: format!("{} blocks", response.content.len()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fully_wired_inputs_drive_sink_and_real_hooks() {
+        let root = unique_root("fully-wired");
+        let event_store_backend = Arc::new(FileEventStore::new(root.join("kernel")));
+        let journal = Arc::new(EventJournal::new(
+            event_store_backend,
+            EventStreamHub::new(1024),
+        ));
+        let event_store: Arc<dyn EventStorePort> = journal;
+        let policy_engine = Arc::new(SessionPolicyEngine::new(PolicySet::default()));
+        let policy_gate: Arc<dyn PolicyGatePort> = policy_engine.clone();
+        let approvals: Arc<dyn ApprovalPort> = Arc::new(ApprovalQueue::default());
+        let tool_registry = Arc::new(ToolRegistry::with_core_tools());
+        let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
+        let dispatcher = Arc::new(ToolDispatcher::new(tool_registry, policy_engine, sandbox));
+        let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
+        let kernel = KernelRuntime::new(
+            RuntimeConfig::new(root),
+            event_store,
+            Arc::new(EchoProvider),
+            tool_harness,
+            approvals,
+            policy_gate,
+        );
+
+        let sink = Arc::new(RecordingSink::default());
+        let factory_seen: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let gate = Arc::new(RecordingGate::default());
+        let scorer = Arc::new(RecordingScorer::default());
+        let attester = Arc::new(RecordingAttester::default());
+
+        let sink_for_factory = Arc::clone(&sink);
+        let seen_for_factory = Arc::clone(&factory_seen);
+        let inputs = WorkflowRunInputs::empty()
+            .with_stream_sink_factory(Arc::new(move |session_id, _branch_id| {
+                *seen_for_factory.lock().expect("factory lock") =
+                    Some(session_id.as_str().to_owned());
+                Arc::clone(&sink_for_factory) as Arc<dyn StreamSink>
+            }))
+            .with_budget_gate(gate.clone())
+            .with_response_scorer(scorer.clone())
+            .with_soul_attester(attester.clone());
+
+        let registry = Arc::new(WorkflowRegistry::new().register(Arc::new(InferringWorkflow)));
+        let workflow_dispatcher: Arc<dyn WorkflowTickDispatcher> =
+            Arc::new(ErgonWorkflowDispatcher::new(registry, Arc::new(inputs)));
+        let runtime = Arc::new(kernel.with_workflow_dispatcher(workflow_dispatcher));
+
+        let session_id = SessionId::from_string("fully-wired".to_owned());
+        runtime
+            .create_session_with_id(
+                session_id.clone(),
+                "tester",
+                PolicySet::default(),
+                ModelRouting::default(),
+            )
+            .await
+            .expect("create session");
+
+        runtime
+            .tick_on_branch(
+                &session_id,
+                &BranchId::main(),
+                TickInput {
+                    objective: "greet".to_owned(),
+                    proposed_tool: None,
+                    system_prompt: None,
+                    allowed_tools: None,
+                    kind: TickKind::Workflow {
+                        name: "test.inferring".to_owned(),
+                        input: serde_json::json!({"name": "wired"}),
+                    },
+                },
+            )
+            .await
+            .expect("workflow tick succeeds");
+
+        assert_eq!(
+            factory_seen.lock().expect("factory lock").as_deref(),
+            Some("fully-wired"),
+            "sink factory receives the invocation's session id"
+        );
+        assert!(
+            !sink.events.lock().await.is_empty(),
+            "stream events reach the host-wired durable sink"
+        );
+        assert!(
+            gate.calls.load(Ordering::SeqCst) >= 1,
+            "budget gate consulted on_pre_inference"
+        );
+        assert!(
+            scorer.calls.load(Ordering::SeqCst) >= 1,
+            "scorer fired on_post_inference"
+        );
+        assert_eq!(
+            attester.starts.load(Ordering::SeqCst),
+            1,
+            "session start attested"
+        );
+        assert_eq!(
+            attester.ends.load(Ordering::SeqCst),
+            1,
+            "session end attested"
+        );
+    }
+}
