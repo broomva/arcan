@@ -57,6 +57,10 @@ where
             .map_err(|_| CoreError::Provider("no messages provided".to_string()))?;
 
         let rig_request = CompletionRequest {
+            // rig 0.36: per-request model override — None keeps the
+            // handle's own model; structured output unused here.
+            model: None,
+            output_schema: None,
             preamble: system_prompt,
             chat_history,
             documents: vec![],
@@ -259,7 +263,9 @@ mod tests {
                 output_tokens: 5,
                 total_tokens: 15,
                 cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
+            message_id: None,
             raw_response: json!({}),
         };
 
@@ -282,7 +288,9 @@ mod tests {
                 output_tokens: 5,
                 total_tokens: 15,
                 cached_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             },
+            message_id: None,
             raw_response: json!({}),
         };
 
