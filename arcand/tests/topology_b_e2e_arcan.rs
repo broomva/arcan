@@ -25,14 +25,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
 use aios_protocol::{
-    ApprovalPort, EventStorePort, KernelResult, ModelCompletion, ModelCompletionRequest,
-    ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort, PolicySet, SessionId,
-    ToolHarnessPort,
+    ApprovalPort, Capability, EventStorePort, KernelResult, ModelCompletion,
+    ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort,
+    PolicySet, SessionId, ToolCall, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
@@ -230,6 +231,157 @@ async fn dispatch_message_streams_real_substrate_events() {
         "dispatch stream should terminate with FINISH or ERROR"
     );
     env.shutdown().await;
+}
+
+/// Provider that requests one `fs.write` tool call on its first
+/// completion, then answers normally — drives the Phase-2 tool
+/// lifecycle through a real Direct tick.
+#[derive(Debug, Default)]
+struct ToolCallingProvider {
+    calls: AtomicU32,
+}
+
+#[async_trait]
+impl ModelProviderPort for ToolCallingProvider {
+    async fn complete(&self, _request: ModelCompletionRequest) -> KernelResult<ModelCompletion> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(ModelCompletion {
+                provider: "test".to_owned(),
+                model: "test-model".to_owned(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::ToolCall {
+                    call: ToolCall {
+                        call_id: "call-e2e-1".to_owned(),
+                        tool_name: "fs.write".to_owned(),
+                        input: serde_json::json!({
+                            "path": "artifacts/e2e.txt",
+                            "content": "phase-2 tool lifecycle"
+                        }),
+                        requested_capabilities: vec![Capability::fs_write("/session/artifacts/**")],
+                    },
+                }],
+                stop_reason: ModelStopReason::ToolCall,
+                usage: None,
+                final_answer: None,
+            })
+        } else {
+            Ok(ModelCompletion {
+                provider: "test".to_owned(),
+                model: "test-model".to_owned(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::Message {
+                    role: "assistant".to_owned(),
+                    content: "wrote the file".to_owned(),
+                }],
+                stop_reason: ModelStopReason::Completed,
+                usage: None,
+                final_answer: Some("done".to_owned()),
+            })
+        }
+    }
+}
+
+#[tokio::test]
+async fn dispatch_message_streams_tool_lifecycle_events() {
+    // Same harness as `dispatch_message_streams_real_substrate_events`
+    // but with a provider that requests a tool call — asserts the
+    // Phase-2 wire: TOOL_CALL_PENDING and TOOL_RESULT frames arrive at
+    // the proxy as structured `life.v1.AgentEvent`s with payloads.
+    let tempdir = TempDir::new().expect("tempdir");
+    let socket = tempdir.path().join("arcand.sock");
+    let root = tempdir.path().join("kernel-root");
+
+    let event_store_backend = Arc::new(FileEventStore::new(root.join("kernel")));
+    let journal = Arc::new(EventJournal::new(
+        event_store_backend,
+        EventStreamHub::new(1024),
+    ));
+    let event_store: Arc<dyn EventStorePort> = journal;
+    let policy_engine = Arc::new(SessionPolicyEngine::new(PolicySet::default()));
+    let policy_gate: Arc<dyn PolicyGatePort> = policy_engine.clone();
+    let approvals: Arc<dyn ApprovalPort> = Arc::new(ApprovalQueue::default());
+    let registry = Arc::new(ToolRegistry::with_core_tools());
+    let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
+    let dispatcher = Arc::new(ToolDispatcher::new(registry, policy_engine, sandbox));
+    let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
+    let runtime = Arc::new(KernelRuntime::new(
+        RuntimeConfig::new(root),
+        event_store,
+        Arc::new(ToolCallingProvider::default()),
+        tool_harness,
+        approvals,
+        policy_gate,
+    ));
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let service = SubstrateService::new(Arc::clone(&runtime));
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind UDS");
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+    let server_handle = tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(AgentSubstrateServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+    for _ in 0..200 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let proxy = ArcanProxy::connect(socket.clone())
+        .await
+        .expect("dial substrate UDS");
+    let sid = "phase2-tool-lifecycle";
+    let _ = proxy.create_agent(sid).await.expect("create_agent");
+    let mut stream = proxy
+        .dispatch_message(sid, "write the e2e artifact", None)
+        .await
+        .expect("dispatch_message");
+
+    let mut pending: Option<serde_json::Value> = None;
+    let mut result: Option<serde_json::Value> = None;
+    let mut terminal_seen = false;
+    let mut count = 0;
+    while let Some(evt) = stream.next().await {
+        let evt = evt.expect("substrate event ok");
+        count += 1;
+        let payload = evt.record.as_ref().map(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.payload).expect("record payload JSON")
+        });
+        if evt.kind == AgentEventKind::ToolCallPending as i32 {
+            pending = payload.clone();
+        }
+        if evt.kind == AgentEventKind::ToolResult as i32 {
+            result = payload.clone();
+        }
+        if evt.kind == AgentEventKind::Finish as i32 || evt.kind == AgentEventKind::Error as i32 {
+            terminal_seen = true;
+            break;
+        }
+        if count > 64 {
+            break;
+        }
+    }
+    drop(stream);
+
+    assert!(terminal_seen, "stream should reach a terminal frame");
+    let pending = pending.expect("TOOL_CALL_PENDING frame should arrive at the proxy");
+    assert_eq!(pending["call_id"], "call-e2e-1");
+    assert_eq!(pending["tool_name"], "fs.write");
+    assert_eq!(pending["arguments"]["path"], "artifacts/e2e.txt");
+    let result = result.expect("TOOL_RESULT frame should arrive at the proxy");
+    assert_eq!(result["tool_name"], "fs.write");
+    assert_eq!(
+        result["status"], "ok",
+        "fs.write should actually execute (policy allows /session/artifacts/**): {result}"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
 }
 
 #[tokio::test]

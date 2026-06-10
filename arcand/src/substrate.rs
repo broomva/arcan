@@ -13,8 +13,14 @@
 //! - `DispatchMessage`: drives a Direct tick loop and streams text +
 //!   terminal events back to the caller.
 //!
-//! Phase 2 (separate ticket) will lift the full `life.v1.AgentEvent`
-//! shape, ToolCall events, ApproveDispatch / CancelDispatch, etc.
+//! Phase 2 (harness arc, 2026-06-10): `DispatchMessage` additionally
+//! emits the tool lifecycle — `TOOL_CALL_PENDING` when the model
+//! requests a tool and `TOOL_RESULT` when execution completes or
+//! fails, each carrying a structured JSON payload (`payload_json`).
+//! The kernel already journals + broadcasts these as durable
+//! `EventKind::ToolCall*` records during the Direct tick; this module
+//! translates them onto the substrate wire. Still future:
+//! ApproveDispatch / CancelDispatch and APPROVAL_REQUIRED surfacing.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -241,6 +247,8 @@ impl AgentSubstrate for SubstrateService {
                                     kind: AgentEventKind::Error as i32,
                                     text: String::new(),
                                     error: format!("tick failed: {e}"),
+                                    payload_json: String::new(),
+                                    sequence: 0,
                                 }))
                                 .await;
                         }
@@ -250,7 +258,23 @@ impl AgentSubstrate for SubstrateService {
                 }
             }
 
-            // If the broadcast pump hasn't already emitted a terminal
+            // Give the broadcast pump a bounded window to drain queued
+            // frames and forward the kernel's own terminal before we
+            // synthesize one. Without this, a starved pump could see
+            // our synthesized FINISH win the CAS while real TOKEN /
+            // TOOL_RESULT frames are still queued behind it (frames
+            // after FINISH). Normal flows break out on the first
+            // check; the full window is only paid when the kernel
+            // never emitted RunFinished/RunErrored at all.
+            if !errored {
+                for _ in 0..25 {
+                    if terminal_sent.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            // If the broadcast pump still hasn't emitted a terminal
             // (e.g. the test harness's MockProvider returns
             // immediately without a RunFinished event), synthesize a
             // FINISH so the client stream closes cleanly. CAS guards
@@ -261,6 +285,8 @@ impl AgentSubstrate for SubstrateService {
                         kind: AgentEventKind::Finish as i32,
                         text: String::new(),
                         error: String::new(),
+                        payload_json: String::new(),
+                        sequence: 0,
                     }))
                     .await;
             }
@@ -280,29 +306,311 @@ impl AgentSubstrate for SubstrateService {
     }
 }
 
+/// Cap on the serialized `result` value embedded in a TOOL_RESULT
+/// wire frame. Tool outcomes (file reads, shell output) can exceed
+/// tonic's default 4 MB receive limit on the proxy side and would
+/// kill the stream mid-turn; oversized results are truncated on the
+/// wire while the full value stays in the durable kernel journal.
+const MAX_TOOL_RESULT_WIRE_BYTES: usize = 64 * 1024;
+
+/// Clamp a tool result for wire transport. Returns the (possibly
+/// truncated) value and whether truncation happened.
+fn wire_result(result: &serde_json::Value) -> (serde_json::Value, bool) {
+    let serialized = result.to_string();
+    if serialized.len() <= MAX_TOOL_RESULT_WIRE_BYTES {
+        return (result.clone(), false);
+    }
+    let mut cut = MAX_TOOL_RESULT_WIRE_BYTES;
+    while !serialized.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let truncated = format!(
+        "{head}…[truncated {dropped} of {total} bytes; full result in the session journal]",
+        head = &serialized[..cut],
+        dropped = serialized.len() - cut,
+        total = serialized.len(),
+    );
+    (serde_json::Value::String(truncated), true)
+}
+
 /// Translate a kernel `EventRecord` into a substrate-plane
-/// `AgentEvent`. Returns `None` for event kinds outside the Phase 1
-/// scope (which the pump skips silently). Phase 2 will expand to
-/// ToolCall + structured event records.
+/// `AgentEvent`. Returns `None` for event kinds outside the wire
+/// scope (which the pump skips silently).
+///
+/// Phase 2 (harness arc): the tool lifecycle maps as
+/// `ToolCallRequested` → `TOOL_CALL_PENDING` and
+/// `ToolCallCompleted` / `ToolCallFailed` → `TOOL_RESULT`, each with
+/// a structured JSON payload (see the proto for the shape).
+/// `ToolCallStarted` is deliberately skipped — `TOOL_CALL_PENDING`
+/// already announced the call and Started carries no additional
+/// client-visible information. Every translated frame carries the
+/// kernel's durable `record.sequence` so downstream consumers keep
+/// real per-session monotonic cursors.
 fn translate_event(record: &EventRecord) -> Option<AgentEvent> {
+    let event =
+        |kind: AgentEventKind, text: String, error: String, payload_json: String| AgentEvent {
+            kind: kind as i32,
+            text,
+            error,
+            payload_json,
+            sequence: record.sequence,
+        };
     match &record.kind {
         EventKind::AssistantTextDelta { delta, .. } | EventKind::TextDelta { delta, .. } => {
-            Some(AgentEvent {
-                kind: AgentEventKind::Token as i32,
-                text: delta.clone(),
-                error: String::new(),
-            })
+            Some(event(
+                AgentEventKind::Token,
+                delta.clone(),
+                String::new(),
+                String::new(),
+            ))
         }
-        EventKind::RunFinished { .. } => Some(AgentEvent {
-            kind: AgentEventKind::Finish as i32,
-            text: String::new(),
-            error: String::new(),
-        }),
-        EventKind::RunErrored { error } => Some(AgentEvent {
-            kind: AgentEventKind::Error as i32,
-            text: String::new(),
-            error: error.clone(),
-        }),
+        EventKind::ToolCallRequested {
+            call_id,
+            tool_name,
+            arguments,
+            category,
+        } => {
+            let mut payload = serde_json::json!({
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+            });
+            if let Some(cat) = category {
+                payload["category"] = serde_json::Value::String(cat.clone());
+            }
+            Some(event(
+                AgentEventKind::ToolCallPending,
+                String::new(),
+                String::new(),
+                payload.to_string(),
+            ))
+        }
+        EventKind::ToolCallCompleted {
+            call_id,
+            tool_name,
+            result,
+            duration_ms,
+            status,
+            ..
+        } => {
+            let (result, truncated) = wire_result(result);
+            let mut payload = serde_json::json!({
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "result": result,
+                "duration_ms": duration_ms,
+                "status": status,
+            });
+            if truncated {
+                payload["result_truncated"] = serde_json::Value::Bool(true);
+            }
+            Some(event(
+                AgentEventKind::ToolResult,
+                String::new(),
+                String::new(),
+                payload.to_string(),
+            ))
+        }
+        EventKind::ToolCallFailed {
+            call_id,
+            tool_name,
+            error,
+        } => Some(event(
+            AgentEventKind::ToolResult,
+            String::new(),
+            String::new(),
+            serde_json::json!({
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "error": error,
+                "status": "error",
+            })
+            .to_string(),
+        )),
+        EventKind::RunFinished { .. } => Some(event(
+            AgentEventKind::Finish,
+            String::new(),
+            String::new(),
+            String::new(),
+        )),
+        EventKind::RunErrored { error } => Some(event(
+            AgentEventKind::Error,
+            String::new(),
+            error.clone(),
+            String::new(),
+        )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aios_protocol::{SpanStatus, ToolRunId};
+
+    use super::*;
+
+    fn record(kind: EventKind) -> EventRecord {
+        EventRecord::new(
+            SessionId::from_string("sid-substrate-test"),
+            BranchId::main(),
+            1,
+            kind,
+        )
+    }
+
+    fn payload(evt: &AgentEvent) -> serde_json::Value {
+        serde_json::from_str(&evt.payload_json).expect("payload_json parses")
+    }
+
+    #[test]
+    fn translates_text_delta_to_token() {
+        let evt = translate_event(&record(EventKind::TextDelta {
+            delta: "hello".into(),
+            index: None,
+        }))
+        .expect("token event");
+        assert_eq!(evt.kind(), AgentEventKind::Token);
+        assert_eq!(evt.text, "hello");
+        assert!(evt.payload_json.is_empty());
+    }
+
+    #[test]
+    fn translates_tool_call_requested_to_pending_with_payload() {
+        let evt = translate_event(&record(EventKind::ToolCallRequested {
+            call_id: "call-1".into(),
+            tool_name: "fs.read".into(),
+            arguments: serde_json::json!({"path": "/tmp/x"}),
+            category: Some("fs".into()),
+        }))
+        .expect("pending event");
+        assert_eq!(evt.kind(), AgentEventKind::ToolCallPending);
+        assert!(evt.text.is_empty());
+        let p = payload(&evt);
+        assert_eq!(p["call_id"], "call-1");
+        assert_eq!(p["tool_name"], "fs.read");
+        assert_eq!(p["arguments"]["path"], "/tmp/x");
+        assert_eq!(p["category"], "fs");
+    }
+
+    #[test]
+    fn translates_tool_call_completed_to_result_with_payload() {
+        let evt = translate_event(&record(EventKind::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some("call-1".into()),
+            tool_name: "fs.read".into(),
+            result: serde_json::json!({"content": "data"}),
+            duration_ms: 42,
+            status: SpanStatus::Ok,
+        }))
+        .expect("result event");
+        assert_eq!(evt.kind(), AgentEventKind::ToolResult);
+        let p = payload(&evt);
+        assert_eq!(p["call_id"], "call-1");
+        assert_eq!(p["tool_name"], "fs.read");
+        assert_eq!(p["result"]["content"], "data");
+        assert_eq!(p["duration_ms"], 42);
+        assert_eq!(p["status"], "ok");
+    }
+
+    #[test]
+    fn translates_tool_call_failed_to_result_with_error_payload() {
+        let evt = translate_event(&record(EventKind::ToolCallFailed {
+            call_id: "call-2".into(),
+            tool_name: "shell.run".into(),
+            error: "denied by policy".into(),
+        }))
+        .expect("result event");
+        assert_eq!(evt.kind(), AgentEventKind::ToolResult);
+        let p = payload(&evt);
+        assert_eq!(p["call_id"], "call-2");
+        assert_eq!(p["error"], "denied by policy");
+        assert_eq!(p["status"], "error");
+    }
+
+    #[test]
+    fn category_is_omitted_when_absent() {
+        let evt = translate_event(&record(EventKind::ToolCallRequested {
+            call_id: "call-3".into(),
+            tool_name: "fs.read".into(),
+            arguments: serde_json::json!({}),
+            category: None,
+        }))
+        .expect("pending event");
+        let p = payload(&evt);
+        assert!(
+            p.get("category").is_none(),
+            "category key should be omitted, not null"
+        );
+    }
+
+    #[test]
+    fn kernel_sequence_passes_through_to_the_wire() {
+        let rec = EventRecord::new(
+            SessionId::from_string("sid-substrate-test"),
+            BranchId::main(),
+            7,
+            EventKind::TextDelta {
+                delta: "x".into(),
+                index: None,
+            },
+        );
+        let evt = translate_event(&rec).expect("token event");
+        assert_eq!(evt.sequence, 7);
+    }
+
+    #[test]
+    fn oversized_tool_result_is_truncated_on_the_wire() {
+        let big = "x".repeat(MAX_TOOL_RESULT_WIRE_BYTES * 2);
+        let evt = translate_event(&record(EventKind::ToolCallCompleted {
+            tool_run_id: ToolRunId::default(),
+            call_id: Some("call-big".into()),
+            tool_name: "fs.read".into(),
+            result: serde_json::json!({ "content": big }),
+            duration_ms: 1,
+            status: SpanStatus::Ok,
+        }))
+        .expect("result event");
+        assert!(
+            evt.payload_json.len() < MAX_TOOL_RESULT_WIRE_BYTES + 4096,
+            "wire payload stays near the cap (got {})",
+            evt.payload_json.len()
+        );
+        let p = payload(&evt);
+        assert_eq!(p["result_truncated"], true);
+        assert!(
+            p["result"]
+                .as_str()
+                .expect("truncated result is a string")
+                .contains("truncated"),
+        );
+    }
+
+    #[test]
+    fn tool_call_started_is_skipped() {
+        let translated = translate_event(&record(EventKind::ToolCallStarted {
+            tool_run_id: ToolRunId::default(),
+            tool_name: "fs.read".into(),
+        }));
+        assert!(translated.is_none());
+    }
+
+    #[test]
+    fn terminal_kinds_still_translate() {
+        let finish = translate_event(&record(EventKind::RunFinished {
+            reason: "done".into(),
+            total_iterations: 1,
+            final_answer: None,
+            usage: None,
+        }));
+        assert!(matches!(
+            finish.map(|e| e.kind()),
+            Some(AgentEventKind::Finish)
+        ));
+        let errored = translate_event(&record(EventKind::RunErrored {
+            error: "boom".into(),
+        }))
+        .expect("error event");
+        assert_eq!(errored.kind(), AgentEventKind::Error);
+        assert_eq!(errored.error, "boom");
     }
 }
