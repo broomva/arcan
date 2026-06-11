@@ -1863,6 +1863,7 @@ fn main() -> anyhow::Result<()> {
                         cli.spaces_token.as_deref(),
                         cli.bare,
                         cli.default_tier.as_deref(),
+                        cli.anima_identity_dir.as_deref(),
                     );
                     let provider = build_provider(&resolved)?;
                     let ergon_provider =
