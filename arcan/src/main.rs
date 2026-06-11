@@ -307,8 +307,10 @@ enum AgentAction {
         instructions: Option<String>,
     },
     /// Validate an input JSON document against an agent's
-    /// `input_schema` without invoking the LLM. Live execution
-    /// (without `--dry-run`) is deferred to a follow-up PR.
+    /// `input_schema` (`--dry-run`), or execute the agent against
+    /// the configured LLM provider (`--live`). Exactly one mode must
+    /// be selected — bare `arcan agent test` errors so no invocation
+    /// spends money by accident.
     Test {
         /// The agent name (matches the filename stem under
         /// `<--agents-dir>`).
@@ -318,11 +320,15 @@ enum AgentAction {
         #[arg(long)]
         input: String,
         /// Validate against `input_schema` only — do not execute.
-        /// Currently the only supported mode; bare `arcan agent
-        /// test` (without `--dry-run`) is rejected with an
-        /// explanatory error.
         #[arg(long)]
         dry_run: bool,
+        /// Execute the agent against the configured provider
+        /// (resolved exactly like `arcan serve`: --provider/--model
+        /// flags, config file, API-key env vars). Costs money;
+        /// cumulative spend is capped at
+        /// `agent_cmd::AGENT_TEST_MAX_TOKENS` tokens.
+        #[arg(long, conflicts_with = "dry_run")]
+        live: bool,
     },
 }
 
@@ -1817,45 +1823,95 @@ fn main() -> anyhow::Result<()> {
             run_skills(&data_dir, &resolved, &action)
         }
         Some(Command::Agent { action }) => {
-            // Agent CLI handlers are filesystem-only — no daemon, no
-            // provider stack, no telemetry initialization needed. We
-            // build a current-thread tokio runtime so the async
+            // Agent CLI handlers are mostly filesystem-only — no
+            // daemon, no telemetry initialization needed. We build a
+            // current-thread tokio runtime so the async
             // `AgentRegistry::get` / `names` paths still work without
             // pulling in the multi-thread executor.
+            //
+            // The one exception is `test --live` (BRO-1008): it needs
+            // a real provider stack, resolved exactly like the serve
+            // path (config file + CLI flags + env vars). The provider
+            // adapter chain MUST be constructed in sync context and
+            // its final Arc must drop in sync context too — the
+            // Anthropic provider holds a `reqwest::blocking::Client`
+            // whose inner tokio runtime panics if built or dropped
+            // inside an async context (see
+            // `arcan-ergon/tests/anthropic_agents_smoke.rs`). So the
+            // live arm builds the chain HERE, before `block_on`, and
+            // keeps an Arc alive in this scope until after it returns.
             let agents_dir = agent_cmd::resolve_agents_dir(cli.agents_dir);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(async move {
-                match action {
-                    AgentAction::List => agent_cmd::list(&agents_dir).await,
-                    AgentAction::Show { name } => agent_cmd::show(&agents_dir, &name).await,
-                    AgentAction::New {
-                        name,
-                        model,
-                        instructions,
-                    } => agent_cmd::new_agent(
+            match action {
+                AgentAction::Test {
+                    name,
+                    input,
+                    dry_run: false,
+                    live: true,
+                } => {
+                    let resolved = config::resolve(
+                        &file_config,
+                        cli.provider.as_deref(),
+                        cli.model.as_deref(),
+                        cli.port,
+                        None,
+                        None,
+                        cli.autonomic_url.as_deref(),
+                        cli.spaces_backend.as_deref(),
+                        cli.spaces_token.as_deref(),
+                        cli.bare,
+                        cli.default_tier.as_deref(),
+                    );
+                    let provider = build_provider(&resolved)?;
+                    let ergon_provider =
+                        agent_cmd::build_ergon_provider(provider, &resolved.provider);
+                    // `ergon_provider` (and the provider chain under
+                    // it) drops at the end of this arm, in sync
+                    // context, AFTER block_on returned — preserving
+                    // the reqwest::blocking drop-order invariant.
+                    runtime.block_on(agent_cmd::test_live(
                         &agents_dir,
                         &name,
-                        model.as_deref(),
-                        instructions.as_deref(),
-                    ),
-                    AgentAction::Test {
-                        name,
-                        input,
-                        dry_run,
-                    } => {
-                        if !dry_run {
-                            return Err(anyhow::anyhow!(
-                                "live `arcan agent test` execution is not yet supported in this \
-                                 build — pass --dry-run to validate the input against the agent's \
-                                 input_schema. See BRO-1008 follow-ups for the live-LLM path."
-                            ));
-                        }
-                        agent_cmd::test_dry_run(&agents_dir, &name, &input).await
-                    }
+                        &input,
+                        Arc::clone(&ergon_provider),
+                    ))
                 }
-            })
+                action => runtime.block_on(async move {
+                    match action {
+                        AgentAction::List => agent_cmd::list(&agents_dir).await,
+                        AgentAction::Show { name } => agent_cmd::show(&agents_dir, &name).await,
+                        AgentAction::New {
+                            name,
+                            model,
+                            instructions,
+                        } => agent_cmd::new_agent(
+                            &agents_dir,
+                            &name,
+                            model.as_deref(),
+                            instructions.as_deref(),
+                        ),
+                        AgentAction::Test {
+                            name,
+                            input,
+                            dry_run,
+                            live: _,
+                        } => {
+                            if !dry_run {
+                                return Err(anyhow::anyhow!(
+                                    "`arcan agent test` needs an explicit mode: pass --dry-run \
+                                     to validate the input against the agent's input_schema \
+                                     offline (free), or --live to execute the agent against the \
+                                     configured LLM provider (costs money; capped at {} tokens).",
+                                    agent_cmd::AGENT_TEST_MAX_TOKENS,
+                                ));
+                            }
+                            agent_cmd::test_dry_run(&agents_dir, &name, &input).await
+                        }
+                    }
+                }),
+            }
         }
         Some(Command::Shell {
             session,

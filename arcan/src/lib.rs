@@ -9,14 +9,18 @@
 //! Currently re-exported:
 //!
 //! - [`agent_cmd`] — handlers for the `arcan agent
-//!   list/show/new/test --dry-run` subcommands. Shipped under
-//!   BRO-1008 to give operators an offline tooling surface for the
-//!   authored-agent substrate (see
+//!   list/show/new/test` subcommands (offline `--dry-run` validation
+//!   plus the `--live` LLM execution path). Shipped under BRO-1008 to
+//!   give operators a tooling surface for the authored-agent
+//!   substrate (see
 //!   `core/life/docs/superpowers/specs/2026-05-09-bro-1006-authored-agents-architecture.md`
 //!   §M5).
+//! - [`cost`] — USD cost estimation shared by the shell REPL and the
+//!   `agent test --live` summary line (single pricing table, BRO-364).
 //!
 //! Adding a module to this re-export list is a deliberate boundary
 //! expansion. The default for binary-internal helpers is to stay
 //! private to `main.rs`.
 
 pub mod agent_cmd;
+pub mod cost;

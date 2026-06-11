@@ -13,6 +13,11 @@
 //! - `new` scaffolds a parseable agent file and refuses to overwrite.
 //! - `test --dry-run` accepts valid input and rejects schema violations
 //!   with structured error messages.
+//! - `test --live` plumbing: the provider adapter chain
+//!   (`build_ergon_provider`), the spend cap pin, and the shared
+//!   schema validator — all offline. The one networked test
+//!   (`test_live_smoke_against_live_anthropic`) is `#[ignore]`d AND
+//!   gated behind `ARCAN_AGENT_TEST_LIVE=1`.
 //!
 //! Per spec
 //! `core/life/docs/superpowers/specs/2026-05-09-bro-1006-authored-agents-architecture.md`
@@ -343,4 +348,108 @@ fn resolve_agents_dir_defaults_to_relative_agents() {
 fn resolve_agents_dir_honors_explicit_path() {
     let custom = PathBuf::from("/tmp/custom-agents");
     assert_eq!(agent_cmd::resolve_agents_dir(Some(custom.clone())), custom);
+}
+
+// ─── test --live plumbing (offline) ────────────────────────────────────
+
+/// The provider adapter chain built by `build_ergon_provider` must
+/// report the supplied provider label through `ergon::Provider::name`
+/// — that's what `StreamEvent::SessionStart` embeds, and the only
+/// chain property observable without a model call.
+#[test]
+fn build_ergon_provider_reports_provider_name() {
+    use std::sync::Arc;
+
+    let provider: Arc<dyn arcan_core::runtime::Provider> = Arc::new(arcand::mock::MockProvider);
+    let chain = agent_cmd::build_ergon_provider(provider, "mock");
+    assert_eq!(chain.name(), "mock");
+}
+
+/// Pin the live-run spend cap. Bumping this constant changes how much
+/// money a single `arcan agent test --live` invocation may burn —
+/// that's a deliberate decision, not a drive-by edit.
+#[test]
+fn agent_test_token_cap_is_pinned() {
+    assert_eq!(agent_cmd::AGENT_TEST_MAX_TOKENS, 50_000);
+}
+
+/// `validate_against_schema` is the shared engine behind the dry-run
+/// input gate AND the live-run output check; its error text must name
+/// both the payload kind and the agent so operators can tell which
+/// side rejected.
+#[test]
+fn validate_against_schema_names_payload_and_agent() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "response": { "type": "string" } },
+        "required": ["response"],
+    });
+    let err =
+        agent_cmd::validate_against_schema(&schema, &serde_json::json!({}), "output", "goal-judge")
+            .expect_err("missing required field must fail");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("output is INVALID for agent `goal-judge`"));
+}
+
+// ─── test --live (gated live-LLM smoke) ────────────────────────────────
+
+/// Live-LLM smoke for `arcan agent test --live` (BRO-1008).
+///
+/// Follows the gating pattern of
+/// `crates/arcan/arcan-ergon/tests/anthropic_agents_smoke.rs`:
+///
+/// - `#[ignore]` — real network call, costs money (~$0.01 at Sonnet
+///   pricing), requires `ANTHROPIC_API_KEY`.
+/// - Additionally requires `ARCAN_AGENT_TEST_LIVE=1` so a blanket
+///   `--ignored` sweep doesn't accidentally spend.
+///
+/// Run manually:
+/// ```bash
+/// ARCAN_AGENT_TEST_LIVE=1 ANTHROPIC_API_KEY=sk-ant-... \
+///   cargo test -p arcan --test agent_cmd -- --ignored --nocapture \
+///     test_live_smoke_against_live_anthropic
+/// ```
+///
+/// ## Why `#[test]` not `#[tokio::test]`
+///
+/// `arcan_provider::AnthropicProvider` uses `reqwest::blocking`
+/// internally, which owns an inner tokio runtime. The provider chain
+/// must be constructed in sync context and its final `Arc` must drop
+/// in sync context, or the inner runtime panics with "Cannot drop a
+/// runtime in a context where blocking is not allowed". Mirrors the
+/// smoke test and the `arcan agent test --live` arm in `main.rs`.
+#[test]
+#[ignore = "requires ARCAN_AGENT_TEST_LIVE=1, ANTHROPIC_API_KEY, and live network"]
+fn test_live_smoke_against_live_anthropic() {
+    use std::sync::Arc;
+
+    if std::env::var("ARCAN_AGENT_TEST_LIVE").as_deref() != Ok("1") {
+        eprintln!("[agent-test-live] skipped: set ARCAN_AGENT_TEST_LIVE=1 to run this smoke");
+        return;
+    }
+
+    // Provider chain in sync context (see doc comment above).
+    let config = arcan_provider::anthropic::AnthropicConfig::from_env().expect(
+        "ANTHROPIC_API_KEY must be set for the live smoke; \
+         run with --ignored and provide the env var",
+    );
+    let provider: Arc<dyn arcan_core::runtime::Provider> =
+        Arc::new(arcan_provider::anthropic::AnthropicProvider::new(config));
+    let chain = agent_cmd::build_ergon_provider(provider, "anthropic");
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+
+    runtime
+        .block_on(agent_cmd::test_live(
+            &workspace_agents_dir(),
+            "general",
+            r#"{"request": "What is 2 + 2? Reply with just the number, no preamble."}"#,
+            Arc::clone(&chain),
+        ))
+        .expect("live `arcan agent test --live` run must succeed");
+
+    // `chain` drops here, in sync context, after block_on returned.
 }
