@@ -51,7 +51,7 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
                 .or_else(|| input.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("/");
-            vec![Capability::fs_write(path)]
+            vec![Capability::fs_write(&policy_path(path))]
         }
 
         // ── Filesystem reads ───────────────────────────────────────────────
@@ -62,7 +62,7 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
                 .or_else(|| input.get("pattern"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("/session/**");
-            vec![Capability::fs_read(path)]
+            vec![Capability::fs_read(&policy_path(path))]
         }
 
         // ── Outbound network ──────────────────────────────────────────────
@@ -88,6 +88,42 @@ pub fn capabilities_for_tool(tool_name: &str, input: &serde_json::Value) -> Vec<
         // ── All other tools: no capability required (pass-through) ─────────
         _ => Vec::new(),
     }
+}
+
+// ── Path → policy-namespace normalization ─────────────────────────────────────
+
+/// Map a tool-input path into the policy's virtual `/session` namespace.
+///
+/// Praxis fs tools take WORKSPACE-RELATIVE paths ("artifacts/receipt.txt"),
+/// while the `PolicySet` capability namespace is virtual and `/session`-rooted
+/// ("fs:write:/session/artifacts/**"). Without this mapping the derived
+/// capability ("fs:write:artifacts/receipt.txt") never prefix-matches any
+/// default allow pattern, so EVERY fs tool call from a lifed-routed session is
+/// denied — including writes the policy explicitly intends to allow
+/// (confirmed live: prod dogfood 2026-06-11, write_file → "capabilities
+/// denied" → Recover → dead-air turn).
+///
+/// Mapping rules:
+/// - Relative path → anchored under `/session/` (`"artifacts/x"` →
+///   `"/session/artifacts/x"`, `"./notes.md"` → `"/session/notes.md"`).
+/// - Absolute path → passed through RAW. The default policy only allows
+///   `/session/...` patterns, so absolute paths are denied by the gate —
+///   and even if a future policy allowed one, praxis `FsPolicy` still
+///   enforces the real workspace boundary at execution time.
+/// - Any path containing a `..` segment → passed through RAW (denied by the
+///   default policy). Traversal must never be normalized into an
+///   allow-matching shape.
+///
+/// The capability gate answers "may this tier touch this part of the session
+/// namespace"; the actual filesystem boundary is `FsPolicy`'s job (defense in
+/// depth — both layers stay independent).
+fn policy_path(path: &str) -> String {
+    let has_traversal = path.split('/').any(|segment| segment == "..");
+    if path.starts_with('/') || has_traversal {
+        return path.to_string();
+    }
+    let trimmed = path.trim_start_matches("./");
+    format!("/session/{trimmed}")
 }
 
 // ── Shell command binary extraction ───────────────────────────────────────────
@@ -285,6 +321,68 @@ mod tests {
         );
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].as_str(), "fs:write:/tmp/output.txt");
+    }
+
+    #[test]
+    fn relative_write_is_anchored_under_session_namespace() {
+        // The live-found bug (prod dogfood 2026-06-11): praxis tools take
+        // workspace-relative paths, so the derived capability must anchor
+        // under /session/ or the default policy's
+        // fs:write:/session/artifacts/** can never match and EVERY write is
+        // denied.
+        let caps = capabilities_for_tool(
+            "write_file",
+            &serde_json::json!({"path": "artifacts/receipt.txt"}),
+        );
+        assert_eq!(caps[0].as_str(), "fs:write:/session/artifacts/receipt.txt");
+
+        // ...and that capability is actually covered by the default allow.
+        let allow_prefix = "fs:write:/session/artifacts/**".trim_end_matches('*');
+        assert!(
+            caps[0].as_str().starts_with(allow_prefix),
+            "default policy must cover relative artifacts writes: {}",
+            caps[0].as_str()
+        );
+    }
+
+    #[test]
+    fn relative_read_is_anchored_under_session_namespace() {
+        let caps = capabilities_for_tool("read_file", &serde_json::json!({"path": "notes.md"}));
+        assert_eq!(caps[0].as_str(), "fs:read:/session/notes.md");
+
+        let dot_slash =
+            capabilities_for_tool("read_file", &serde_json::json!({"path": "./notes.md"}));
+        assert_eq!(dot_slash[0].as_str(), "fs:read:/session/notes.md");
+    }
+
+    #[test]
+    fn traversal_paths_are_never_normalized_into_session() {
+        // "artifacts/../../etc/passwd" must NOT become
+        // /session/artifacts/../../etc/passwd (which would prefix-match the
+        // artifacts allow pattern). Raw pass-through → default policy denies.
+        let caps = capabilities_for_tool(
+            "write_file",
+            &serde_json::json!({"path": "artifacts/../../etc/passwd"}),
+        );
+        assert_eq!(caps[0].as_str(), "fs:write:artifacts/../../etc/passwd");
+        assert!(
+            !caps[0].as_str().contains(":/session/"),
+            "traversal must stay out of the session namespace"
+        );
+    }
+
+    #[test]
+    fn absolute_paths_pass_through_raw() {
+        // Absolute non-/session paths stay raw so the default policy denies
+        // them; /session-prefixed absolutes keep working unchanged.
+        let abs = capabilities_for_tool("read_file", &serde_json::json!({"path": "/etc/passwd"}));
+        assert_eq!(abs[0].as_str(), "fs:read:/etc/passwd");
+
+        let session_abs = capabilities_for_tool(
+            "write_file",
+            &serde_json::json!({"path": "/session/artifacts/x.txt"}),
+        );
+        assert_eq!(session_abs[0].as_str(), "fs:write:/session/artifacts/x.txt");
     }
 
     #[test]
