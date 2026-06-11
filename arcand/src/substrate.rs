@@ -148,6 +148,23 @@ impl AgentSubstrate for SubstrateService {
 
         let runtime = Arc::clone(&self.runtime);
         let content = body.content;
+        // Client tool definitions arrive as JSON bytes on
+        // `tool_definitions` (additive field — lifed forwards the chat
+        // surface's tools). The kernel's tick path executes tools from
+        // its own governed registry; merging client-declared tools into
+        // the per-session tool surface is a follow-up (the HTTP-backed
+        // `ArcanCall` impls in arcan-proxy honour them today). Log so
+        // operators can see when a client declared tools that the
+        // kernel path does not yet surface to the model.
+        if !body.tool_definitions.is_empty() {
+            tracing::debug!(
+                sid = %sid_proto.value,
+                tool_count = body.tool_definitions.len(),
+                "dispatch_message: client tool definitions received; kernel \
+                 tick uses the registry-driven tool set (client-tool merge \
+                 is a follow-up)"
+            );
+        }
 
         let (tx, rx) = mpsc::channel::<Result<AgentEvent, Status>>(DISPATCH_CHANNEL_CAPACITY);
 

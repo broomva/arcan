@@ -203,7 +203,7 @@ async fn dispatch_message_streams_real_substrate_events() {
     // it. This Topology B e2e test exercises the gRPC path so the
     // override is irrelevant — pass `None`.
     let mut stream = proxy
-        .dispatch_message(sid, "Hello, substrate!", None)
+        .dispatch_message(sid, "Hello, substrate!", None, &[])
         .await
         .expect("dispatch_message");
 
@@ -338,7 +338,7 @@ async fn dispatch_message_streams_tool_lifecycle_events() {
     let sid = "phase2-tool-lifecycle";
     let _ = proxy.create_agent(sid).await.expect("create_agent");
     let mut stream = proxy
-        .dispatch_message(sid, "write the e2e artifact", None)
+        .dispatch_message(sid, "write the e2e artifact", None, &[])
         .await
         .expect("dispatch_message");
 
