@@ -38,8 +38,8 @@ use arcan_harness::bridge::PraxisToolBridge;
 use arcan_harness::{FsPolicy, FsPort, LocalFs, SandboxPolicy};
 use arcan_lago::{
     EventSearchTool, FreeTierJournal, KnowledgeEventMiddleware, LagoPolicyConfig, LagoTrackedFs,
-    MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool, RemoteBlobBackend,
-    RemoteLagoJournal, SessionJournalSelector, run_event_writer,
+    MemoryCommitTool, MemoryProjection, MemoryProposeTool, MemoryQueryTool, ReconcilingTool,
+    RemoteBlobBackend, RemoteLagoJournal, SessionJournalSelector, run_event_writer,
 };
 use arcan_provider::anthropic::{AnthropicConfig, AnthropicProvider};
 use arcand::mock::MockProvider;
@@ -47,7 +47,7 @@ use clap::{Parser, Subcommand};
 use config::ResolvedConfig;
 use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_core::{BranchId, SessionId};
-use lago_fs::{FsTracker, Manifest};
+use lago_fs::{FsTracker, SnapshotLimits};
 use lago_journal::RedbJournal;
 use lago_store::{BlobBackend, LocalBlobBackend};
 use life_vigil::VigConfig;
@@ -707,8 +707,28 @@ fn run_serve(
     // --- Lago-tracked filesystem (O(1) write tracking via FsTracker) ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = LocalFs::new(fs_policy);
-    let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_backend.clone()));
+    // Baseline the tracker against the live, already-populated workspace at
+    // boot. Seeding with an empty manifest would make the first exec-path
+    // reconcile diff the whole workspace against nothing — emitting a spurious
+    // FileWrite for EVERY pre-existing file. `with_baseline` records that prior
+    // state up front (no events), so reconcile only reports genuine post-boot
+    // changes. The baseline limits MUST match the exec-path reconciler's limits
+    // (ReconcilingTool uses SnapshotLimits::default()) so both see the same file
+    // set — a mismatch would resurface as phantom diffs on the first reconcile.
+    // Content is addressed through the selected `blob_backend` (local or remote
+    // lagod), so the baseline honours the same durability target as runtime
+    // writes.
+    let tracker = Arc::new(FsTracker::with_baseline(
+        &workspace_root,
+        blob_backend.clone(),
+        SnapshotLimits::default(),
+    )?);
     let (fs_event_tx, fs_event_rx) = tokio::sync::mpsc::channel(1000);
+    // Share the tracker + event channel with the exec-path reconciler below so
+    // shell-tool writes land in the same manifest/blob-store/journal that the
+    // FsPort write path uses. The FsPort write path takes its own clones.
+    let exec_tracker = tracker.clone();
+    let exec_fs_event_tx = fs_event_tx.clone();
     let tracked_fs: Arc<dyn FsPort> = Arc::new(LagoTrackedFs::new(local_fs, tracker, fs_event_tx));
 
     let sandbox_policy = SandboxPolicy {
@@ -744,7 +764,16 @@ fn run_serve(
         let runner: Box<dyn praxis_core::sandbox::CommandRunner> = Box::new(
             arcan_praxis::SandboxCommandRunner::new(sandbox_provider.clone()),
         );
-        registry.register(PraxisToolBridge::new(BashTool::new(sandbox_policy, runner)));
+        // Wrap the shell tool so its filesystem side effects are reconciled
+        // into the lago manifest/blob-store/journal after each run — shell
+        // commands write directly to the workspace, bypassing LagoTrackedFs.
+        let bash_tool = ReconcilingTool::new(
+            BashTool::new(sandbox_policy, runner),
+            exec_tracker,
+            exec_fs_event_tx,
+            workspace_root.clone(),
+        );
+        registry.register(PraxisToolBridge::new(bash_tool));
 
         // Extended tools
         {
