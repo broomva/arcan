@@ -878,6 +878,13 @@ fn run_serve(
     // Shared handle: starts empty, filled after runtime creation.
     let streaming_sender: StreamingSenderHandle = Arc::new(std::sync::Mutex::new(None));
     let tool_definitions = registry.definitions();
+    // Names of the kernel's governed (registry) tools — captured before
+    // `tool_definitions` is moved into the adapter. Wired into the
+    // KernelRuntime below so the client-tool handoff path enforces
+    // registry-wins on name collisions (a client tool sharing a registry
+    // name is NOT handed back to the client; the registry tool runs).
+    let registry_tool_names: Vec<String> =
+        tool_definitions.iter().map(|t| t.name.clone()).collect();
     let adapter = ArcanProviderAdapter::from_handle(
         provider_handle.clone(),
         tool_definitions,
@@ -951,7 +958,8 @@ fn run_serve(
         approvals,
         policy_gate,
         turn_middlewares,
-    );
+    )
+    .with_registry_tool_names(registry_tool_names);
 
     // Register the ergon-workflow tick dispatcher (BRO-1001). No
     // workflows are registered by default — adopting daemons override

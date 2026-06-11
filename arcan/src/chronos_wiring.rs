@@ -70,6 +70,7 @@ impl KernelDispatcher for ArcandKernelDispatcher {
             proposed_tool: None,
             system_prompt: None,
             allowed_tools: None,
+            client_tools: Vec::new(),
             kind: TickKind::Direct,
         };
 

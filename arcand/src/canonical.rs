@@ -1822,6 +1822,7 @@ async fn run_session(
                 proposed_tool,
                 system_prompt: system_prompt.clone(),
                 allowed_tools: combined_allowed_tools.clone(),
+                client_tools: Vec::new(),
                 kind: aios_runtime::TickKind::Direct,
             },
         )
@@ -1848,6 +1849,7 @@ async fn run_session(
                             proposed_tool: None,
                             system_prompt: system_prompt.clone(),
                             allowed_tools: combined_allowed_tools.clone(),
+                            client_tools: Vec::new(),
                             kind: aios_runtime::TickKind::Direct,
                         },
                     )

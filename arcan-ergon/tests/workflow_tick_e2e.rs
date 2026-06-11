@@ -159,6 +159,7 @@ async fn workflow_tick_runs_end_to_end() {
         proposed_tool: None,
         system_prompt: None,
         allowed_tools: None,
+        client_tools: Vec::new(),
         kind: TickKind::Workflow {
             name: "test.greeter".to_owned(),
             input: workflow_input,
@@ -208,6 +209,7 @@ async fn workflow_tick_emits_output_event() {
                 proposed_tool: None,
                 system_prompt: None,
                 allowed_tools: None,
+                client_tools: Vec::new(),
                 kind: TickKind::Workflow {
                     name: "test.greeter".to_owned(),
                     input: serde_json::json!({"name": "ergon"}),
@@ -273,6 +275,7 @@ async fn direct_tick_still_works_after_dispatcher_registration() {
         proposed_tool: None,
         system_prompt: None,
         allowed_tools: None,
+        client_tools: Vec::new(),
         kind: TickKind::Direct,
     };
 
@@ -314,6 +317,7 @@ async fn unknown_workflow_routes_to_run_errored_and_recover_mode() {
                 proposed_tool: None,
                 system_prompt: None,
                 allowed_tools: None,
+                client_tools: Vec::new(),
                 kind: TickKind::Workflow {
                     name: "no.such.workflow".to_owned(),
                     input: serde_json::Value::Null,
@@ -541,6 +545,7 @@ mod fully_wired {
                     proposed_tool: None,
                     system_prompt: None,
                     allowed_tools: None,
+                    client_tools: Vec::new(),
                     kind: TickKind::Workflow {
                         name: "test.inferring".to_owned(),
                         input: serde_json::json!({"name": "wired"}),

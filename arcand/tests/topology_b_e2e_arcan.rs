@@ -408,3 +408,200 @@ async fn destroy_agent_is_idempotent_ok() {
         .expect("destroy_agent ok unknown");
     env.shutdown().await;
 }
+
+/// Provider that proposes a CLIENT tool (one declared via
+/// `tool_definitions`, absent from the kernel registry) on its first
+/// completion. A second completion would answer normally — but the
+/// client-tool handoff must END the dispatch after the first call, so
+/// the test asserts the counter never reaches 2.
+#[derive(Debug, Default)]
+struct ClientToolProvider {
+    calls: Arc<AtomicU32>,
+}
+
+#[async_trait]
+impl ModelProviderPort for ClientToolProvider {
+    async fn complete(&self, request: ModelCompletionRequest) -> KernelResult<ModelCompletion> {
+        // The merge contract: the provider-visible request must carry
+        // the client tool defs the dispatch received on the wire.
+        assert!(
+            request.client_tools.iter().any(|t| t.name == "get_weather"),
+            "client tool defs must reach the provider request"
+        );
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(ModelCompletion {
+                provider: "test".to_owned(),
+                model: "test-model".to_owned(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::ToolCall {
+                    call: ToolCall {
+                        call_id: "call-client-1".to_owned(),
+                        tool_name: "get_weather".to_owned(),
+                        input: serde_json::json!({ "city": "Medellín" }),
+                        requested_capabilities: vec![],
+                    },
+                }],
+                stop_reason: ModelStopReason::ToolCall,
+                usage: None,
+                final_answer: None,
+            })
+        } else {
+            Ok(ModelCompletion {
+                provider: "test".to_owned(),
+                model: "test-model".to_owned(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::Message {
+                    role: "assistant".to_owned(),
+                    content: "should never be asked".to_owned(),
+                }],
+                stop_reason: ModelStopReason::Completed,
+                usage: None,
+                final_answer: Some("unexpected".to_owned()),
+            })
+        }
+    }
+}
+
+#[tokio::test]
+async fn dispatch_message_hands_off_client_tool_calls() {
+    // The #1697-completion contract on the kernel path: client tool
+    // defs ride DispatchMessageReq.tool_definitions → the model sees
+    // them → a proposal of a client tool surfaces as TOOL_CALL_PENDING
+    // with category "client" and the turn ENDS (FINISH) without kernel
+    // execution — the chat surface executes the tool and continues via
+    // replayed history on its next dispatch.
+    let tempdir = TempDir::new().expect("tempdir");
+    let socket = tempdir.path().join("arcand.sock");
+    let root = tempdir.path().join("kernel-root");
+
+    let event_store_backend = Arc::new(FileEventStore::new(root.join("kernel")));
+    let journal = Arc::new(EventJournal::new(
+        event_store_backend,
+        EventStreamHub::new(1024),
+    ));
+    let event_store: Arc<dyn EventStorePort> = journal;
+    let policy_engine = Arc::new(SessionPolicyEngine::new(PolicySet::default()));
+    let policy_gate: Arc<dyn PolicyGatePort> = policy_engine.clone();
+    let approvals: Arc<dyn ApprovalPort> = Arc::new(ApprovalQueue::default());
+    let registry = Arc::new(ToolRegistry::with_core_tools());
+    let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
+    let dispatcher = Arc::new(ToolDispatcher::new(
+        Arc::clone(&registry),
+        policy_engine,
+        sandbox,
+    ));
+    let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
+    let provider_calls = Arc::new(AtomicU32::new(0));
+    let provider = ClientToolProvider {
+        calls: Arc::clone(&provider_calls),
+    };
+    // Mirror `arcan serve`: declare the registry's tool names so the
+    // kernel can enforce registry-wins on client-tool collisions (the
+    // foot-gun the empty default would hide — see
+    // `KernelRuntime::with_registry_tool_names`).
+    let registry_tool_names: Vec<String> =
+        registry.definitions().map(|def| def.name.clone()).collect();
+    let runtime = Arc::new(
+        KernelRuntime::new(
+            RuntimeConfig::new(root),
+            event_store,
+            Arc::new(provider),
+            tool_harness,
+            approvals,
+            policy_gate,
+        )
+        .with_registry_tool_names(registry_tool_names),
+    );
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let service = SubstrateService::new(Arc::clone(&runtime));
+    let listener = tokio::net::UnixListener::bind(&socket).expect("bind UDS");
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+    let server_handle = tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(AgentSubstrateServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+    for _ in 0..200 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let proxy = ArcanProxy::connect(socket.clone())
+        .await
+        .expect("dial substrate UDS");
+    let sid = "client-tool-handoff";
+    let _ = proxy.create_agent(sid).await.expect("create_agent");
+
+    let tools = vec![serde_json::json!({
+        "name": "get_weather",
+        "description": "Get the weather for a city",
+        "parameters": {
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+        }
+    })];
+    let mut stream = proxy
+        .dispatch_message(sid, "what's the weather in Medellín?", None, &tools)
+        .await
+        .expect("dispatch_message");
+
+    let mut pending: Option<serde_json::Value> = None;
+    let mut saw_tool_result = false;
+    let mut terminal_seen = false;
+    let mut count = 0;
+    while let Some(evt) = stream.next().await {
+        let evt = evt.expect("substrate event ok");
+        count += 1;
+        let payload = evt.record.as_ref().map(|r| {
+            serde_json::from_slice::<serde_json::Value>(&r.payload).expect("record payload JSON")
+        });
+        if evt.kind == AgentEventKind::ToolCallPending as i32 {
+            pending = payload.clone();
+        }
+        if evt.kind == AgentEventKind::ToolResult as i32 {
+            saw_tool_result = true;
+        }
+        if evt.kind == AgentEventKind::Finish as i32 || evt.kind == AgentEventKind::Error as i32 {
+            terminal_seen = true;
+            assert_eq!(
+                evt.kind,
+                AgentEventKind::Finish as i32,
+                "client-tool handoff must FINISH cleanly, not ERROR"
+            );
+            break;
+        }
+        if count > 64 {
+            break;
+        }
+    }
+    drop(stream);
+
+    assert!(terminal_seen, "stream should reach a terminal frame");
+    let pending = pending.expect("TOOL_CALL_PENDING frame should arrive at the proxy");
+    assert_eq!(pending["call_id"], "call-client-1");
+    assert_eq!(pending["tool_name"], "get_weather");
+    assert_eq!(
+        pending["category"], "client",
+        "handoff frames must be marked category=client: {pending}"
+    );
+    assert_eq!(pending["arguments"]["city"], "Medellín");
+    assert!(
+        !saw_tool_result,
+        "client tools are client-executed — the kernel must not emit TOOL_RESULT"
+    );
+    assert_eq!(
+        provider_calls.load(Ordering::SeqCst),
+        1,
+        "the handoff ends the turn — no follow-up provider call"
+    );
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+}

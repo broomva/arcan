@@ -27,7 +27,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aios_protocol::{
-    BranchId, EventKind, EventRecord, ModelRouting, OperatingMode, PolicySet, SessionId,
+    BranchId, ClientToolDefinition, EventKind, EventRecord, ModelRouting, OperatingMode, PolicySet,
+    SessionId,
 };
 use aios_runtime::{KernelRuntime, TickInput, TickKind};
 use arcan_substrate_proto::arcan::v1::{
@@ -47,6 +48,26 @@ const MAX_AGENT_ITERATIONS: u32 = 10;
 // Bounded event channel for the streaming dispatch. Phase-1 emits text +
 // terminal frames; 64 is sufficient headroom for the slowest reader.
 const DISPATCH_CHANNEL_CAPACITY: usize = 64;
+
+// Trust-boundary caps for client-supplied tool definitions. These are
+// UNTRUSTED remote input (the chat surface forwards whatever a client
+// declares) and are re-serialized into the provider request on every
+// tick of a dispatch — without caps a remote user can inflate every
+// model call (cost/context amplification) or smuggle a name the
+// provider rejects (turning every tick into a wire ERROR). Limits are
+// deliberately generous: real chat surfaces ship ~20 tools with ~1-4KB
+// schemas. OpenAI's function-name charset is `[a-zA-Z0-9_-]{1,64}`.
+const MAX_CLIENT_TOOL_DEFS: usize = 64;
+const MAX_CLIENT_TOOL_DEF_BYTES: usize = 16 * 1024;
+
+/// Provider-portable tool-name check (`[a-zA-Z0-9_-]{1,64}`).
+fn valid_client_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
 
 /// arcand's `arcan.v1.AgentSubstrate` impl. Holds a shared
 /// `KernelRuntime` handle so every RPC reuses the same in-memory
@@ -150,21 +171,71 @@ impl AgentSubstrate for SubstrateService {
         let content = body.content;
         // Client tool definitions arrive as JSON bytes on
         // `tool_definitions` (additive field — lifed forwards the chat
-        // surface's tools). The kernel's tick path executes tools from
-        // its own governed registry; merging client-declared tools into
-        // the per-session tool surface is a follow-up (the HTTP-backed
-        // `ArcanCall` impls in arcan-proxy honour them today). Log so
-        // operators can see when a client declared tools that the
-        // kernel path does not yet surface to the model.
-        if !body.tool_definitions.is_empty() {
-            tracing::debug!(
+        // surface's tools, each entry one JSON object in the OpenAI
+        // function shape `{"name","description","parameters"}`). Parse
+        // them at this trust boundary: a malformed entry is warned and
+        // skipped, never aborting an otherwise-valid turn. The parsed
+        // set is surfaced to the model on every tick of this dispatch;
+        // the kernel enforces registry-wins on name collisions and, when
+        // the model proposes a client tool, hands the call back to the
+        // caller as TOOL_CALL_PENDING (category "client") instead of
+        // executing it through the harness.
+        let client_tools: Vec<ClientToolDefinition> = if body.tool_definitions.is_empty() {
+            Vec::new()
+        } else {
+            let total = body.tool_definitions.len();
+            if total > MAX_CLIENT_TOOL_DEFS {
+                tracing::warn!(
+                    sid = %sid_proto.value,
+                    total,
+                    cap = MAX_CLIENT_TOOL_DEFS,
+                    "dispatch_message: client tool definitions exceed cap; truncating"
+                );
+            }
+            let parsed: Vec<ClientToolDefinition> = body
+                .tool_definitions
+                .iter()
+                .take(MAX_CLIENT_TOOL_DEFS)
+                .filter_map(|bytes| {
+                    if bytes.len() > MAX_CLIENT_TOOL_DEF_BYTES {
+                        tracing::warn!(
+                            sid = %sid_proto.value,
+                            bytes = bytes.len(),
+                            cap = MAX_CLIENT_TOOL_DEF_BYTES,
+                            "dispatch_message: skipping oversized client tool definition"
+                        );
+                        return None;
+                    }
+                    match ClientToolDefinition::from_wire_bytes(bytes) {
+                        Ok(def) if !valid_client_tool_name(&def.name) => {
+                            tracing::warn!(
+                                sid = %sid_proto.value,
+                                name = %def.name,
+                                "dispatch_message: skipping client tool with provider-unsafe name"
+                            );
+                            None
+                        }
+                        Ok(def) => Some(def),
+                        Err(err) => {
+                            tracing::warn!(
+                                sid = %sid_proto.value,
+                                error = %err,
+                                "dispatch_message: skipping malformed client tool definition"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+            tracing::info!(
                 sid = %sid_proto.value,
-                tool_count = body.tool_definitions.len(),
-                "dispatch_message: client tool definitions received; kernel \
-                 tick uses the registry-driven tool set (client-tool merge \
-                 is a follow-up)"
+                accepted = parsed.len(),
+                skipped = total - parsed.len(),
+                "dispatch_message: client tool definitions parsed; surfacing to model \
+                 (registry tools win on collision; client tools are client-executed)"
             );
-        }
+            parsed
+        };
 
         let (tx, rx) = mpsc::channel::<Result<AgentEvent, Status>>(DISPATCH_CHANNEL_CAPACITY);
 
@@ -243,6 +314,11 @@ impl AgentSubstrate for SubstrateService {
                     proposed_tool: None,
                     system_prompt: None,
                     allowed_tools: None,
+                    // Surfaced on every tick of this dispatch so the model
+                    // keeps seeing the client tools across the multi-tick
+                    // loop (e.g. a registry tool runs, then the model
+                    // proposes a client tool on the follow-up call).
+                    client_tools: client_tools.clone(),
                     kind: TickKind::Direct,
                 };
                 match runtime

@@ -305,6 +305,7 @@ async fn run_validation(provider_port: Arc<dyn ModelProviderPort>, model: String
         proposed_tool: None,
         system_prompt: None,
         allowed_tools: None,
+        client_tools: Vec::new(),
         kind: TickKind::Workflow {
             name: "test.summarize".to_owned(),
             input: workflow_input,

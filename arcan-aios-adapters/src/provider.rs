@@ -346,7 +346,41 @@ impl ModelProviderPort for ArcanProviderAdapter {
         }
 
         // Apply tool filtering from active skill's allowed_tools whitelist.
-        let tools = self.filter_tools(request.allowed_tools.as_deref());
+        let mut tools = self.filter_tools(request.allowed_tools.as_deref());
+
+        // Append client-declared tools so the model sees them alongside
+        // the registry tools. Registry tools win on a name collision
+        // (collisions are pruned upstream too, but dedup here keeps the
+        // provider request well-formed even if a stray duplicate arrives).
+        // The collision check runs against the FULL registry (`self.tools`),
+        // not the allowed_tools-filtered list: a client def named after a
+        // whitelisted-OUT registry tool must not surface, because the
+        // kernel's registry-wins routing would execute the registry tool
+        // the whitelist excluded (with client-shaped arguments).
+        // These are surfaced only — the kernel never executes them; when
+        // the model proposes one, the tick hands the call back to the
+        // client (see `aios_runtime` client-tool handoff). `parameters`
+        // passes through verbatim as the tool's input schema.
+        if !request.client_tools.is_empty() {
+            for client_tool in &request.client_tools {
+                if self.tools.iter().any(|t| t.name == client_tool.name)
+                    || tools.iter().any(|t| t.name == client_tool.name)
+                {
+                    continue;
+                }
+                tools.push(arcan_core::protocol::ToolDefinition {
+                    name: client_tool.name.clone(),
+                    description: client_tool.description.clone(),
+                    input_schema: client_tool.parameters.clone(),
+                    title: None,
+                    output_schema: None,
+                    annotations: None,
+                    category: Some("client".to_owned()),
+                    tags: Vec::new(),
+                    timeout_secs: None,
+                });
+            }
+        }
 
         let provider_request = ProviderRequest {
             run_id: request.run_id.as_str().to_owned(),
@@ -715,6 +749,7 @@ mod tests {
                 system_prompt: None,
                 allowed_tools: Some(vec!["read_file".to_owned()]),
                 conversation_history: Vec::new(),
+                client_tools: Vec::new(),
             })
             .await
             .unwrap();

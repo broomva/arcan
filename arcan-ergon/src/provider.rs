@@ -247,6 +247,9 @@ fn build_completion_request(
             Some(req.tools.iter().map(|t| t.name.clone()).collect())
         },
         conversation_history: history,
+        // ergon workflows do not carry client-declared tools (no chat
+        // client trust domain in the workflow body) — always empty.
+        client_tools: Vec::new(),
     }
 }
 
