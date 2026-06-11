@@ -11,6 +11,7 @@ mod embedding;
 mod ephemeral_journal;
 mod ergon_wiring;
 mod factory;
+mod identity_loader;
 mod markdown;
 mod memory_observer;
 mod memory_tools;
@@ -124,6 +125,20 @@ struct Cli {
     /// See `agents/README.md` for the authoring format.
     #[arg(long, global = true, env = "ARCAN_AGENTS_DIR", value_name = "DIR")]
     agents_dir: Option<PathBuf>,
+
+    /// Directory holding the `life init` anima identity (`soul.json` +
+    /// `seed.local.bin`). When the identity loads, `arcan serve` signs
+    /// ergon workflow session boundaries through the custody-backed
+    /// soul attester (stable agent DID). Defaults to `.life/identity`
+    /// when that directory exists; unset otherwise — workflow ticks
+    /// then keep the noop attester with a boot warning.
+    #[arg(
+        long,
+        global = true,
+        env = "ARCAN_ANIMA_IDENTITY_DIR",
+        value_name = "DIR"
+    )]
+    anima_identity_dir: Option<PathBuf>,
 
     /// Bind arcand's substrate-plane gRPC server (`arcan.v1.AgentSubstrate`)
     /// on this Unix-domain socket alongside the HTTP `:3000` server.
@@ -993,11 +1008,10 @@ fn run_serve(
     //   Hustle clamps max_tokens) — mirroring the Direct path;
     // - responses are scored through the Nous evaluator registry when
     //   it initialized.
-    // Anima soul attestation stays on the Noop fallback until arcan
-    // serve grows a custody identity config (the adapter itself is
-    // implemented + tested in `ergon-anima-adapter`; wiring requires
-    // a stable agent DID, which a boot-time `generate_dev()` key would
-    // not provide).
+    // - session boundaries are attested through the custody-backed
+    //   `AgentAttestationAdapter` when a `life init` identity is
+    //   configured (see below); unconfigured hosts keep the explicit
+    //   Noop fallback with a boot warning.
     let mut workflow_inputs = arcan_ergon::runner::WorkflowRunInputs::empty()
         .with_agent_registry(agent_registry)
         .with_stream_sink_factory(ergon_wiring::lago_stream_sink_factory(journal.clone()))
@@ -1020,9 +1034,39 @@ fn run_serve(
             );
         }
     }
-    tracing::warn!(
-        "ergon workflow ticks: anima custody not configured — soul attestation falls back to noop"
-    );
+    // Anima soul attestation: load the `life init` identity from disk
+    // (default `.life/identity`, override via --anima-identity-dir /
+    // ARCAN_ANIMA_IDENTITY_DIR / `defaults.anima_identity_dir`) and
+    // sign workflow session boundaries under the agent's stable DID.
+    // A configured-but-corrupt identity FAILS the boot (see
+    // `identity_loader`); an absent identity falls back to the noop
+    // attester with a warning.
+    match resolved.anima_identity_dir.as_deref() {
+        Some(identity_dir) => match identity_loader::load_custody_from_disk(identity_dir)? {
+            Some(custody) => {
+                let attester = ergon_anima_adapter::AgentAttestationAdapter::new(custody);
+                tracing::info!(
+                    did = attester.agent_did(),
+                    identity_dir = %identity_dir.display(),
+                    "ergon workflow ticks: soul attestation wired to anima custody"
+                );
+                workflow_inputs = workflow_inputs.with_soul_attester(Arc::new(attester));
+            }
+            None => {
+                tracing::warn!(
+                    identity_dir = %identity_dir.display(),
+                    "ergon workflow ticks: no anima identity at the configured directory — \
+                     soul attestation falls back to noop (run `life init` to create one)"
+                );
+            }
+        },
+        None => {
+            tracing::warn!(
+                "ergon workflow ticks: anima custody not configured — soul attestation falls \
+                 back to noop"
+            );
+        }
+    }
     let workflow_inputs = Arc::new(workflow_inputs);
     let workflow_dispatcher: Arc<dyn aios_runtime::WorkflowTickDispatcher> = Arc::new(
         arcan_ergon::ErgonWorkflowDispatcher::new(workflow_registry, workflow_inputs),
@@ -1649,6 +1693,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             run_serve(
@@ -1685,6 +1730,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1707,6 +1753,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1741,6 +1788,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1764,6 +1812,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
             run_skills(&data_dir, &resolved, &action)
         }
@@ -1827,6 +1876,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             // Build the Tokio runtime FIRST — same as `serve` mode.
@@ -1866,6 +1916,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1886,6 +1937,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1915,6 +1967,7 @@ fn main() -> anyhow::Result<()> {
                 cli.spaces_token.as_deref(),
                 cli.bare,
                 cli.default_tier.as_deref(),
+                cli.anima_identity_dir.as_deref(),
             );
 
             let runtime = tokio::runtime::Builder::new_multi_thread()

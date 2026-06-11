@@ -36,6 +36,11 @@ pub struct DefaultsConfig {
     pub spaces_backend: Option<String>,
     /// Bare mode: minimal prompt and core tools only (for small-context models).
     pub bare: Option<bool>,
+    /// Directory holding the `life init` anima identity (`soul.json` +
+    /// `seed.local.bin`). When set (or when the default `.life/identity`
+    /// exists), `arcan serve` signs workflow session boundaries through
+    /// the custody-backed soul attester instead of the noop fallback.
+    pub anima_identity_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -109,6 +114,9 @@ pub struct ResolvedConfig {
     /// OSS/local dev: set to "pro" for full tool access without auth.
     /// Env: ARCAN_DEFAULT_TIER. Values: anonymous, free, pro, enterprise.
     pub default_tier: Option<String>,
+    /// Anima identity directory for custody-backed soul attestation.
+    /// `None` means unconfigured — workflow ticks keep the noop attester.
+    pub anima_identity_dir: Option<PathBuf>,
 }
 
 impl ArcanConfig {
@@ -135,6 +143,11 @@ impl ArcanConfig {
         }
         if other.defaults.bare.is_some() {
             self.defaults.bare = other.defaults.bare;
+        }
+        if other.defaults.anima_identity_dir.is_some() {
+            self.defaults
+                .anima_identity_dir
+                .clone_from(&other.defaults.anima_identity_dir);
         }
         if other.spaces.host.is_some() {
             self.spaces.host.clone_from(&other.spaces.host);
@@ -214,6 +227,9 @@ impl ArcanConfig {
                     .map_err(|e| format!("invalid bare value: {e}"))?;
                 self.defaults.bare = Some(v);
             }
+            "anima_identity_dir" | "defaults.anima_identity_dir" => {
+                self.defaults.anima_identity_dir = Some(PathBuf::from(value));
+            }
             "spaces.host" => {
                 self.spaces.host = Some(value.to_owned());
             }
@@ -291,6 +307,11 @@ impl ArcanConfig {
             "autonomic_url" | "defaults.autonomic_url" => self.defaults.autonomic_url.clone(),
             "spaces_backend" | "defaults.spaces_backend" => self.defaults.spaces_backend.clone(),
             "bare" | "defaults.bare" => self.defaults.bare.map(|v| v.to_string()),
+            "anima_identity_dir" | "defaults.anima_identity_dir" => self
+                .defaults
+                .anima_identity_dir
+                .as_ref()
+                .map(|p| p.display().to_string()),
             "spaces.host" => self.spaces.host.clone(),
             "spaces.database_id" => self.spaces.database_id.clone(),
             "spaces.token" => self.spaces.token.clone(),
@@ -389,6 +410,7 @@ pub fn resolve(
     cli_spaces_token: Option<&str>,
     cli_bare: bool,
     cli_default_tier: Option<&str>,
+    cli_anima_identity_dir: Option<&Path>,
 ) -> ResolvedConfig {
     // Provider: CLI > env > config > ""
     let provider = cli_provider
@@ -471,6 +493,19 @@ pub fn resolve(
             .unwrap_or(false)
     };
 
+    // Anima identity dir: CLI > env > config > `.life/identity` if present.
+    // (The CLI flag carries `env = "ARCAN_ANIMA_IDENTITY_DIR"` via clap, so
+    // the env arm here only matters for callers bypassing the CLI parser.)
+    let anima_identity_dir = cli_anima_identity_dir
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var("ARCAN_ANIMA_IDENTITY_DIR")
+                .ok()
+                .map(PathBuf::from)
+        })
+        .or_else(|| config.defaults.anima_identity_dir.clone())
+        .or_else(default_anima_identity_dir);
+
     ResolvedConfig {
         provider,
         model,
@@ -489,7 +524,17 @@ pub fn resolve(
         hook_registry,
         bare,
         default_tier: cli_default_tier.map(String::from),
+        anima_identity_dir,
     }
+}
+
+/// Default anima identity directory (`.life/identity`, the layout
+/// `life init` bootstraps), returned only when it actually exists on
+/// disk relative to the current working directory — a missing default
+/// is "unconfigured", not an error.
+fn default_anima_identity_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(".life/identity");
+    dir.is_dir().then_some(dir)
 }
 
 /// Resolve skill discovery directories from config, applying defaults and ~ expansion.
@@ -528,6 +573,7 @@ pub fn default_config_content() -> String {
 # model = "claude-sonnet-4-5-20250929"
 # port = 3000
 # spaces_backend = "mock"  # mock, spacetimedb
+# anima_identity_dir = ".life/identity"  # custody identity for soul attestation
 
 [agent]
 # max_iterations = 10
@@ -589,6 +635,7 @@ mod tests {
                 autonomic_url: None,
                 spaces_backend: None,
                 bare: None,
+                anima_identity_dir: None,
             },
             ..Default::default()
         };
@@ -659,7 +706,7 @@ mod tests {
     fn resolve_defaults() {
         let config = ArcanConfig::default();
         let resolved = resolve(
-            &config, None, None, None, None, None, None, None, None, false, None,
+            &config, None, None, None, None, None, None, None, None, false, None, None,
         );
         assert_eq!(resolved.provider, "anthropic");
         assert!(resolved.model.is_none());
@@ -689,6 +736,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert_eq!(resolved.provider, "anthropic");
         assert_eq!(resolved.model.as_deref(), Some("claude-3"));
@@ -706,9 +754,81 @@ mod tests {
         config.providers.insert("ollama".into(), pc);
 
         let resolved = resolve(
-            &config, None, None, None, None, None, None, None, None, false, None,
+            &config, None, None, None, None, None, None, None, None, false, None, None,
         );
         assert_eq!(resolved.model.as_deref(), Some("special-model"));
+    }
+
+    #[test]
+    fn set_and_get_anima_identity_dir() {
+        let mut config = ArcanConfig::default();
+        config
+            .set_key("anima_identity_dir", "/tmp/identity")
+            .unwrap();
+        assert_eq!(
+            config.get_key("defaults.anima_identity_dir").as_deref(),
+            Some("/tmp/identity")
+        );
+        assert_eq!(
+            config.get_key("anima_identity_dir").as_deref(),
+            Some("/tmp/identity")
+        );
+    }
+
+    #[test]
+    fn merge_overrides_anima_identity_dir() {
+        let mut base = ArcanConfig::default();
+        base.defaults.anima_identity_dir = Some(PathBuf::from("/base/identity"));
+
+        let mut overlay = ArcanConfig::default();
+        overlay.defaults.anima_identity_dir = Some(PathBuf::from("/overlay/identity"));
+
+        base.merge(&overlay);
+        assert_eq!(
+            base.defaults.anima_identity_dir.as_deref(),
+            Some(Path::new("/overlay/identity"))
+        );
+
+        // A None overlay preserves the base value.
+        base.merge(&ArcanConfig::default());
+        assert_eq!(
+            base.defaults.anima_identity_dir.as_deref(),
+            Some(Path::new("/overlay/identity"))
+        );
+    }
+
+    #[test]
+    fn resolve_anima_identity_dir_layering() {
+        // Config-file value used when no CLI override.
+        let mut config = ArcanConfig::default();
+        config.defaults.anima_identity_dir = Some(PathBuf::from("/cfg/identity"));
+        let resolved = resolve(
+            &config, None, None, None, None, None, None, None, None, false, None, None,
+        );
+        assert_eq!(
+            resolved.anima_identity_dir.as_deref(),
+            Some(Path::new("/cfg/identity"))
+        );
+
+        // CLI flag wins over the config file.
+        let resolved = resolve(
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(Path::new("/cli/identity")),
+        );
+        assert_eq!(
+            resolved.anima_identity_dir.as_deref(),
+            Some(Path::new("/cli/identity"))
+        );
     }
 
     #[test]
