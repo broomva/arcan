@@ -31,7 +31,7 @@ use lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter;
 use lago_core::{BranchId, SessionId};
 use lago_fs::{FsTracker, Manifest};
 use lago_journal::RedbJournal;
-use lago_store::BlobStore;
+use lago_store::{BlobStore, LocalBlobBackend};
 use praxis_tools::edit::EditFileTool;
 use praxis_tools::fs::{GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool};
 use praxis_tools::shell::BashTool;
@@ -72,7 +72,10 @@ fn build_praxis_runtime(
     // --- Lago-tracked filesystem (O(1) write tracking) ---
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = LocalFs::new(fs_policy);
-    let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_store));
+    let tracker = Arc::new(FsTracker::new(
+        Manifest::new(),
+        Arc::new(LocalBlobBackend::new(blob_store.clone())),
+    ));
     let (fs_event_tx, fs_event_rx) = tokio::sync::mpsc::channel(1000);
     let tracked_fs: Arc<dyn FsPort> = Arc::new(LagoTrackedFs::new(local_fs, tracker, fs_event_tx));
 
@@ -539,7 +542,10 @@ async fn lago_events_track_writes() {
     // Set up tracked filesystem
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = LocalFs::new(fs_policy);
-    let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_store));
+    let tracker = Arc::new(FsTracker::new(
+        Manifest::new(),
+        Arc::new(LocalBlobBackend::new(blob_store.clone())),
+    ));
     let (fs_event_tx, fs_event_rx) = tokio::sync::mpsc::channel(1000);
     let tracked_fs: Arc<dyn FsPort> = Arc::new(LagoTrackedFs::new(local_fs, tracker, fs_event_tx));
 
@@ -617,7 +623,10 @@ async fn multiple_writes_produce_journal_events() {
 
     let fs_policy = FsPolicy::new(workspace_root.clone());
     let local_fs = LocalFs::new(fs_policy);
-    let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_store));
+    let tracker = Arc::new(FsTracker::new(
+        Manifest::new(),
+        Arc::new(LocalBlobBackend::new(blob_store.clone())),
+    ));
     let (fs_event_tx, fs_event_rx) = tokio::sync::mpsc::channel(1000);
     let tracked_fs: Arc<dyn FsPort> = Arc::new(LagoTrackedFs::new(local_fs, tracker, fs_event_tx));
 

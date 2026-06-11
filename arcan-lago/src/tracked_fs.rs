@@ -82,9 +82,20 @@ impl FsPort for LagoTrackedFs {
                 }
             }
             Err(e) => {
-                tracing::warn!(
+                // track_write stores the content in the blob backend before
+                // building the event. A failure here means the content was NOT
+                // durably stored — with a remote backend this is a real
+                // durability loss (network error, or the server rejecting the
+                // content), distinct from the benign full-channel event drop
+                // above. Surface it at error level so it is not lost in noise.
+                // The disk write already succeeded, so the tool still reports
+                // success; only lago's record of the content is incomplete.
+                tracing::error!(
                     path = %rel_path,
-                    "LagoTrackedFs: tracker.track_write failed: {e}"
+                    error = %e,
+                    "LagoTrackedFs: content NOT tracked in lago (blob store/manifest \
+                     write failed) — file is on local disk but its content may not be \
+                     durable"
                 );
             }
         }
@@ -148,7 +159,7 @@ mod tests {
     use super::*;
     use lago_core::event::EventPayload;
     use lago_fs::Manifest;
-    use lago_store::BlobStore;
+    use lago_store::{BlobStore, LocalBlobBackend};
     use praxis_core::workspace::FsPolicy;
 
     fn setup() -> (
@@ -159,7 +170,10 @@ mod tests {
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let blob_store = Arc::new(BlobStore::open(tmp.path().join("blobs")).unwrap());
-        let tracker = Arc::new(FsTracker::new(Manifest::new(), blob_store));
+        let tracker = Arc::new(FsTracker::new(
+            Manifest::new(),
+            Arc::new(LocalBlobBackend::new(blob_store)),
+        ));
         let (tx, rx) = mpsc::channel(100);
         (tmp, tracker, tx, rx)
     }

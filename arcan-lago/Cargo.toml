@@ -46,3 +46,9 @@ life-vigil.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# Round-trip test for RemoteBlobBackend: serve a real lago-api router on an
+# ephemeral socket and drive the blob client against it (reqwest needs a bound
+# port, so the in-process `oneshot` harness lago-api uses internally won't do).
+lago-api.workspace = true
+axum.workspace = true
+metrics-exporter-prometheus.workspace = true
