@@ -559,22 +559,30 @@ async fn lago_events_track_writes() {
         .write(&workspace_root.join("tracked.txt"), b"tracked content")
         .unwrap();
 
-    // Give the background writer time to flush
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
     // Verify the file exists on disk
     assert!(workspace_root.join("tracked.txt").exists());
 
-    // Verify the event was persisted in the Lago journal
+    // Verify the event was persisted in the Lago journal. The writer
+    // runs as a background task draining an mpsc channel into a
+    // synchronous redb commit — a fixed sleep loses that race on
+    // loaded CI runners (observed: PR #1713 Test (Linux), 2026-06-11).
+    // Poll with a deadline instead: fast on the happy path, generous
+    // (5s) under contention.
     let query = lago_core::EventQuery::new()
         .session(session_id)
         .branch(branch_id);
-    let events = journal.read(query).await.expect("read journal");
-
-    assert!(
-        !events.is_empty(),
-        "expected at least one event in the Lago journal after tracked write"
-    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let events = loop {
+        let events = journal.read(query.clone()).await.expect("read journal");
+        if !events.is_empty() {
+            break events;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expected at least one event in the Lago journal after tracked write (5s)"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
 
     // Verify the event is a FileWrite
     let has_file_write = events.iter().any(|e| {
