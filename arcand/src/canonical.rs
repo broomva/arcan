@@ -1831,33 +1831,42 @@ async fn run_session(
 
     // Continue ticking if the agent executed tools and needs to call the LLM
     // again with tool results (mode=Execute means tools ran, needs continuation).
+    // BRO-1465: a Recover tick (tool denial / execution failure) also gets ONE
+    // continuation — the failure is rendered into conversation history (the
+    // kernel's tool transcript), so the wrap-up call verbalizes what happened
+    // instead of ending the turn as dead air. The flag caps Recover→Recover
+    // chains at a single wrap-up.
+    let mut recover_wrapup_used = false;
     for iteration in 1..MAX_AGENT_ITERATIONS {
-        match &tick_result {
-            Ok(tick) if tick.mode == OperatingMode::Execute => {
-                tracing::info!(
-                    iteration,
-                    mode = ?tick.mode,
-                    "Agent loop: continuing after tool execution"
-                );
-                tick_result = state
-                    .runtime
-                    .tick_on_branch(
-                        &session_id,
-                        &branch,
-                        TickInput {
-                            objective: String::new(), // continuation — no new objective
-                            proposed_tool: None,
-                            system_prompt: system_prompt.clone(),
-                            allowed_tools: combined_allowed_tools.clone(),
-                            client_tools: Vec::new(),
-                            kind: aios_runtime::TickKind::Direct,
-                        },
-                    )
-                    .instrument(agent_span.clone())
-                    .await;
+        let continue_reason = match &tick_result {
+            Ok(tick) if tick.mode == OperatingMode::Execute => "tool execution",
+            Ok(tick) if tick.mode == OperatingMode::Recover && !recover_wrapup_used => {
+                recover_wrapup_used = true;
+                "recover wrap-up (BRO-1465)"
             }
-            _ => break, // Done, error, or non-Execute mode
-        }
+            _ => break, // Done, error, or non-continuable mode
+        };
+        tracing::info!(
+            iteration,
+            reason = continue_reason,
+            "Agent loop: continuing"
+        );
+        tick_result = state
+            .runtime
+            .tick_on_branch(
+                &session_id,
+                &branch,
+                TickInput {
+                    objective: String::new(), // continuation — no new objective
+                    proposed_tool: None,
+                    system_prompt: system_prompt.clone(),
+                    allowed_tools: combined_allowed_tools.clone(),
+                    client_tools: Vec::new(),
+                    kind: aios_runtime::TickKind::Direct,
+                },
+            )
+            .instrument(agent_span.clone())
+            .await;
     }
 
     // Always unmark after tick completes (success or error) to avoid leaking the

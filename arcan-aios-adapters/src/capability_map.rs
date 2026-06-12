@@ -176,14 +176,26 @@ pub fn tools_allowed_by_policy(
         return None;
     }
 
-    // Determine which high-privilege capability categories are broadly granted.
-    let exec_allowed = broadly_allows_category(allow, "exec:cmd:");
-    let fs_write_allowed = broadly_allows_category(allow, "fs:write:");
-
-    // If both are broadly allowed there is no useful filtering to apply.
-    if exec_allowed && fs_write_allowed {
+    // If both high-privilege categories are BROADLY granted there is no
+    // useful filtering to apply.
+    if broadly_allows_category(allow, "exec:cmd:") && broadly_allows_category(allow, "fs:write:") {
         return None;
     }
+
+    // Visibility is ANY-grant based (BRO-1466): a path-scoped grant like
+    // `fs:write:/session/artifacts/**` (the default policy) or a shell
+    // whitelist entry like `exec:cmd:cat` (the free tier) means the tool IS
+    // usable — the policy gate still enforces the path/binary scope at
+    // execution time. The previous broad-grant-only rule hid `write_file`
+    // from sessions whose policy explicitly permits artifact writes (live
+    // receipt 2026-06-12, BRO-1490) and hid `bash` from free-tier sessions
+    // whose whitelist allows `cat`/`ls`/`grep`/…. Gated-but-not-allowed
+    // capabilities (e.g. free's `fs:write:**` in `gate_capabilities`)
+    // deliberately do NOT count: until the dispatch path renders the
+    // approval flow, a tool that silently parks the turn in AskHuman is
+    // worse chat UX than a hidden one.
+    let exec_allowed = allows_category(allow, "exec:cmd:");
+    let fs_write_allowed = allows_category(allow, "fs:write:");
 
     // Safe tools — always visible regardless of tier (require only fs:read or
     // no capability at all).
@@ -255,6 +267,19 @@ fn requires_privilege(tool_name: &str) -> bool {
             | "read_env"
             | "get_credential"
     )
+}
+
+/// Returns `true` if ANY pattern in `allow` grants something inside
+/// `category` — broad (`exec:cmd:*`), scoped (`fs:write:/session/…/**`), or
+/// single (`exec:cmd:git`). The full wildcard counts for every category.
+///
+/// This drives tool VISIBILITY only; the policy gate still enforces the
+/// exact path/binary scope at execution time (BRO-1466).
+fn allows_category(allow: &[Capability], category: &str) -> bool {
+    allow.iter().any(|cap| {
+        let s = cap.as_str();
+        s == "*" || s.starts_with(category)
+    })
 }
 
 /// Returns `true` if `allow` contains a wildcard pattern that broadly covers
@@ -498,10 +523,18 @@ mod tests {
     }
 
     #[test]
-    fn free_policy_blocks_bash_and_write_tools() {
+    fn free_policy_exposes_whitelisted_bash_hides_write_tools() {
+        // free() grants a shell whitelist (exec:cmd:cat/ls/grep/…) — bash
+        // must be VISIBLE (the gate enforces the whitelist per binary at
+        // execution time). fs:write:** is only GATED (approval), not
+        // allowed, so write tools stay hidden until the dispatch path
+        // renders the approval flow (BRO-1466).
         let policy = PolicySet::free();
         let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
-        assert!(!allowed.contains(&"bash".to_owned()));
+        assert!(
+            allowed.contains(&"bash".to_owned()),
+            "bash visible — the free tier explicitly whitelists shell commands"
+        );
         assert!(!allowed.contains(&"write_file".to_owned()));
         assert!(!allowed.contains(&"edit_file".to_owned()));
         // read tools still visible
@@ -524,19 +557,53 @@ mod tests {
     }
 
     #[test]
-    fn default_policy_blocks_bash_restricts_writes() {
-        // default() allows exec:git (not exec:cmd:*) and fs:write:/session/artifacts/**
-        // (not broadly fs:write:*) — so bash and write tools should be hidden.
+    fn default_policy_exposes_scoped_write_and_exec_tools() {
+        // default() allows exec:cmd:git and fs:write:/session/artifacts/** —
+        // SCOPED grants. The tools must be VISIBLE (the gate enforces the
+        // git-only / artifacts-only scope at execution time); hiding them
+        // regressed the chat write receipt (BRO-1490/BRO-1466, 2026-06-12).
+        // The catalog is still restricted (Some, not None): nothing grants
+        // net or secrets, so those tool families stay hidden.
         let policy = PolicySet::default();
         let allowed = tools_allowed_by_policy(&policy, None).expect("should restrict");
         assert!(
-            !allowed.contains(&"bash".to_owned()),
-            "bash hidden (only exec:git allowed)"
+            allowed.contains(&"bash".to_owned()),
+            "bash visible — exec:cmd:git is a usable grant"
         );
         assert!(
-            !allowed.contains(&"write_file".to_owned()),
-            "write_file hidden (only /session/artifacts/** allowed)"
+            allowed.contains(&"write_file".to_owned()),
+            "write_file visible — /session/artifacts/** is a usable grant"
         );
+        assert!(
+            allowed.contains(&"edit_file".to_owned()),
+            "edit_file rides the same fs:write grant"
+        );
+        assert!(
+            !allowed.contains(&"web_search".to_owned()),
+            "no net grant — net tools stay hidden"
+        );
+        assert!(
+            !allowed.contains(&"get_secret".to_owned()),
+            "no secrets grant — secrets tools stay hidden"
+        );
+    }
+
+    #[test]
+    fn allows_category_matches_scoped_single_and_broad_grants() {
+        let scoped = vec![Capability::new("fs:write:/session/artifacts/**")];
+        assert!(allows_category(&scoped, "fs:write:"));
+        assert!(!allows_category(&scoped, "exec:cmd:"));
+
+        let single = vec![Capability::new("exec:cmd:git")];
+        assert!(allows_category(&single, "exec:cmd:"));
+        assert!(!allows_category(&single, "fs:write:"));
+
+        let broad = vec![Capability::new("exec:cmd:*")];
+        assert!(allows_category(&broad, "exec:cmd:"));
+
+        let wildcard = vec![Capability::new("*")];
+        assert!(allows_category(&wildcard, "fs:write:"));
+        assert!(allows_category(&wildcard, "exec:cmd:"));
     }
 
     #[test]

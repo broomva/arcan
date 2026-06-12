@@ -1,14 +1,14 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
 use aios_protocol::{
-    AgentId, AgentIdentityProvider, ApprovalPort, EventStorePort, KernelResult, ModelCompletion,
-    ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort,
-    PolicySet, SoulProfile, ToolHarnessPort,
+    AgentId, AgentIdentityProvider, ApprovalPort, Capability, EventStorePort, KernelResult,
+    ModelCompletion, ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason,
+    PolicyGatePort, PolicySet, SoulProfile, ToolCall, ToolHarnessPort,
 };
 use aios_runtime::{KernelRuntime, RuntimeConfig};
 use aios_sandbox::LocalSandboxRunner;
@@ -282,6 +282,129 @@ async fn canonical_session_api_round_trip() {
         .unwrap_or_default();
     assert!(branch_ids.iter().any(|branch| branch == "main"));
     assert!(branch_ids.iter().any(|branch| branch == "feature-api"));
+
+    server.abort();
+}
+
+/// Proposes a policy-DENIED tool on the first completion, answers with text
+/// on every later completion — the wrap-up the model gives once it sees the
+/// `[tool_result … failed: capabilities denied…]` transcript line.
+#[derive(Debug, Default)]
+struct DeniedToolThenAnswerProvider {
+    answered: AtomicBool,
+}
+
+#[async_trait]
+impl ModelProviderPort for DeniedToolThenAnswerProvider {
+    async fn complete(&self, _request: ModelCompletionRequest) -> KernelResult<ModelCompletion> {
+        let first = !self.answered.swap(true, Ordering::SeqCst);
+        if first {
+            return Ok(ModelCompletion {
+                provider: "test".to_owned(),
+                model: "test-model".to_owned(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::ToolCall {
+                    call: ToolCall {
+                        call_id: "call-denied".to_owned(),
+                        tool_name: "fetch_url".to_owned(),
+                        input: json!({ "url": "https://example.com" }),
+                        // Neither allowed nor gated by PolicySet::default()
+                        // → the gate denies immediately (BRO-216).
+                        requested_capabilities: vec![Capability::new("net:egress:example.com")],
+                    },
+                }],
+                stop_reason: ModelStopReason::ToolCall,
+                usage: None,
+                final_answer: None,
+            });
+        }
+        Ok(ModelCompletion {
+            provider: "test".to_owned(),
+            model: "test-model".to_owned(),
+            llm_call_record: None,
+            directives: vec![ModelDirective::Message {
+                role: "assistant".to_owned(),
+                content: "I could not fetch that URL — network egress is denied by policy."
+                    .to_owned(),
+            }],
+            stop_reason: ModelStopReason::Completed,
+            usage: None,
+            final_answer: Some("fetch denied by policy".to_owned()),
+        })
+    }
+}
+
+/// BRO-1465: a policy-denied tool call must NOT end the run as dead air.
+/// The agent loop grants ONE wrap-up tick after a `Recover` finalize; the
+/// wrap-up completion (which sees the failure in the conversation-history
+/// tool transcript) verbalizes what happened, so the run ends with
+/// assistant text and a non-Recover mode.
+#[tokio::test]
+async fn canonical_run_verbalizes_policy_denial_instead_of_dead_air() {
+    let runtime = build_runtime_with_provider(
+        unique_root("arcand-recover-wrapup"),
+        Arc::new(DeniedToolThenAnswerProvider::default()),
+    );
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let session_response = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(session_response.status(), StatusCode::OK);
+    let session_payload: serde_json::Value = session_response.json().await.unwrap();
+    let session_id = session_payload["session_id"].as_str().expect("session_id");
+
+    let run_response = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "fetch https://example.com" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::OK);
+    let run_payload: serde_json::Value = run_response.json().await.unwrap();
+
+    // Pre-BRO-1465 this run finalized mode=Recover with zero assistant text.
+    let mode_repr = run_payload["mode"].to_string().to_lowercase();
+    assert!(
+        !mode_repr.contains("recover"),
+        "denied tool must get a wrap-up tick, not end in Recover; got mode {mode_repr}"
+    );
+
+    // The event stream must show the denial FOLLOWED by the verbal wrap-up.
+    let events_response = client
+        .get(format!("{base}/sessions/{session_id}/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(events_response.status(), StatusCode::OK);
+    let events_payload: serde_json::Value = events_response.json().await.unwrap();
+    let events = events_payload["events"].as_array().expect("events array");
+
+    let event_strings: Vec<String> = events.iter().map(|e| e.to_string()).collect();
+    let denial_index = event_strings
+        .iter()
+        .position(|e| e.contains("ToolCallFailed") || e.contains("tool_call_failed"))
+        .expect("denial event recorded");
+    let wrapup_index = event_strings
+        .iter()
+        .position(|e| e.contains("network egress is denied by policy"))
+        .expect("wrap-up assistant text recorded — dead air means BRO-1465 regressed");
+    assert!(
+        wrapup_index > denial_index,
+        "wrap-up text must come after the denial (denial at {denial_index}, wrap-up at {wrapup_index})"
+    );
 
     server.abort();
 }

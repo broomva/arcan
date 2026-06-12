@@ -200,6 +200,16 @@ impl AgentSubstrate for SubstrateService {
 
         let runtime = Arc::clone(&self.runtime);
 
+        // BRO-1466: derive the tier tool surface from the session's policy
+        // so the model only sees tools it can actually use. Visibility is a
+        // pre-filter (any-grant based — see `tools_allowed_by_policy`); the
+        // policy gate remains the authoritative enforcement at execution
+        // time. `None` (unknown session policy, or a fully-permissive one)
+        // ⇒ the full catalog, exactly as before this wiring.
+        let allowed_tools = runtime
+            .session_policy(&session_id)
+            .and_then(|policy| arcan_aios_adapters::tools_allowed_by_policy(&policy, None));
+
         // Auto-fork semantics (BRO-1479): the kernel requires a branch to
         // EXIST before any tick can sequence events onto it
         // (`next_sequence` bails "branch not found"). Sessions are born
@@ -381,6 +391,14 @@ impl AgentSubstrate for SubstrateService {
             // tool results and can respond (mirrors
             // `canonical.rs::run_session`).
             let mut errored = false;
+            // BRO-1465: a tick that finalizes `Recover` (tool denial or
+            // execution failure) used to END the dispatch here — the model
+            // never got a call after the failure event, so the user saw
+            // dead air. Grant ONE wrap-up iteration per dispatch: the
+            // failure is rendered into conversation history (the kernel's
+            // tool transcript), so the follow-up call can verbalize what
+            // happened. The flag caps Recover→Recover chains at one.
+            let mut recover_wrapup_used = false;
             for iteration in 0..MAX_AGENT_ITERATIONS {
                 let objective = if iteration == 0 {
                     content.clone()
@@ -391,7 +409,10 @@ impl AgentSubstrate for SubstrateService {
                     objective,
                     proposed_tool: None,
                     system_prompt: None,
-                    allowed_tools: None,
+                    // Tier tool surface derived from the session policy
+                    // (BRO-1466) — pre-filter only; the gate still
+                    // enforces scope at execution time.
+                    allowed_tools: allowed_tools.clone(),
                     // Surfaced on every tick of this dispatch so the model
                     // keeps seeing the client tools across the multi-tick
                     // loop (e.g. a registry tool runs, then the model
@@ -406,9 +427,15 @@ impl AgentSubstrate for SubstrateService {
                     Ok(output) => {
                         // Continue the loop only when the model executed
                         // tools and needs another call to see their
-                        // results — same predicate as the HTTP path.
-                        if !matches!(output.mode, OperatingMode::Execute) {
-                            break;
+                        // results (same predicate as the HTTP path) — or
+                        // ONCE after a Recover, so the failure gets a
+                        // verbal wrap-up instead of dead air (BRO-1465).
+                        match output.mode {
+                            OperatingMode::Execute => {}
+                            OperatingMode::Recover if !recover_wrapup_used => {
+                                recover_wrapup_used = true;
+                            }
+                            _ => break,
                         }
                     }
                     Err(e) => {
