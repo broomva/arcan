@@ -31,7 +31,7 @@ use std::time::Duration;
 use aios_events::{EventJournal, EventStreamHub, FileEventStore};
 use aios_policy::{ApprovalQueue, SessionPolicyEngine};
 use aios_protocol::{
-    ApprovalPort, Capability, EventStorePort, KernelResult, ModelCompletion,
+    ApprovalPort, BranchId, Capability, EventStorePort, KernelResult, ModelCompletion,
     ModelCompletionRequest, ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort,
     PolicySet, SessionId, ToolCall, ToolHarnessPort,
 };
@@ -203,7 +203,7 @@ async fn dispatch_message_streams_real_substrate_events() {
     // it. This Topology B e2e test exercises the gRPC path so the
     // override is irrelevant — pass `None`.
     let mut stream = proxy
-        .dispatch_message(sid, "Hello, substrate!", None, &[])
+        .dispatch_message(sid, "Hello, substrate!", None, "", &[])
         .await
         .expect("dispatch_message");
 
@@ -338,7 +338,7 @@ async fn dispatch_message_streams_tool_lifecycle_events() {
     let sid = "phase2-tool-lifecycle";
     let _ = proxy.create_agent(sid).await.expect("create_agent");
     let mut stream = proxy
-        .dispatch_message(sid, "write the e2e artifact", None, &[])
+        .dispatch_message(sid, "write the e2e artifact", None, "", &[])
         .await
         .expect("dispatch_message");
 
@@ -548,7 +548,7 @@ async fn dispatch_message_hands_off_client_tool_calls() {
         }
     })];
     let mut stream = proxy
-        .dispatch_message(sid, "what's the weather in Medellín?", None, &tools)
+        .dispatch_message(sid, "what's the weather in Medellín?", None, "", &tools)
         .await
         .expect("dispatch_message");
 
@@ -604,4 +604,196 @@ async fn dispatch_message_hands_off_client_tool_calls() {
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
+}
+
+#[tokio::test]
+async fn dispatch_message_on_branch_lands_under_that_branch() {
+    // BRO-1479: a dispatch with a non-empty `branch` auto-forks the
+    // branch from main at the current head (sessions are born with only
+    // `main`; the kernel's `next_sequence` requires the branch to exist)
+    // and keys every tick onto it. Assert the events land under `exp-1`
+    // AND that main's event stream is unchanged by the dispatch, proving
+    // the branch threads end-to-end through the substrate wire (not a
+    // hardcoded `BranchId::main()`).
+    let env = SubstrateUnderTest::start().await;
+    let proxy = ArcanProxy::connect(env.socket.clone())
+        .await
+        .expect("dial substrate UDS");
+
+    let sid = "bro-1479-branch";
+    let _ = proxy.create_agent(sid).await.expect("create_agent");
+
+    // Snapshot main BEFORE the branch dispatch: session creation seeds
+    // events on main, and the fork must not add to them.
+    let session_id = SessionId::from_string(sid);
+    let main_before = env
+        .runtime
+        .read_events_on_branch(&session_id, &BranchId::main(), 0, 1000)
+        .await
+        .expect("read main before")
+        .len();
+
+    let mut stream = proxy
+        .dispatch_message(sid, "Hello, exp branch!", None, "exp-1", &[])
+        .await
+        .expect("dispatch_message on branch");
+
+    let mut terminal_seen = false;
+    let mut count = 0;
+    while let Some(evt) = stream.next().await {
+        let evt = evt.expect("substrate event ok");
+        count += 1;
+        if evt.kind == AgentEventKind::Finish as i32 || evt.kind == AgentEventKind::Error as i32 {
+            terminal_seen = true;
+            break;
+        }
+        if count > 32 {
+            break;
+        }
+    }
+    drop(stream);
+    assert!(terminal_seen, "dispatch on branch should reach a terminal");
+
+    let exp_branch = BranchId::from_string("exp-1");
+    let on_branch = env
+        .runtime
+        .read_events_on_branch(&session_id, &exp_branch, 0, 1000)
+        .await
+        .expect("read exp-1 events");
+    assert!(
+        !on_branch.is_empty(),
+        "dispatch on exp-1 should have journaled events under that branch"
+    );
+    assert!(
+        on_branch.iter().all(|e| e.branch_id == exp_branch),
+        "every journaled event should carry the exp-1 branch id"
+    );
+    // The auto-fork is itself journaled ON the new branch — its first
+    // event is the BranchCreated marker carrying the fork point.
+    assert!(
+        matches!(
+            on_branch.first().map(|e| &e.kind),
+            Some(aios_protocol::EventKind::BranchCreated { .. })
+        ),
+        "the forked branch's first event should be BranchCreated"
+    );
+
+    // The sibling main branch must be unchanged — the dispatch forked
+    // off it without writing to it.
+    let main_after = env
+        .runtime
+        .read_events_on_branch(&session_id, &BranchId::main(), 0, 1000)
+        .await
+        .expect("read main events");
+    assert_eq!(
+        main_after.len(),
+        main_before,
+        "dispatching on exp-1 must not add events to main"
+    );
+
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn dispatch_message_default_branch_lands_on_main() {
+    // BRO-1479 backward-compat: an empty branch behaves exactly as
+    // before — events land on main. This mirrors the pre-existing
+    // `dispatch_message_streams_real_substrate_events` contract, now
+    // pinned against the branch field so the default can never regress.
+    let env = SubstrateUnderTest::start().await;
+    let proxy = ArcanProxy::connect(env.socket.clone())
+        .await
+        .expect("dial substrate UDS");
+
+    let sid = "bro-1479-default-main";
+    let _ = proxy.create_agent(sid).await.expect("create_agent");
+
+    let mut stream = proxy
+        .dispatch_message(sid, "Hello, default branch!", None, "", &[])
+        .await
+        .expect("dispatch_message default branch");
+
+    let mut terminal_seen = false;
+    let mut count = 0;
+    while let Some(evt) = stream.next().await {
+        let evt = evt.expect("substrate event ok");
+        count += 1;
+        if evt.kind == AgentEventKind::Finish as i32 || evt.kind == AgentEventKind::Error as i32 {
+            terminal_seen = true;
+            break;
+        }
+        if count > 32 {
+            break;
+        }
+    }
+    drop(stream);
+    assert!(terminal_seen, "default dispatch should reach a terminal");
+
+    let session_id = SessionId::from_string(sid);
+    let on_main = env
+        .runtime
+        .read_events_on_branch(&session_id, &BranchId::main(), 0, 1000)
+        .await
+        .expect("read main events");
+    assert!(
+        !on_main.is_empty(),
+        "an empty branch must journal events on main"
+    );
+    assert!(
+        on_main.iter().all(|e| e.branch_id == BranchId::main()),
+        "every journaled event should carry the main branch id"
+    );
+
+    env.shutdown().await;
+}
+
+#[tokio::test]
+async fn dispatch_message_invalid_branch_name_is_rejected() {
+    // BRO-1479: the branch is UNTRUSTED remote input that keys directly
+    // into redb compound keys + lago-fs manifests. An invalid name is
+    // rejected with INVALID_ARGUMENT at the substrate trust boundary,
+    // never sanitized silently.
+    let env = SubstrateUnderTest::start().await;
+    let proxy = ArcanProxy::connect(env.socket.clone())
+        .await
+        .expect("dial substrate UDS");
+
+    let sid = "bro-1479-invalid-branch";
+    let _ = proxy.create_agent(sid).await.expect("create_agent");
+
+    // Session creation itself journals events on main — snapshot the
+    // count so the assertion below isolates what the REJECTED dispatch
+    // added (which must be nothing).
+    let session_id = SessionId::from_string(sid);
+    let main_before = env
+        .runtime
+        .read_events_on_branch(&session_id, &BranchId::main(), 0, 1000)
+        .await
+        .expect("read main before")
+        .len();
+
+    // A slash is outside `[a-zA-Z0-9_-]` — must be rejected before any
+    // tick runs.
+    let err = proxy
+        .dispatch_message(sid, "should be rejected", None, "../etc/passwd", &[])
+        .await
+        .err()
+        .expect("invalid branch name must error");
+    // The proxy maps the gRPC Status into its own error type; the
+    // important contract is that the dispatch did NOT succeed and
+    // journaled nothing beyond the pre-existing session events.
+    let _ = err;
+
+    let main_after = env
+        .runtime
+        .read_events_on_branch(&session_id, &BranchId::main(), 0, 1000)
+        .await
+        .expect("read main events");
+    assert_eq!(
+        main_after.len(),
+        main_before,
+        "a rejected dispatch must not journal anything: {main_after:?}"
+    );
+
+    env.shutdown().await;
 }

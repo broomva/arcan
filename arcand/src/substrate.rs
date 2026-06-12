@@ -69,6 +69,20 @@ fn valid_client_tool_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// Branch-name check (`[a-zA-Z0-9_-]{1,64}`). The dispatch branch is
+/// UNTRUSTED remote input that keys directly into redb compound keys
+/// (session + branch + seq) and lago-fs manifest keys, so it is
+/// validated at this trust boundary and rejected — never sanitized
+/// silently. The charset matches the provider-portable tool-name rule
+/// for consistency; `main` and other simple identifiers pass.
+fn valid_branch_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// arcand's `arcan.v1.AgentSubstrate` impl. Holds a shared
 /// `KernelRuntime` handle so every RPC reuses the same in-memory
 /// session store, journal, and tick engine that the HTTP plane is
@@ -167,7 +181,65 @@ impl AgentSubstrate for SubstrateService {
             )));
         }
 
+        // Resolve the target branch at this trust boundary (BRO-1479).
+        // Empty ⇒ "main" (backward-compatible: pre-BRO-1479 callers
+        // never set the field, so the dispatch keys onto main exactly
+        // as before). A non-empty value is validated before it is
+        // allowed to key into redb compound keys + lago-fs manifests —
+        // an invalid name is rejected, never sanitized silently.
+        let branch = if body.branch.is_empty() {
+            BranchId::main()
+        } else if valid_branch_name(&body.branch) {
+            BranchId::from_string(&body.branch)
+        } else {
+            return Err(Status::invalid_argument(format!(
+                "invalid branch name {branch:?}: must match [a-zA-Z0-9_-]{{1,64}}",
+                branch = body.branch
+            )));
+        };
+
         let runtime = Arc::clone(&self.runtime);
+
+        // Auto-fork semantics (BRO-1479): the kernel requires a branch to
+        // EXIST before any tick can sequence events onto it
+        // (`next_sequence` bails "branch not found"). Sessions are born
+        // with only `main`, so a dispatch naming an unknown branch forks
+        // it from main at the CURRENT head — the natural "this dispatch
+        // explores a fork of the session" semantic, and it keeps the wire
+        // ergonomic (no separate create-branch RPC for the common case).
+        // An existing branch is reused as-is; a merged (read-only) branch
+        // fails inside the tick with the kernel's own clear error.
+        if branch != BranchId::main() {
+            let branch_exists = |branches: Vec<aios_protocol::BranchInfo>| {
+                branches.iter().any(|info| info.branch_id == branch)
+            };
+            let known = runtime
+                .list_branches(&session_id)
+                .await
+                .map(branch_exists)
+                .map_err(|e| Status::internal(format!("list_branches: {e}")))?;
+            if !known
+                && let Err(create_err) = runtime
+                    .create_branch(&session_id, branch.clone(), None, None)
+                    .await
+            {
+                // Idempotent under concurrency: two dispatches naming the
+                // same new branch can both observe "unknown" and race the
+                // fork — the loser's create fails ("branch already
+                // exists") although the branch is now perfectly usable.
+                // Re-check existence instead of string-matching the error;
+                // only a still-missing branch is a real failure.
+                let now_known = runtime
+                    .list_branches(&session_id)
+                    .await
+                    .map(branch_exists)
+                    .unwrap_or(false);
+                if !now_known {
+                    return Err(Status::internal(format!("create_branch: {create_err}")));
+                }
+            }
+        }
+
         let content = body.content;
         // Client tool definitions arrive as JSON bytes on
         // `tool_definitions` (additive field — lifed forwards the chat
@@ -242,9 +314,12 @@ impl AgentSubstrate for SubstrateService {
         // Subscribe to the broadcast stream BEFORE issuing the first
         // tick — events emitted during the tick get captured. Note:
         // `subscribe_events` returns a single subscriber that sees
-        // every session's events; we filter by `session_id` in the
-        // pump task so cross-session traffic doesn't leak into this
-        // stream.
+        // every session's events; we filter by `session_id` AND
+        // `branch_id` in the pump task so neither cross-session traffic
+        // nor a concurrent dispatch on a SIBLING branch of the same
+        // session leaks into this stream (BRO-1479: `EventRecord`
+        // carries `branch_id`, so cross-branch frames are filtered
+        // rather than interleaved).
         let mut events_rx = runtime.subscribe_events();
 
         tokio::spawn(async move {
@@ -257,13 +332,16 @@ impl AgentSubstrate for SubstrateService {
             // task drains the event broadcast and forwards filtered
             // events to the streaming client.
             let session_for_pump = session_id.clone();
+            let branch_for_pump = branch.clone();
             let tx_pump = tx.clone();
             let terminal_for_pump = Arc::clone(&terminal_sent);
             let pump_handle = tokio::spawn(async move {
                 loop {
                     match events_rx.recv().await {
                         Ok(record) => {
-                            if record.session_id != session_for_pump {
+                            if record.session_id != session_for_pump
+                                || record.branch_id != branch_for_pump
+                            {
                                 continue;
                             }
                             if let Some(evt) = translate_event(&record) {
@@ -322,7 +400,7 @@ impl AgentSubstrate for SubstrateService {
                     kind: TickKind::Direct,
                 };
                 match runtime
-                    .tick_on_branch(&session_id, &BranchId::main(), tick_input)
+                    .tick_on_branch(&session_id, &branch, tick_input)
                     .await
                 {
                     Ok(output) => {
