@@ -148,6 +148,16 @@ struct Cli {
     /// set this so lifed's arcan-proxy can dial in. BRO-1016.
     #[arg(long, global = true, env = "ARCAN_UDS_SOCKET", value_name = "PATH")]
     uds_socket: Option<PathBuf>,
+
+    /// Workspace root for agent file tools (read_file, write_file, bash, …).
+    /// Created if missing; must be writable by the arcan process. Defaults
+    /// to the process CWD — deployments whose CWD is a read-only install
+    /// dir (e.g. a root-owned image WORKDIR) MUST set this to a writable
+    /// path or every file-tool write fails before reaching lago. BRO-1490.
+    /// (Env is ARCAN_WORKSPACE_DIR, not ARCAN_WORKSPACE — the latter is
+    /// already the per-run hook variable set by arcan-core hooks.)
+    #[arg(long, global = true, env = "ARCAN_WORKSPACE_DIR", value_name = "DIR")]
+    workspace: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -454,6 +464,27 @@ fn resolve_data_dir(data_dir: &PathBuf) -> anyhow::Result<PathBuf> {
     Ok(workspace_root.join(data_dir))
 }
 
+/// Resolve the agent file-tool workspace root (BRO-1490).
+///
+/// An explicit `--workspace` / `ARCAN_WORKSPACE_DIR` is created if missing
+/// and canonicalized (FsPolicy compares canonical paths, and the boot log
+/// should show the real location). Without one, fall back to the process
+/// CWD — correct for `arcan serve` run from a project checkout, wrong for
+/// images whose WORKDIR is a root-owned install dir.
+fn resolve_workspace_root(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    match explicit {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                anyhow::anyhow!("cannot create workspace dir {}: {error}", dir.display())
+            })?;
+            dir.canonicalize().map_err(|error| {
+                anyhow::anyhow!("cannot canonicalize workspace {}: {error}", dir.display())
+            })
+        }
+        None => Ok(std::env::current_dir()?),
+    }
+}
+
 fn read_last_session_hint(data_dir: &Path) -> Option<String> {
     let path = data_dir.join("last_session");
     let raw = std::fs::read_to_string(path).ok()?;
@@ -623,6 +654,7 @@ fn build_provider(resolved: &ResolvedConfig) -> anyhow::Result<Arc<dyn Provider>
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_serve(
     data_dir: &Path,
     resolved: &ResolvedConfig,
@@ -630,6 +662,7 @@ fn run_serve(
     prosopon_port: Option<std::net::SocketAddr>,
     agents_dir: Option<PathBuf>,
     uds_socket: Option<PathBuf>,
+    workspace: Option<PathBuf>,
     tokio_runtime: &tokio::runtime::Runtime,
     chronos_enabled: bool,
     chronos_http_bind: Option<std::net::SocketAddr>,
@@ -639,7 +672,25 @@ fn run_serve(
     //   - async reqwest Client + tonic Channel work (they find `Handle::current()`)
     //   - reqwest::blocking::Client also works (no nested runtime panic)
     //   - `tokio::spawn()` works (tasks are queued, run when block_on starts)
-    let workspace_root = std::env::current_dir()?;
+    let workspace_root = resolve_workspace_root(workspace)?;
+
+    // BRO-1490 defence-in-depth: a non-writable workspace surfaces at
+    // runtime as an opaque per-tool io error ("No such file or directory")
+    // deep inside a chat turn. Probe once at boot and say exactly what is
+    // wrong while the operator is still watching the boot log. Warn-only:
+    // a read-only workspace still serves read_file/grep/glob.
+    let probe = workspace_root.join(format!(".arcan-write-probe-{}", std::process::id()));
+    match std::fs::write(&probe, b"probe") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+        }
+        Err(error) => tracing::warn!(
+            workspace = %workspace_root.display(),
+            %error,
+            "agent workspace is NOT writable — file tools (write_file, edit_file, bash) \
+             will fail; set --workspace / ARCAN_WORKSPACE_DIR to a writable directory"
+        ),
+    }
 
     // --- Lago persistence ---
     //
@@ -1763,6 +1814,7 @@ fn main() -> anyhow::Result<()> {
                 cli.prosopon_port,
                 cli.agents_dir,
                 cli.uds_socket,
+                cli.workspace,
                 &tokio_runtime,
                 chronos,
                 chronos_http_bind,
@@ -2136,5 +2188,39 @@ mod tests {
         let selected = resolve_session(&dir, None, None).await;
         assert_eq!(selected, "default");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn workspace_root_defaults_to_cwd() {
+        let resolved = resolve_workspace_root(None).expect("resolve");
+        assert_eq!(resolved, std::env::current_dir().expect("cwd"));
+    }
+
+    #[test]
+    fn workspace_root_creates_missing_explicit_dir() {
+        let base = unique_temp_dir("arcan-workspace-create");
+        let target = base.join("nested/agent-workspace");
+        assert!(!target.exists());
+
+        let resolved = resolve_workspace_root(Some(target.clone())).expect("resolve");
+
+        assert!(target.is_dir(), "explicit workspace dir must be created");
+        // Canonicalized result points at the same directory (macOS tempdirs
+        // canonicalize through /private, so compare canonical forms).
+        assert_eq!(resolved, target.canonicalize().expect("canonicalize"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn workspace_root_canonicalizes_existing_dir() {
+        let base = unique_temp_dir("arcan-workspace-existing");
+        // Route through `..` so the input is non-canonical.
+        let indirect = base.join("sub/..");
+        std::fs::create_dir_all(base.join("sub")).expect("mkdir");
+
+        let resolved = resolve_workspace_root(Some(indirect)).expect("resolve");
+
+        assert_eq!(resolved, base.canonicalize().expect("canonicalize"));
+        let _ = std::fs::remove_dir_all(base);
     }
 }
