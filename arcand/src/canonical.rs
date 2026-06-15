@@ -1829,8 +1829,11 @@ async fn run_session(
         .instrument(agent_span.clone())
         .await;
 
-    // Continue ticking if the agent executed tools and needs to call the LLM
-    // again with tool results (mode=Execute means tools ran, needs continuation).
+    // Continue ticking only when the tick actually evaluated registry tool
+    // calls — the model needs another call to see their results. `mode ==
+    // Execute` alone is NOT the signal: it is also the homeostatic default
+    // for text-only ticks, and looping on it burned 4-5 wasted model calls
+    // per chat turn (prod, 2026-06-12).
     // BRO-1465: a Recover tick (tool denial / execution failure) also gets ONE
     // continuation — the failure is rendered into conversation history (the
     // kernel's tool transcript), so the wrap-up call verbalizes what happened
@@ -1839,12 +1842,14 @@ async fn run_session(
     let mut recover_wrapup_used = false;
     for iteration in 1..MAX_AGENT_ITERATIONS {
         let continue_reason = match &tick_result {
-            Ok(tick) if tick.mode == OperatingMode::Execute => "tool execution",
+            Ok(tick) if tick.mode == OperatingMode::Execute && tick.tool_calls_executed > 0 => {
+                "tool execution"
+            }
             Ok(tick) if tick.mode == OperatingMode::Recover && !recover_wrapup_used => {
                 recover_wrapup_used = true;
                 "recover wrap-up (BRO-1465)"
             }
-            _ => break, // Done, error, or non-continuable mode
+            _ => break, // Done, error, text-only completion, or non-continuable mode
         };
         tracing::info!(
             iteration,

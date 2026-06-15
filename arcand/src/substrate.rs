@@ -425,13 +425,17 @@ impl AgentSubstrate for SubstrateService {
                     .await
                 {
                     Ok(output) => {
-                        // Continue the loop only when the model executed
-                        // tools and needs another call to see their
-                        // results (same predicate as the HTTP path) — or
-                        // ONCE after a Recover, so the failure gets a
-                        // verbal wrap-up instead of dead air (BRO-1465).
+                        // Continue the loop only when the tick actually
+                        // evaluated registry tool calls — the model needs
+                        // another call to see their results. `mode ==
+                        // Execute` alone is NOT the signal: it is also the
+                        // homeostatic default for text-only ticks, and
+                        // looping on it burned 4-5 wasted model calls per
+                        // chat turn (prod, 2026-06-12). A Recover tick
+                        // still gets ONE wrap-up call so failures are
+                        // verbalized instead of dead air (BRO-1465).
                         match output.mode {
-                            OperatingMode::Execute => {}
+                            OperatingMode::Execute if output.tool_calls_executed > 0 => {}
                             OperatingMode::Recover if !recover_wrapup_used => {
                                 recover_wrapup_used = true;
                             }

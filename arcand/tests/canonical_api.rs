@@ -286,6 +286,57 @@ async fn canonical_session_api_round_trip() {
     server.abort();
 }
 
+/// A text-only completion must end the turn after ONE model call. The agent
+/// loop used to continue on `mode == Execute` — which is also the
+/// homeostatic default for text-only ticks — burning 4-5 wasted
+/// continuation calls per chat turn (observed in prod, 2026-06-12, session
+/// vcz5i4zq…). The loop now continues only on `tool_calls_executed > 0`.
+#[tokio::test]
+async fn canonical_run_text_only_completion_ends_after_one_model_call() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let runtime = build_runtime_with_provider(
+        unique_root("arcand-no-continuation-burn"),
+        Arc::new(CapturingProvider::new(requests.clone())),
+    );
+    let router = create_canonical_router(runtime, test_provider_handle(), test_provider_factory());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let session_response = client
+        .post(format!("{base}/sessions"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(session_response.status(), StatusCode::OK);
+    let session_payload: serde_json::Value = session_response.json().await.unwrap();
+    let session_id = session_payload["session_id"].as_str().expect("session_id");
+
+    let run_response = client
+        .post(format!("{base}/sessions/{session_id}/runs"))
+        .json(&json!({ "objective": "say hello" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(run_response.status(), StatusCode::OK);
+
+    let call_count = requests.lock().unwrap().len();
+    assert_eq!(
+        call_count, 1,
+        "a text-only completion must not trigger continuation ticks; \
+         got {call_count} model calls"
+    );
+
+    server.abort();
+}
+
 /// Proposes a policy-DENIED tool on the first completion, answers with text
 /// on every later completion — the wrap-up the model gives once it sees the
 /// `[tool_result … failed: capabilities denied…]` transcript line.
