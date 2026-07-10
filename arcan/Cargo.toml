@@ -56,6 +56,10 @@ ergon-nous-adapter.workspace = true
 # Custody identity loading for soul attestation (`--anima-identity-dir`):
 # reconstructs the `life init` InProcessAnima from `.life/identity/`.
 anima-identity = { path = "../../anima/anima-identity", version = "0.3.0" }
+# Zeroize transient seed copies read off disk before they hit the heap/stack
+# and linger (BRO-1468). `MasterSeed` already zeroizes on drop; this covers
+# the intermediate buffers in `identity_loader`.
+zeroize.workspace = true
 arcan-harness = { path = "../arcan-harness", version = "0.3.0" }
 praxis-core.workspace = true
 praxis-tools.workspace = true

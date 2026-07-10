@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anima_identity::custody::AnimaCustody;
 use anima_identity::{InProcessAnima, MasterSeed};
 use anyhow::{Context, bail};
+use zeroize::Zeroizing;
 
 /// Read-side projection of `.life/identity/soul.json`.
 ///
@@ -99,23 +100,30 @@ pub fn load_custody_from_disk(
     }
 
     let seed_path = identity_dir.join(&doc.custody.seed_file);
-    let seed_bytes = std::fs::read(&seed_path).with_context(|| {
+    // Raw master-seed material. Hold every transient copy in `Zeroizing` so the
+    // bytes are wiped on drop instead of lingering on the heap/stack after
+    // `MasterSeed` (which zeroizes itself) has consumed them (BRO-1468).
+    let seed_bytes = Zeroizing::new(std::fs::read(&seed_path).with_context(|| {
         format!(
             "{} claims in_process custody but the seed at {} is unreadable — restore it from \
              backup, or remove soul.json and re-run `life init` (this regenerates the DID)",
             soul_path.display(),
             seed_path.display()
         )
-    })?;
-    let seed_arr: [u8; 32] = seed_bytes.try_into().map_err(|v: Vec<u8>| {
-        anyhow::anyhow!(
+    })?);
+    if seed_bytes.len() != 32 {
+        bail!(
             "{} is corrupt: {} bytes (expected 32)",
             seed_path.display(),
-            v.len()
-        )
-    })?;
+            seed_bytes.len()
+        );
+    }
+    // Copy from the heap Vec into a fixed array (leaves `seed_bytes` intact so
+    // its own zeroize-on-drop still fires); both buffers are zeroized on drop.
+    let mut seed_arr = Zeroizing::new([0u8; 32]);
+    seed_arr.copy_from_slice(seed_bytes.as_slice());
 
-    let custody = InProcessAnima::from_seed_arc(MasterSeed::from_bytes(seed_arr))
+    let custody = InProcessAnima::from_seed_arc(MasterSeed::from_bytes(*seed_arr))
         .context("failed to derive identity from master seed")?;
 
     // Sanity: the soul document pins the auth pubkey + DID at init
@@ -346,5 +354,37 @@ mod tests {
 
         let err = load_err(&identity_dir);
         assert!(format!("{err:#}").contains("out of sync"), "got: {err:#}");
+    }
+
+    /// BRO-1468: the loader reads raw master-seed bytes off disk into
+    /// transient buffers before `MasterSeed` consumes them. Those buffers
+    /// are held in `Zeroizing`, so the seed is wiped on drop instead of
+    /// lingering on the heap/stack. This mirrors the loader's exact
+    /// construction (`Zeroizing<Vec<u8>>` from the file → copy into
+    /// `Zeroizing<[u8; 32]>`) and asserts the Drop path (`Zeroize::zeroize`,
+    /// which `Zeroizing::drop` calls) zeroes the fixed-array copy — the
+    /// buffer that is handed onward to `MasterSeed::from_bytes`.
+    #[test]
+    fn transient_seed_buffers_are_zeroized_on_drop() {
+        use zeroize::Zeroize;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let identity_dir = write_identity(tmp.path(), SEED);
+        let seed_path = identity_dir.join("seed.local.bin");
+
+        let seed_bytes = Zeroizing::new(std::fs::read(&seed_path).unwrap());
+        assert_eq!(seed_bytes.as_slice(), &SEED, "seed reads back intact");
+
+        let mut seed_arr = Zeroizing::new([0u8; 32]);
+        seed_arr.copy_from_slice(seed_bytes.as_slice());
+        assert_eq!(*seed_arr, SEED, "fixed-array copy intact before drop");
+
+        // `Zeroizing::drop` delegates to exactly this call; invoking it
+        // directly lets us observe the wipe without reading freed memory.
+        seed_arr.zeroize();
+        assert_eq!(
+            *seed_arr, [0u8; 32],
+            "transient array seed copy must be zeroized by the Drop path"
+        );
     }
 }
