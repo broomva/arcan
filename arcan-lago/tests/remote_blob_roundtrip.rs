@@ -7,12 +7,14 @@
 //!    `/v1/blobs/{hash}` routes arcan talks to in production, with a real
 //!    `reqwest` client over TCP.
 //! 2. **No nested-runtime panic** — the blob methods are invoked from *inside*
-//!    a multi-threaded Tokio runtime, on a runtime worker thread, exactly as
-//!    the agent's tool harness invokes the sync `Tool::execute` chain
-//!    (`ArcanHarnessAdapter::execute` calls it directly, with no
-//!    `spawn_blocking`). The naive `Runtime::block_on`-on-the-caller bridge
-//!    aborts here with "Cannot start a runtime from within a runtime"; the
-//!    dedicated-worker-thread bridge does not.
+//!    a multi-threaded Tokio runtime, on a runtime worker thread. This is the
+//!    worst case a `BlobBackend` must survive: a naive `Runtime::block_on`-on-
+//!    the-caller bridge aborts here with "Cannot start a runtime from within a
+//!    runtime"; the dedicated-worker-thread bridge does not. (As of BRO-1483
+//!    the tool harness runs sync `Tool::execute` on the blocking pool via
+//!    `spawn_blocking`, so the production call no longer lands on a worker
+//!    thread — but the bridge must not depend on that, and this test pins the
+//!    stronger guarantee that it works from an ambient runtime regardless.)
 
 use std::sync::Arc;
 

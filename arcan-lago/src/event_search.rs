@@ -362,6 +362,33 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    /// BRO-1483: an empty-args proposal (`{}`, no `query`) must surface a
+    /// structured error the harness turns into a `ToolCallFailed`, never a
+    /// panic — the validation short-circuits before the index build.
+    #[tokio::test]
+    async fn event_search_missing_query_is_structured_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = open_journal(dir.path());
+        let tool = EventSearchTool::new(journal, None);
+
+        let call = ToolCall {
+            call_id: "call-empty".into(),
+            tool_name: "knowledge_search".into(),
+            input: serde_json::json!({}),
+        };
+        let ctx = ToolContext {
+            run_id: "run-empty".into(),
+            session_id: "sess-empty".into(),
+            iteration: 1,
+        };
+
+        let result = tool.execute(&call, &ctx);
+        assert!(
+            matches!(result, Err(CoreError::ToolExecution { .. })),
+            "empty args must be a structured error, got {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn event_search_finds_cross_session_events() {
         let dir = tempfile::tempdir().unwrap();

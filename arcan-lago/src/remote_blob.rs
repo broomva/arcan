@@ -21,23 +21,27 @@
 //!
 //! [`lago_store::BlobBackend`] is synchronous (see its docs for why), but HTTP
 //! is async. The naive bridge — own a runtime and call `runtime.block_on()`
-//! inline — **panics in production**: the agent's tool harness
-//! (`arcan_aios_adapters::ArcanHarnessAdapter::execute`) invokes the sync
-//! `Tool::execute` *directly on a Tokio worker thread*, with no
-//! `spawn_blocking`. A blob `put` therefore runs inside an async runtime
-//! context, and `Runtime::block_on` from within a runtime aborts with
-//! "Cannot start a runtime from within a runtime".
+//! inline — is a nested-runtime abort waiting to happen: `block_on` from
+//! within an ambient runtime panics with "Cannot start a runtime from within
+//! a runtime", and under the release profile's `panic = "abort"` that takes
+//! the whole process down. Historically the agent's tool harness
+//! (`arcan_aios_adapters::ArcanHarnessAdapter::execute`) invoked the sync
+//! `Tool::execute` chain *directly on a Tokio worker thread*, so an inline
+//! `block_on` inside a blob `put` aborted in production. As of BRO-1483 the
+//! harness runs sync `Tool::execute` on the blocking pool (`spawn_blocking`),
+//! which defuses that specific path — but a bridge must not *rely* on its
+//! caller sitting on a blocking thread.
 //!
 //! [`RemoteBlobBackend`] instead spawns a **dedicated, long-lived OS thread**
 //! that owns the runtime + `reqwest::Client` and services requests off an
 //! `mpsc` channel. `block_on` runs only on that thread — which never carries
-//! an ambient runtime — so it is panic-free from any caller (a kernel worker
-//! executing the sync tool chain, a current-thread CLI runtime, or a plain
-//! test thread). Each trait call sends a request and parks the caller on a
-//! reply channel; parking a worker on a channel recv is the same tradeoff the
-//! local backend already makes blocking the worker on disk I/O — it stalls
-//! that worker but never nests a runtime. The worker thread + client are
-//! created lazily on first use.
+//! an ambient runtime — so it is panic-free from *any* caller regardless of
+//! the harness's threading: a kernel worker executing the sync tool chain, a
+//! current-thread CLI runtime, or a plain test thread. Each trait call sends a
+//! request and parks the caller on a reply channel; parking a worker on a
+//! channel recv is the same tradeoff the local backend already makes blocking
+//! the worker on disk I/O — it stalls that worker but never nests a runtime.
+//! The worker thread + client are created lazily on first use.
 
 use std::sync::OnceLock;
 use std::sync::mpsc;

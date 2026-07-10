@@ -90,11 +90,32 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
         let tool_span =
             life_vigil::spans::tool_span(&request.call.tool_name, &request.call.call_id);
         let tool_start = Instant::now();
-        let result = {
-            let _guard = tool_span.enter();
-            tool.execute(&arcan_call, &context)
-                .map_err(|error| KernelError::Runtime(error.to_string()))?
-        };
+
+        // `Tool::execute` is a *synchronous* interface that may block: file I/O,
+        // BM25 indexing, or (for cross-session tools like `knowledge_search`) an
+        // inner `tokio::runtime::Handle::block_on`. Running it directly on the
+        // async worker thread makes any such nested `block_on` panic with
+        // "Cannot block the current thread from within a runtime"; under the
+        // release profile's `panic = "abort"` that aborts the whole arcand
+        // process — BRO-1483, where one anonymous `knowledge_search` call took
+        // down the runtime (chat 502 until restart). Execute on the blocking
+        // pool instead, where blocking and nested `block_on` are legal, so a
+        // tool fault stays a structured error the kernel records as
+        // `ToolCallFailed` rather than a process crash.
+        let exec_call = arcan_call.clone();
+        let exec_context = context;
+        let exec_span = tool_span.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            exec_span.in_scope(|| tool.execute(&exec_call, &exec_context))
+        })
+        .await
+        .map_err(|join_error| {
+            KernelError::Runtime(format!(
+                "tool '{}' execution task failed: {join_error}",
+                arcan_call.tool_name
+            ))
+        })?
+        .map_err(|error| KernelError::Runtime(error.to_string()))?;
         let tool_duration = tool_start.elapsed();
         let exit_status = if result.is_error { 1 } else { 0 };
         let status_str;
@@ -141,5 +162,80 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             duration_ms: tool_duration.as_millis() as u64,
             outcome,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aios_protocol::SessionId;
+    use arcan_core::error::CoreError;
+    use arcan_core::protocol::{ToolDefinition, ToolResult};
+    use arcan_core::runtime::Tool;
+
+    /// Sync tool that drives an async op via `Handle::block_on` inside its
+    /// synchronous `execute` — exactly the `knowledge_search` shape that
+    /// crashed arcand in BRO-1483. On an async worker thread this panics;
+    /// on the blocking pool it succeeds.
+    struct BlockOnTool;
+
+    impl Tool for BlockOnTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "block_on_tool".to_string(),
+                description: "test tool that block_on's an async op in sync execute".to_string(),
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                title: None,
+                output_schema: None,
+                annotations: None,
+                category: None,
+                tags: vec![],
+                timeout_secs: None,
+            }
+        }
+
+        fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+            let handle = tokio::runtime::Handle::current();
+            let value = handle.block_on(async { 42u64 });
+            Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                output: serde_json::json!({ "value": value }),
+                content: None,
+                is_error: false,
+                state_patch: None,
+            })
+        }
+    }
+
+    /// Regression for BRO-1483: a synchronous tool that nests `block_on` must
+    /// not panic (and abort the process under `panic = "abort"`) when executed
+    /// through the harness on an async runtime. Running on the blocking pool
+    /// keeps the nested `block_on` legal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_tool_does_not_panic_the_worker() {
+        let mut registry = ToolRegistry::default();
+        registry.register(BlockOnTool);
+        let adapter = ArcanHarnessAdapter::new(registry);
+
+        let request = ToolExecutionRequest {
+            session_id: SessionId::from_string("sess-bro-1483"),
+            workspace_root: "/tmp".to_string(),
+            call: aios_protocol::ToolCall::new("block_on_tool", serde_json::json!({}), vec![]),
+        };
+
+        let report = adapter
+            .execute(request)
+            .await
+            .expect("harness execute should return a report, not panic");
+
+        assert_eq!(report.tool_name, "block_on_tool");
+        assert_eq!(report.exit_status, 0);
+        match report.outcome {
+            ToolOutcome::Success { output } => {
+                assert_eq!(output.get("value").and_then(|v| v.as_u64()), Some(42));
+            }
+            other => panic!("expected success outcome, got {other:?}"),
+        }
     }
 }
