@@ -345,10 +345,27 @@ impl AgentSubstrate for SubstrateService {
             let branch_for_pump = branch.clone();
             let tx_pump = tx.clone();
             let terminal_for_pump = Arc::clone(&terminal_sent);
+            // BRO-1322: consume-side stream-lag metrics for the substrate bus.
+            // Shared bundle from the runtime so drains/lags land under the same
+            // `arcan.substrate` channel label the send side publishes under.
+            let pump_metrics = runtime.stream_metrics().clone();
             let pump_handle = tokio::spawn(async move {
                 loop {
                     match events_rx.recv().await {
                         Ok(record) => {
+                            // Count every drain (pre-filter): this is what the
+                            // dispatch pump pulled off the channel, regardless
+                            // of whether it belongs to this session/branch.
+                            let event_type = record.kind.variant_name();
+                            pump_metrics.on_consumed("substrate-dispatch", Some(event_type));
+                            let latency_ms =
+                                (chrono::Utc::now() - record.timestamp).num_milliseconds();
+                            if latency_ms >= 0 {
+                                pump_metrics.record_delta_latency(
+                                    Some(event_type),
+                                    latency_ms as f64 / 1000.0,
+                                );
+                            }
                             if record.session_id != session_for_pump
                                 || record.branch_id != branch_for_pump
                             {
@@ -374,6 +391,11 @@ impl AgentSubstrate for SubstrateService {
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            // BRO-1322: the silent-degradation surface made
+                            // visible — a backed-up dispatch pump now increments
+                            // lagged_total + skipped_messages_total instead of
+                            // only logging.
+                            pump_metrics.on_lagged("substrate-dispatch", skipped);
                             tracing::warn!(
                                 sid = %session_for_pump,
                                 skipped,
