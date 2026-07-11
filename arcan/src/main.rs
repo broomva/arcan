@@ -127,6 +127,15 @@ struct Cli {
     #[arg(long, global = true, env = "ARCAN_AGENTS_DIR", value_name = "DIR")]
     agents_dir: Option<PathBuf>,
 
+    /// Directory holding the blessed runtime skill set (`<dir>/<name>/SKILL.md`).
+    /// When set, this directory is scanned FIRST, ahead of the config defaults
+    /// (`.arcan/skills`, `.agents/skills`, `~/.agents/skills`). Container images
+    /// ship a curated blessed set here (see `runtime-skills/README.md`) so skill
+    /// discovery does not depend on the process CWD/HOME — the fragility that
+    /// left `skills_found=0` in prod. BRO-1469.
+    #[arg(long, global = true, env = "ARCAN_SKILLS_DIR", value_name = "DIR")]
+    skills_dir: Option<PathBuf>,
+
     /// Directory holding the `life init` anima identity (`soul.json` +
     /// `seed.local.bin`). When the identity loads, `arcan serve` signs
     /// ergon workflow session boundaries through the custody-backed
@@ -661,6 +670,7 @@ fn run_serve(
     console_dir: Option<PathBuf>,
     prosopon_port: Option<std::net::SocketAddr>,
     agents_dir: Option<PathBuf>,
+    blessed_skills_dir: Option<PathBuf>,
     uds_socket: Option<PathBuf>,
     workspace: Option<PathBuf>,
     tokio_runtime: &tokio::runtime::Runtime,
@@ -862,11 +872,11 @@ fn run_serve(
             Err(e) => tracing::debug!(error = %e, "skill auto-sync skipped"),
         }
 
-        match skills::discover_skills(
-            &resolved.skill_dirs,
-            data_dir,
-            resolved.skills_write_registry,
-        ) {
+        // Blessed runtime skills (`--skills-dir` / `ARCAN_SKILLS_DIR`) are
+        // scanned first, ahead of the config defaults. BRO-1469.
+        let discovery_dirs =
+            skills::effective_skill_dirs(&resolved.skill_dirs, blessed_skills_dir.as_deref());
+        match skills::discover_skills(&discovery_dirs, data_dir, resolved.skills_write_registry) {
             Ok(skill_registry) => {
                 if skill_registry.count() > 0 {
                     tracing::info!(
@@ -1690,8 +1700,12 @@ fn run_logout(provider: &str, data_dir: &Path) -> anyhow::Result<()> {
 fn run_skills(
     data_dir: &Path,
     resolved: &config::ResolvedConfig,
+    skills_dir: Option<&Path>,
     action: &SkillsAction,
 ) -> anyhow::Result<()> {
+    // Blessed runtime skills (`--skills-dir` / `ARCAN_SKILLS_DIR`) scan first,
+    // matching the `serve` discovery path. BRO-1469.
+    let discovery_dirs = skills::effective_skill_dirs(&resolved.skill_dirs, skills_dir);
     match action {
         SkillsAction::List { refresh } => {
             let refresh = *refresh;
@@ -1703,11 +1717,8 @@ fn run_skills(
             }
 
             // Full discovery
-            let registry = skills::discover_skills(
-                &resolved.skill_dirs,
-                data_dir,
-                resolved.skills_write_registry,
-            )?;
+            let registry =
+                skills::discover_skills(&discovery_dirs, data_dir, resolved.skills_write_registry)?;
             skills::print_skills_list(&registry);
         }
         SkillsAction::Sync => {
@@ -1715,11 +1726,8 @@ fn run_skills(
             let synced = skills::sync_skills_to_arcan(data_dir)?;
 
             // Re-discover after sync
-            let registry = skills::discover_skills(
-                &resolved.skill_dirs,
-                data_dir,
-                resolved.skills_write_registry,
-            )?;
+            let registry =
+                skills::discover_skills(&discovery_dirs, data_dir, resolved.skills_write_registry)?;
 
             println!();
             println!(
@@ -1730,7 +1738,7 @@ fn run_skills(
         }
         SkillsAction::Dirs => {
             println!("Skill discovery directories:");
-            for dir in &resolved.skill_dirs {
+            for dir in &discovery_dirs {
                 let exists = dir.exists();
                 let count = if exists {
                     // Count SKILL.md files
@@ -1813,6 +1821,7 @@ fn main() -> anyhow::Result<()> {
                 cli.console_dir,
                 cli.prosopon_port,
                 cli.agents_dir,
+                cli.skills_dir,
                 cli.uds_socket,
                 cli.workspace,
                 &tokio_runtime,
@@ -1926,7 +1935,7 @@ fn main() -> anyhow::Result<()> {
                 cli.default_tier.as_deref(),
                 cli.anima_identity_dir.as_deref(),
             );
-            run_skills(&data_dir, &resolved, &action)
+            run_skills(&data_dir, &resolved, cli.skills_dir.as_deref(), &action)
         }
         Some(Command::Agent { action }) => {
             // Agent CLI handlers are mostly filesystem-only — no

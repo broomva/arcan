@@ -39,6 +39,29 @@ pub struct SkillRegistryCache {
     pub skills: BTreeMap<String, RegistryEntry>,
 }
 
+/// Compute the effective skill-discovery directories.
+///
+/// When an explicit blessed-skills directory is supplied (via `--skills-dir` /
+/// `ARCAN_SKILLS_DIR`), it is scanned **first**, ahead of the configured
+/// defaults (`.arcan/skills`, `.agents/skills`, `~/.agents/skills`). Container
+/// images ship a curated blessed set there (see `runtime-skills/README.md`), so
+/// discovery no longer depends on the process CWD/HOME — the fragility that
+/// produced `skills_found=0` in prod (`~` resolved to `/root` under `runuser`).
+/// BRO-1469.
+pub fn effective_skill_dirs(base: &[PathBuf], blessed: Option<&Path>) -> Vec<PathBuf> {
+    match blessed {
+        Some(dir) => {
+            let mut dirs = Vec::with_capacity(base.len() + 1);
+            dirs.push(dir.to_path_buf());
+            // Skip an exact duplicate of the blessed dir among the defaults so
+            // the same skill isn't discovered twice (last-writer-wins on name).
+            dirs.extend(base.iter().filter(|d| d.as_path() != dir).cloned());
+            dirs
+        }
+        None => base.to_vec(),
+    }
+}
+
 /// Discover skills from the configured directories and optionally write a registry cache.
 ///
 /// Returns the `SkillRegistry` for runtime use.
@@ -518,6 +541,127 @@ mod tests {
 
         let prompt = build_system_prompt(&registry);
         assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn effective_skill_dirs_prepends_blessed() {
+        let base = vec![
+            PathBuf::from(".arcan/skills"),
+            PathBuf::from(".agents/skills"),
+        ];
+        let blessed = PathBuf::from("/opt/life/skills");
+        let dirs = effective_skill_dirs(&base, Some(&blessed));
+        assert_eq!(dirs[0], blessed, "blessed dir must be scanned first");
+        assert_eq!(dirs.len(), 3);
+        assert!(dirs.contains(&PathBuf::from(".agents/skills")));
+    }
+
+    #[test]
+    fn effective_skill_dirs_none_is_identity() {
+        let base = vec![PathBuf::from(".arcan/skills")];
+        assert_eq!(effective_skill_dirs(&base, None), base);
+    }
+
+    #[test]
+    fn effective_skill_dirs_dedupes_blessed_from_defaults() {
+        let base = vec![
+            PathBuf::from("/opt/life/skills"),
+            PathBuf::from(".agents/skills"),
+        ];
+        let blessed = PathBuf::from("/opt/life/skills");
+        let dirs = effective_skill_dirs(&base, Some(&blessed));
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/opt/life/skills"),
+                PathBuf::from(".agents/skills"),
+            ],
+            "blessed dir must appear exactly once"
+        );
+    }
+
+    /// The blessed runtime tool palette (BRO-1469, operator sign-off): shell,
+    /// read/write, and search. Every blessed skill's `allowed_tools` MUST be a
+    /// subset of this. Skills and custom tooling compose on top; the tier gate
+    /// (`arcand/src/canonical.rs`) then bounds who may actually use each tool.
+    const BLESSED_TOOL_PALETTE: &[&str] = &[
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "grep",
+        "glob",
+        "list_dir",
+    ];
+
+    /// Safety invariant (BRO-1469): every skill in the in-repo blessed runtime
+    /// set (`runtime-skills/`) must be discoverable AND declare an
+    /// `allowed_tools` list that is a subset of `BLESSED_TOOL_PALETTE`. A tool
+    /// outside the palette (network egress, secrets, an unreviewed MCP server,
+    /// …) is a deliberate capability expansion and must NOT slip into the
+    /// blessed set silently. If this test fails, either a blessed skill declared
+    /// an off-palette tool (audit it), the palette changed (re-sign-off), or the
+    /// set size changed (update `EXPECTED` and `runtime-skills/README.md`).
+    #[test]
+    fn blessed_runtime_skills_are_discoverable_and_within_palette() {
+        // crates/arcan/arcan → repo root is three levels up.
+        let runtime_skills = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../runtime-skills")
+            .canonicalize()
+            .expect("runtime-skills/ must exist at the repo root");
+
+        let registry = SkillRegistry::discover(&[runtime_skills]).unwrap();
+
+        const EXPECTED: &[&str] = &[
+            "brainstorm",
+            "explain",
+            "getting-started",
+            "summarize",
+            "workspace",
+        ];
+        assert_eq!(
+            registry.count(),
+            EXPECTED.len(),
+            "blessed runtime skill count changed — update EXPECTED and runtime-skills/README.md"
+        );
+
+        let palette: std::collections::HashSet<&str> =
+            BLESSED_TOOL_PALETTE.iter().copied().collect();
+
+        for name in EXPECTED {
+            let skill = registry
+                .activate(name)
+                .unwrap_or_else(|| panic!("blessed skill `{name}` not discovered"));
+            // Every blessed skill declares its tools explicitly (never `None` /
+            // "unknown"), and every declared tool is within the palette.
+            let tools = skill.meta.allowed_tools.as_ref().unwrap_or_else(|| {
+                panic!("blessed skill `{name}` must declare an explicit `allowed_tools` list")
+            });
+            for tool in tools {
+                assert!(
+                    palette.contains(tool.as_str()),
+                    "blessed skill `{name}` declares off-palette tool `{tool}` — \
+                     extend BLESSED_TOOL_PALETTE (with operator sign-off) or remove it"
+                );
+            }
+            assert_eq!(
+                skill.meta.user_invocable,
+                Some(true),
+                "blessed skill `{name}` should be user-invocable"
+            );
+        }
+
+        // The palette must be *realized*: at least one blessed skill exercises
+        // the shell + write tools, else "bash, read/write" is blessed in name
+        // only. The `workspace` flagship carries the full palette.
+        let workspace = registry.activate("workspace").expect("workspace skill");
+        let ws_tools = workspace.meta.allowed_tools.clone().unwrap_or_default();
+        for required in ["bash", "write_file", "read_file"] {
+            assert!(
+                ws_tools.iter().any(|t| t == required),
+                "workspace skill must exercise `{required}` (blessed palette realization)"
+            );
+        }
     }
 
     #[test]
