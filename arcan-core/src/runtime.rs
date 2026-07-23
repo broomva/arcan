@@ -1230,6 +1230,121 @@ mod tests {
     }
 
     #[test]
+    fn summarization_middleware_compresses_provider_request() {
+        use crate::summarization::{
+            COMPRESSED_SUMMARY_HEADER, SummarizationConfig, SummarizationMiddleware,
+        };
+
+        // A provider that records the messages of the call it receives.
+        struct RecordingProvider {
+            seen: Mutex<Vec<ChatMessage>>,
+        }
+        impl Provider for RecordingProvider {
+            fn name(&self) -> &str {
+                "recording"
+            }
+            fn complete(&self, request: &ProviderRequest) -> Result<ModelTurn, CoreError> {
+                *self.seen.lock().unwrap() = request.messages.clone();
+                Ok(ModelTurn {
+                    directives: vec![ModelDirective::FinalAnswer {
+                        text: "done".to_string(),
+                    }],
+                    stop_reason: ModelStopReason::EndTurn,
+                    usage: None,
+                    telemetry: None,
+                })
+            }
+        }
+
+        let provider = Arc::new(RecordingProvider {
+            seen: Mutex::new(Vec::new()),
+        });
+
+        // Build a long history that exceeds the token threshold.
+        let mut messages = vec![ChatMessage::system("You are an agent.")];
+        messages.push(ChatMessage::user(
+            "IMPORTANT: the API key env var is ACME_TOKEN.",
+        ));
+        messages.push(ChatMessage::assistant("Understood, will use ACME_TOKEN."));
+        for i in 0..30 {
+            messages.push(ChatMessage::user(format!("step {i} {}", "y".repeat(400))));
+            messages.push(ChatMessage::assistant(format!(
+                "log {i} {}",
+                "z".repeat(400)
+            )));
+        }
+        messages.push(ChatMessage::user("What env var holds the API key?"));
+        let input_len = messages.len();
+
+        let middleware = Arc::new(SummarizationMiddleware::new(SummarizationConfig {
+            token_threshold: 5_000,
+            recent_turns: 4,
+            result_char_threshold: 300,
+        }));
+
+        let orchestrator = Orchestrator::with_turn_middlewares(
+            provider.clone(),
+            ToolRegistry::default(),
+            vec![middleware],
+            OrchestratorConfig {
+                max_iterations: 2,
+                // Disable message-drop compaction so the summarization
+                // middleware is the only compressor under test.
+                context: None,
+                context_compiler: None,
+            },
+        );
+
+        let output = orchestrator.run(
+            RunInput {
+                run_id: "run-1".to_string(),
+                session_id: "s1".to_string(),
+                branch_id: "main".to_string(),
+                messages,
+                state: AppState::default(),
+            },
+            |_| {},
+        );
+
+        assert_eq!(output.reason, RunStopReason::Completed);
+
+        let seen = provider.seen.lock().unwrap().clone();
+        // The provider saw a compressed list...
+        assert!(
+            seen.len() < input_len,
+            "provider should have received a compressed message list ({} !< {input_len})",
+            seen.len()
+        );
+        // ...containing the summary marker...
+        assert!(
+            seen.iter()
+                .any(|m| m.content.contains(COMPRESSED_SUMMARY_HEADER)),
+            "compressed request must carry a summary block"
+        );
+        // ...the current request verbatim...
+        assert!(
+            seen.iter()
+                .any(|m| m.content == "What env var holds the API key?"),
+            "current request must survive compression"
+        );
+        // ...and the key early decision (in the summary).
+        let joined: String = seen.iter().map(|m| m.content.clone()).collect();
+        assert!(
+            joined.contains("ACME_TOKEN"),
+            "early decision must survive in the summary"
+        );
+
+        // The orchestrator's durable output history is NOT compressed — full
+        // fidelity is preserved upstream of the per-call request.
+        assert!(
+            output.messages.len() > seen.len(),
+            "durable history stays uncompressed ({} > {})",
+            output.messages.len(),
+            seen.len()
+        );
+    }
+
+    #[test]
     fn budget_exceeded_when_iterations_exhausted() {
         // Provider always returns ToolUse but no tool call directives → continues loop
         // Actually, we need it to keep looping. Use a tool that works, but provider

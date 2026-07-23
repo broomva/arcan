@@ -10,6 +10,7 @@ pub mod protocol_bridge;
 pub mod queue;
 pub mod runtime;
 pub mod state;
+pub mod summarization;
 
 pub use context::{CompactionResult, ContextConfig, compact_messages, estimate_tokens};
 pub use context_compiler::{
@@ -21,3 +22,7 @@ pub use lifecycle::LifecycleHook;
 pub use protocol::*;
 pub use runtime::*;
 pub use state::{AppState, StateError};
+pub use summarization::{
+    COMPRESSED_SUMMARY_HEADER, CompressionOutcome, HeuristicSummarizer, SummarizationConfig,
+    SummarizationMiddleware, Summarizer, compressed_block,
+};

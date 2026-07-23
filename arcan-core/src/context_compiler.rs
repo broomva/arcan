@@ -6,21 +6,35 @@ pub enum ContextBlockKind {
     Persona,
     Rules,
     Memory,
+    /// Compressed summary of earlier-in-session conversation turns (BRO-425).
+    ///
+    /// Produced by [`crate::summarization::SummarizationMiddleware`] when a
+    /// long session's context exceeds the token threshold: older turns are
+    /// summarized to "summary + key decisions" while the most recent N turns
+    /// stay at full fidelity. The full history is never lost — it remains in
+    /// Lago's event journal; only the in-context copy is compressed.
+    Compressed,
     Retrieval,
     Workspace,
     Task,
 }
 
 impl ContextBlockKind {
-    /// Fixed assembly order index: Persona=0, Rules=1, Memory=2, Retrieval=3, Workspace=4, Task=5
+    /// Fixed assembly order index:
+    /// Persona=0, Rules=1, Memory=2, Compressed=3, Retrieval=4, Workspace=5, Task=6.
+    ///
+    /// Compressed session history sits just after long-term Memory and before
+    /// Retrieval — grouping the "what happened before" context ahead of the
+    /// task-specific blocks.
     fn order(self) -> u8 {
         match self {
             Self::Persona => 0,
             Self::Rules => 1,
             Self::Memory => 2,
-            Self::Retrieval => 3,
-            Self::Workspace => 4,
-            Self::Task => 5,
+            Self::Compressed => 3,
+            Self::Retrieval => 4,
+            Self::Workspace => 5,
+            Self::Task => 6,
         }
     }
 }
@@ -53,6 +67,7 @@ impl Default for ContextCompilerConfig {
                 (ContextBlockKind::Persona, 2_000),
                 (ContextBlockKind::Rules, 5_000),
                 (ContextBlockKind::Memory, 8_000),
+                (ContextBlockKind::Compressed, 6_000),
                 (ContextBlockKind::Retrieval, 6_000),
                 (ContextBlockKind::Workspace, 5_000),
                 (ContextBlockKind::Task, 4_000),
@@ -338,7 +353,43 @@ mod tests {
     fn default_config_reasonable() {
         let config = ContextCompilerConfig::default();
         assert_eq!(config.total_budget, 30_000);
-        assert_eq!(config.block_budgets.len(), 6);
+        assert_eq!(config.block_budgets.len(), 7);
+    }
+
+    #[test]
+    fn compressed_block_assembles_after_memory_before_retrieval() {
+        let blocks = vec![
+            make_block(ContextBlockKind::Task, "current task", 50),
+            make_block(ContextBlockKind::Persona, "I am an AI", 255),
+            make_block(ContextBlockKind::Retrieval, "retrieved docs", 90),
+            make_block(
+                ContextBlockKind::Compressed,
+                "summary of earlier turns",
+                120,
+            ),
+            make_block(ContextBlockKind::Memory, "long-term memory", 100),
+        ];
+        let config = ContextCompilerConfig {
+            total_budget: 100_000,
+            block_budgets: Vec::new(),
+        };
+        let result = compile_context(&blocks, &config);
+        assert_eq!(result.system_messages.len(), 5);
+        // Persona, Memory, Compressed, Retrieval, Task
+        assert!(result.system_messages[0].content.contains("I am an AI"));
+        assert!(
+            result.system_messages[1]
+                .content
+                .contains("long-term memory")
+        );
+        assert!(
+            result.system_messages[2]
+                .content
+                .contains("summary of earlier turns")
+        );
+        assert!(result.system_messages[3].content.contains("retrieved docs"));
+        assert!(result.system_messages[4].content.contains("current task"));
+        assert!(result.dropped_blocks.is_empty());
     }
 
     #[test]
