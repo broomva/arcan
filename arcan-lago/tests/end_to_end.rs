@@ -297,6 +297,7 @@ async fn policy_middleware_with_default_rules() {
         run_id: "r1".into(),
         session_id: "s1".into(),
         iteration: 1,
+        ..Default::default()
     };
 
     // Shell should be denied

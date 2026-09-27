@@ -57,6 +57,11 @@ pub struct ReconcilingTool<T> {
     tx: mpsc::Sender<EventPayload>,
     workspace_root: PathBuf,
     limits: SnapshotLimits,
+    /// Parent of the per-session workspaces (`{data_dir}`). When set and a call
+    /// carries a per-session workspace root, exec-path reconciliation walks the
+    /// session workspace with session-unique manifest keys instead of the boot
+    /// workspace (BRO-1491). `None` ⇒ always reconcile the boot workspace.
+    session_base: Option<PathBuf>,
 }
 
 impl<T> ReconcilingTool<T> {
@@ -74,6 +79,7 @@ impl<T> ReconcilingTool<T> {
             tx,
             workspace_root,
             limits: SnapshotLimits::default(),
+            session_base: None,
         }
     }
 
@@ -83,14 +89,69 @@ impl<T> ReconcilingTool<T> {
         self
     }
 
+    /// Declare the parent of the per-session workspaces (`{data_dir}`) so
+    /// exec-path reconciliation can scope to a session with session-unique
+    /// manifest keys (`/sessions/<id>/…`) when a call carries a per-session
+    /// workspace root (BRO-1491).
+    pub fn with_session_base(mut self, base: impl Into<PathBuf>) -> Self {
+        self.session_base = Some(base.into());
+        self
+    }
+
+    /// Resolve the per-session reconcile target for a call, when applicable:
+    /// `(walk_root, key_prefix)`. Returns `None` when the call is not scoped to
+    /// a session (fall back to the boot workspace).
+    ///
+    /// `Some` with a session root but an unresolvable prefix is deliberately
+    /// distinguished from an unscoped call by [`Self::reconcile_and_emit`]: the
+    /// former SKIPS reconciliation (walking the boot workspace would be wrong,
+    /// and a session-relative walk against the shared manifest without a unique
+    /// prefix would corrupt other sessions), the latter reconciles the boot
+    /// workspace as before.
+    fn session_scope(&self, ctx: &ToolContext) -> SessionScope {
+        let Some(root) = ctx.workspace_root.as_deref().filter(|r| !r.is_empty()) else {
+            return SessionScope::Unscoped;
+        };
+        let walk_root = PathBuf::from(root);
+        let Some(base) = self.session_base.as_ref() else {
+            return SessionScope::Unresolvable;
+        };
+        match (base.canonicalize(), walk_root.canonicalize()) {
+            (Ok(base), Ok(abs)) => match abs.strip_prefix(&base) {
+                Ok(rel) => SessionScope::Scoped {
+                    walk_root,
+                    key_prefix: format!("/{}", rel.display()),
+                },
+                Err(_) => SessionScope::Unresolvable,
+            },
+            _ => SessionScope::Unresolvable,
+        }
+    }
+
     /// Reconcile the workspace and emit the resulting payloads. Best-effort:
     /// every failure path is logged and swallowed so the caller's tool result
     /// is never affected.
-    fn reconcile_and_emit(&self) {
-        match self
-            .tracker
-            .reconcile_bounded(&self.workspace_root, self.limits)
-        {
+    fn reconcile_and_emit(&self, ctx: &ToolContext) {
+        let result = match self.session_scope(ctx) {
+            SessionScope::Scoped {
+                walk_root,
+                key_prefix,
+            } => self
+                .tracker
+                .reconcile_bounded_scoped(&walk_root, &key_prefix, self.limits),
+            SessionScope::Unscoped => self
+                .tracker
+                .reconcile_bounded(&self.workspace_root, self.limits),
+            SessionScope::Unresolvable => {
+                tracing::warn!(
+                    "ReconcilingTool: per-session workspace root present but no session base \
+                     configured (or not under it); exec-path reconciliation skipped to avoid \
+                     corrupting the shared manifest"
+                );
+                return;
+            }
+        };
+        match result {
             Ok(payloads) => {
                 for payload in payloads {
                     // Non-blocking, mirroring LagoTrackedFs::write: a full or
@@ -113,6 +174,19 @@ impl<T> ReconcilingTool<T> {
     }
 }
 
+/// How a call maps to a reconcile target (BRO-1491).
+enum SessionScope {
+    /// Reconcile the boot workspace (no per-session root on the call).
+    Unscoped,
+    /// Reconcile the session workspace with session-unique keys.
+    Scoped {
+        walk_root: PathBuf,
+        key_prefix: String,
+    },
+    /// A per-session root is present but its prefix can't be derived — skip.
+    Unresolvable,
+}
+
 impl<T: Tool> Tool for ReconcilingTool<T> {
     fn definition(&self) -> ToolDefinition {
         self.inner.definition()
@@ -131,7 +205,7 @@ impl<T: Tool> Tool for ReconcilingTool<T> {
         // reconciliation for a hypothetical inner tool that sets `is_error` to
         // signal an aborted exec; a hard `Err` already returned above.
         if !result.is_error {
-            self.reconcile_and_emit();
+            self.reconcile_and_emit(ctx);
         }
 
         Ok(result)
@@ -400,6 +474,56 @@ mod tests {
         assert!(!result.is_error);
         // The manifest is still updated (reconcile ran; only the emit failed).
         assert!(tracker.manifest().exists("/ok.txt"));
+    }
+
+    #[test]
+    fn scoped_exec_reconcile_uses_session_unique_keys() {
+        // BRO-1491: a shell command in a per-session workspace reconciles under
+        // a session-unique key prefix, leaving other sessions/baseline intact.
+        let (tmp, _ws, tracker, tx, mut rx) = setup();
+        let data_dir = tmp.path().join("data");
+        // Another session + a baseline entry already in the shared manifest.
+        tracker
+            .track_write("/sessions/b/keep.txt", b"b", None)
+            .unwrap();
+
+        let sess_a = data_dir.join("sessions/a");
+        std::fs::create_dir_all(&sess_a).unwrap();
+
+        let effect_root = sess_a.clone();
+        let inner = SideEffectTool {
+            effect: Box::new(move |_| {
+                std::fs::write(effect_root.join("out.txt"), b"a-content").unwrap();
+            }),
+            is_error: false,
+            workspace_root: sess_a.clone(),
+        };
+        let tool = ReconcilingTool::new(inner, tracker.clone(), tx, tmp.path().to_path_buf())
+            .with_session_base(data_dir.clone());
+
+        // Call carries the per-session workspace root.
+        let ctx = ToolContext {
+            run_id: "r".into(),
+            session_id: "a".into(),
+            iteration: 0,
+            workspace_root: Some(sess_a.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        tool.execute(&call(), &ctx).unwrap();
+
+        // Session-unique manifest key + event; session B untouched.
+        assert!(tracker.manifest().exists("/sessions/a/out.txt"));
+        assert!(tracker.manifest().exists("/sessions/b/keep.txt"));
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|p| matches!(
+            p,
+            EventPayload::FileWrite { path, .. } if path == "/sessions/a/out.txt"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|p| matches!(p, EventPayload::FileDelete { .. }))
+        );
     }
 
     #[test]

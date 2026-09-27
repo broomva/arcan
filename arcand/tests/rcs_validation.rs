@@ -98,7 +98,12 @@ fn build_runtime(root: PathBuf) -> Arc<KernelRuntime> {
 
     let registry = Arc::new(ToolRegistry::with_core_tools());
     let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
-    let dispatcher = Arc::new(ToolDispatcher::new(registry, policy_engine, sandbox));
+    let dispatcher = Arc::new(ToolDispatcher::new(
+        registry,
+        policy_engine,
+        sandbox,
+        root.join("sessions"),
+    ));
     let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
 
     Arc::new(KernelRuntime::new(

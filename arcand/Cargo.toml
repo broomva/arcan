@@ -14,6 +14,7 @@ description = "Canonical session API router for the Arcan daemon"
 workspace = true
 
 [dependencies]
+anyhow.workspace = true
 arcan-core = { path = "../arcan-core", version = "0.3.0" }
 autonomic-core = { workspace = true }
 autonomic-controller = { workspace = true }

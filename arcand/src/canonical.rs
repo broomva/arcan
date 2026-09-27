@@ -1100,6 +1100,7 @@ async fn persist_last_session_hint(runtime: &KernelRuntime, session_id: &Session
     request_body = CreateSessionRequest,
     responses(
         (status = 200, description = "Session created", body = SessionManifestSchema),
+        (status = 400, description = "Session id is not a single path-safe component", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
@@ -1126,7 +1127,7 @@ async fn create_session(
             .runtime
             .create_session_with_id(SessionId::from_string(session_id), owner, policy, routing)
             .await
-            .map_err(internal_error)?
+            .map_err(session_create_error)?
     } else {
         state
             .runtime
@@ -1249,6 +1250,7 @@ async fn upgrade_session_identity(
     request_body = RunRequest,
     responses(
         (status = 200, description = "Run completed", body = RunResponse),
+        (status = 400, description = "Session id is not a single path-safe component", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
@@ -1273,7 +1275,7 @@ async fn run_session(
                 ModelRouting::default(),
             )
             .await
-            .map_err(internal_error)?;
+            .map_err(session_create_error)?;
     }
 
     let capabilities: Vec<aios_protocol::Capability> = request
@@ -3201,6 +3203,28 @@ fn bad_request(error: impl std::fmt::Display) -> (StatusCode, Json<serde_json::V
         Json(json!({ "error": error.to_string() })),
     )
 }
+
+/// Map a session-creation failure to a response (BRO-1491).
+///
+/// A session id that fails the grammar is the caller's error: 400, with the
+/// reason. A failed containment or resolve check means the server's own
+/// `sessions/` tree is not what it should be (a planted symlink, an I/O
+/// fault): 500, with a generic body, because the detail names absolute server
+/// paths. The detail goes to the log instead.
+fn session_create_error(error: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+    match error.downcast_ref::<aios_protocol::session_path::SessionPathError>() {
+        Some(path_error) if path_error.is_invalid_id() => bad_request(error),
+        Some(_) => {
+            tracing::error!(error = %error, "session workspace failed its containment or resolve check");
+            internal_error(SESSION_WORKSPACE_UNAVAILABLE)
+        }
+        None => internal_error(error),
+    }
+}
+
+/// Generic body for a session workspace that failed containment or could not
+/// be resolved; the detail names server paths and stays in the log.
+pub const SESSION_WORKSPACE_UNAVAILABLE: &str = "session workspace could not be created";
 
 // ─── Skill catalog helpers ────────────────────────────────────────────────────
 

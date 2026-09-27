@@ -2130,6 +2130,9 @@ fn run_agent_loop(
             run_id: run_id.clone(),
             session_id: session_id.to_string(),
             iteration,
+            // Standalone shell REPL is single-workspace (not a per-session
+            // kernel dispatch); tools use their construction-time workspace.
+            ..Default::default()
         };
 
         // result_blocks[i] corresponds to tool_calls[i]. Pre-fill with None;
@@ -2651,6 +2654,7 @@ mod tests {
             run_id: "shell-e2e".into(),
             session_id: "shell-e2e".into(),
             iteration: 0,
+            ..Default::default()
         };
 
         let (content, is_error) = execute_tool(&registry, &call, &ctx);

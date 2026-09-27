@@ -380,6 +380,7 @@ mod tests {
             run_id: "run-empty".into(),
             session_id: "sess-empty".into(),
             iteration: 1,
+            workspace_root: None,
         };
 
         let result = tool.execute(&call, &ctx);

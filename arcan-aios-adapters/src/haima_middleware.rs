@@ -929,6 +929,7 @@ mod tests {
             run_id: "run-1".into(),
             session_id: "session-1".into(),
             iteration: 1,
+            ..Default::default()
         }
     }
 

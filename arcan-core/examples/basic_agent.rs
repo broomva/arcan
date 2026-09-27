@@ -144,6 +144,7 @@ fn main() {
                     run_id: "example-run".to_string(),
                     session_id: "example-session".to_string(),
                     iteration: 0,
+                    workspace_root: None,
                 };
                 let result = registry
                     .get(&call.tool_name)

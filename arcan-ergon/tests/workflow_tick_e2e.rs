@@ -119,7 +119,12 @@ fn build_runtime_with_dispatcher(root: PathBuf) -> Arc<KernelRuntime> {
 
     let tool_registry = Arc::new(ToolRegistry::with_core_tools());
     let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
-    let dispatcher = Arc::new(ToolDispatcher::new(tool_registry, policy_engine, sandbox));
+    let dispatcher = Arc::new(ToolDispatcher::new(
+        tool_registry,
+        policy_engine,
+        sandbox,
+        root.join("sessions"),
+    ));
     let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
 
     let kernel = KernelRuntime::new(
@@ -490,7 +495,12 @@ mod fully_wired {
         let approvals: Arc<dyn ApprovalPort> = Arc::new(ApprovalQueue::default());
         let tool_registry = Arc::new(ToolRegistry::with_core_tools());
         let sandbox = Arc::new(LocalSandboxRunner::new(vec!["echo".to_owned()]));
-        let dispatcher = Arc::new(ToolDispatcher::new(tool_registry, policy_engine, sandbox));
+        let dispatcher = Arc::new(ToolDispatcher::new(
+            tool_registry,
+            policy_engine,
+            sandbox,
+            root.join("sessions"),
+        ));
         let tool_harness: Arc<dyn ToolHarnessPort> = dispatcher;
         let kernel = KernelRuntime::new(
             RuntimeConfig::new(root),

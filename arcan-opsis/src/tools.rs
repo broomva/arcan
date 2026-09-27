@@ -325,6 +325,7 @@ mod tests {
             run_id: "r".into(),
             session_id: "s".into(),
             iteration: 1,
+            ..Default::default()
         };
 
         let result = tool.execute(&call, &ctx).unwrap();

@@ -334,6 +334,7 @@ mod tests {
             run_id: "r1".into(),
             session_id: "s1".into(),
             iteration: 1,
+            ..Default::default()
         }
     }
 

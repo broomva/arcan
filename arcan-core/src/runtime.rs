@@ -90,11 +90,16 @@ pub trait Provider: Send + Sync {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolContext {
     pub run_id: String,
     pub session_id: String,
     pub iteration: u32,
+    /// Per-session workspace root threaded from the kernel dispatch path
+    /// (BRO-1491). When set, filesystem tools scope their `FsPort` to this
+    /// session workspace instead of the boot-time shared workspace. `None`
+    /// for callers outside a per-session kernel dispatch.
+    pub workspace_root: Option<String>,
 }
 
 pub trait Tool: Send + Sync {
@@ -558,6 +563,10 @@ impl Orchestrator {
                             run_id: input.run_id.clone(),
                             session_id: input.session_id.clone(),
                             iteration,
+                            // Arcan-native loop has no per-session kernel workspace
+                            // (BRO-1491 threading is on the kernel dispatch path);
+                            // tools fall back to their construction-time workspace.
+                            ..Default::default()
                         };
 
                         if let Err(err) = self.run_pre_tool(&context, &mut call) {

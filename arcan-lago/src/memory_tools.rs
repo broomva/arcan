@@ -421,6 +421,7 @@ mod tests {
             run_id: "run-1".to_string(),
             session_id: "test-session".to_string(),
             iteration: 1,
+            ..Default::default()
         }
     }
 

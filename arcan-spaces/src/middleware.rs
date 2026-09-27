@@ -102,6 +102,7 @@ mod tests {
             run_id: "run-1".to_string(),
             session_id: "s1".to_string(),
             iteration: 1,
+            ..Default::default()
         };
         let result = ToolResult {
             call_id: "c1".to_string(),
@@ -154,6 +155,7 @@ mod tests {
             run_id: "run-1".to_string(),
             session_id: "s1".to_string(),
             iteration: 1,
+            ..Default::default()
         };
         let result = ToolResult {
             call_id: "c1".to_string(),

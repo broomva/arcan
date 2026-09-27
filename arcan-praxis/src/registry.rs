@@ -223,6 +223,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-1".into(),
@@ -248,6 +249,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-2".into(),
@@ -276,6 +278,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-3".into(),
@@ -310,6 +313,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-4".into(),
@@ -340,6 +344,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-5".into(),
@@ -364,6 +369,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-6".into(),
@@ -388,6 +394,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-7".into(),
@@ -411,6 +418,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
 
         // Write memory
@@ -457,6 +465,7 @@ mod tests {
             run_id: "test-run".into(),
             session_id: "test-session".into(),
             iteration: 1,
+            ..Default::default()
         };
         let call = arcan_core::protocol::ToolCall {
             call_id: "call-10".into(),

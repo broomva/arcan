@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,6 +43,9 @@ pub trait ToolHarnessObserver: Send + Sync {
 pub struct ArcanHarnessAdapter {
     registry: ToolRegistry,
     observers: Vec<Arc<dyn ToolHarnessObserver>>,
+    /// `{data_dir}/sessions`: the only directory whose children may become a
+    /// per-session tool boundary. `None` turns per-session scoping off.
+    sessions_dir: Option<PathBuf>,
 }
 
 impl ArcanHarnessAdapter {
@@ -49,7 +53,57 @@ impl ArcanHarnessAdapter {
         Self {
             registry,
             observers: Vec::new(),
+            sessions_dir: None,
         }
+    }
+
+    /// Enable per-session tool scoping (BRO-1491) for sessions whose
+    /// workspaces live under `sessions_dir` (the kernel's `{root}/sessions`).
+    ///
+    /// Without it, the kernel's per-session root is ignored and tools use
+    /// their construction-time workspace, which was the behavior before
+    /// BRO-1491.
+    pub fn with_sessions_dir(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
+        self.sessions_dir = Some(sessions_dir.into());
+        self
+    }
+
+    /// The per-session root to hand to tools, or `None` for no scoping.
+    ///
+    /// The root is a filesystem boundary, so it is accepted only when it
+    /// canonicalizes to exactly `sessions_dir/<request.session_id>`. Any other
+    /// root is refused with `CapabilityDenied` instead of being passed on:
+    /// one reached through `..`, one resolved through a symlink out of the
+    /// tree, one naming another session's workspace, or one whose session id
+    /// fails the grammar. Falling back to the boot workspace would hide the
+    /// fault, so a bad root is refused rather than downgraded.
+    fn verified_workspace_root(
+        &self,
+        request: &ToolExecutionRequest,
+    ) -> Result<Option<String>, KernelError> {
+        if request.workspace_root.is_empty() {
+            return Ok(None);
+        }
+        let Some(sessions_dir) = self.sessions_dir.as_deref() else {
+            return Ok(None);
+        };
+        let denied = |reason: String| {
+            KernelError::CapabilityDenied(format!(
+                "session workspace for {:?} rejected: {reason}",
+                request.session_id.as_str()
+            ))
+        };
+        let verified = aios_protocol::session_path::verify_session_root(
+            sessions_dir,
+            request.session_id.as_str(),
+            Path::new(&request.workspace_root),
+        )
+        .map_err(|error| denied(error.to_string()))?;
+        verified
+            .into_os_string()
+            .into_string()
+            .map(Some)
+            .map_err(|raw| denied(format!("{} is not valid UTF-8", Path::new(&raw).display())))
     }
 
     pub fn with_observer(mut self, observer: Arc<dyn ToolHarnessObserver>) -> Self {
@@ -75,6 +129,7 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             .registry
             .get(&request.call.tool_name)
             .ok_or_else(|| KernelError::ToolNotFound(request.call.tool_name.clone()))?;
+        let workspace_root = self.verified_workspace_root(&request)?;
 
         let arcan_call = ToolCall {
             call_id: request.call.call_id.clone(),
@@ -85,6 +140,12 @@ impl ToolHarnessPort for ArcanHarnessAdapter {
             run_id: format!("run-{}", request.call.call_id),
             session_id: request.session_id.as_str().to_owned(),
             iteration: 1,
+            // BRO-1491: thread the kernel's per-session workspace root
+            // (`manifest.workspace_root`) into tool execution so filesystem
+            // tools scope to `{data_dir}/sessions/<id>/` instead of the shared
+            // boot workspace. Only a root that passed the containment check
+            // above gets here.
+            workspace_root,
         };
 
         let tool_span =
@@ -237,5 +298,167 @@ mod tests {
             }
             other => panic!("expected success outcome, got {other:?}"),
         }
+    }
+
+    // ── Per-session root containment (BRO-1491) ─────────────────────────
+
+    /// Tool that reports the workspace root it was handed, and counts calls,
+    /// so a test can prove a rejected root never reached a tool.
+    struct RootProbe {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Tool for RootProbe {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "root_probe".to_string(),
+                description: "echoes ctx.workspace_root".to_string(),
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                title: None,
+                output_schema: None,
+                annotations: None,
+                category: None,
+                tags: vec![],
+                timeout_secs: None,
+            }
+        }
+
+        fn execute(&self, call: &ToolCall, ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult {
+                call_id: call.call_id.clone(),
+                tool_name: call.tool_name.clone(),
+                output: serde_json::json!({ "workspace_root": ctx.workspace_root }),
+                content: None,
+                is_error: false,
+                state_patch: None,
+            })
+        }
+    }
+
+    struct Fixture {
+        tmp: tempfile::TempDir,
+        sessions: PathBuf,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        adapter: ArcanHarnessAdapter,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("data/sessions");
+        std::fs::create_dir_all(sessions.join("sess-a")).unwrap();
+        std::fs::create_dir_all(sessions.join("sess-b")).unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::default();
+        registry.register(RootProbe {
+            calls: calls.clone(),
+        });
+        let adapter = ArcanHarnessAdapter::new(registry).with_sessions_dir(&sessions);
+        Fixture {
+            tmp,
+            sessions,
+            calls,
+            adapter,
+        }
+    }
+
+    fn probe(session: &str, root: &Path) -> ToolExecutionRequest {
+        ToolExecutionRequest {
+            session_id: SessionId::from_string(session),
+            workspace_root: root.display().to_string(),
+            call: aios_protocol::ToolCall::new("root_probe", serde_json::json!({}), vec![]),
+        }
+    }
+
+    fn handed_root(report: ToolExecutionReport) -> Option<String> {
+        match report.outcome {
+            ToolOutcome::Success { output } => output["workspace_root"].as_str().map(str::to_owned),
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn own_session_root_reaches_the_tool_canonicalized() {
+        let f = fixture();
+        let report = f
+            .adapter
+            .execute(probe("sess-a", &f.sessions.join("sess-a")))
+            .await
+            .unwrap();
+        let expected = f.sessions.join("sess-a").canonicalize().unwrap();
+        assert_eq!(handed_root(report), Some(expected.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn escaping_roots_are_refused_before_any_tool_runs() {
+        let f = fixture();
+        let outside = f.tmp.path().join("home");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(f.sessions.join("sess-a/artifacts")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, f.sessions.join("victim")).unwrap();
+
+        let mut cases = vec![
+            // Another tenant's workspace, named directly and via `..`.
+            ("sess-a", f.sessions.join("sess-b")),
+            ("sess-a", f.sessions.join("sess-a/../sess-b")),
+            // Wider than any session: the sessions dir, the data dir, above it.
+            ("sess-a", f.sessions.join("sess-a/..")),
+            ("sess-a", f.sessions.join("sess-a/../..")),
+            ("sess-a", f.sessions.join("sess-a/../../..")),
+            ("sess-a", outside.clone()),
+            // A subdirectory is not the workspace either.
+            ("sess-a", f.sessions.join("sess-a/artifacts")),
+            // Ids that fail the grammar, even when the root would resolve.
+            ("../sess-b", f.sessions.join("sess-b")),
+            ("..", f.sessions.clone()),
+            ("", f.sessions.clone()),
+        ];
+        #[cfg(unix)]
+        cases.push(("victim", f.sessions.join("victim")));
+
+        for (session, root) in cases {
+            let err = f
+                .adapter
+                .execute(probe(session, &root))
+                .await
+                .expect_err(&format!("{session:?} @ {} must be refused", root.display()));
+            assert!(
+                matches!(err, KernelError::CapabilityDenied(_)),
+                "{session:?} @ {}: wrong error {err}",
+                root.display()
+            );
+        }
+        assert_eq!(
+            f.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no refused root may reach a tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_root_means_no_scoping() {
+        let f = fixture();
+        let report = f
+            .adapter
+            .execute(probe("sess-a", Path::new("")))
+            .await
+            .unwrap();
+        assert_eq!(handed_root(report), None);
+    }
+
+    #[tokio::test]
+    async fn without_a_sessions_dir_the_root_is_ignored_not_trusted() {
+        let f = fixture();
+        let mut registry = ToolRegistry::default();
+        registry.register(RootProbe {
+            calls: f.calls.clone(),
+        });
+        let unscoped = ArcanHarnessAdapter::new(registry);
+        let report = unscoped
+            .execute(probe("sess-a", &f.sessions.join("sess-a/../..")))
+            .await
+            .unwrap();
+        assert_eq!(handed_root(report), None);
     }
 }

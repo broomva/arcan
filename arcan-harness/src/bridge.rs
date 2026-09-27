@@ -57,6 +57,9 @@ fn arcan_ctx_to_proto(ctx: &arcan_rt::ToolContext) -> proto_tool::ToolContext {
         run_id: ctx.run_id.clone(),
         session_id: ctx.session_id.clone(),
         iteration: ctx.iteration,
+        // BRO-1491: carry the per-session workspace root through to Praxis
+        // tools so filesystem tools scope to the session workspace.
+        workspace_root: ctx.workspace_root.clone(),
         ..Default::default()
     }
 }
@@ -196,6 +199,7 @@ mod tests {
             run_id: "run-1".into(),
             session_id: "sess-1".into(),
             iteration: 1,
+            ..Default::default()
         }
     }
 
@@ -267,6 +271,34 @@ mod tests {
 
         assert_eq!(registry.definitions().len(), 1);
         assert!(registry.get("echo").is_some());
+    }
+
+    #[test]
+    fn arcan_ctx_to_proto_carries_workspace_root() {
+        // BRO-1491: the per-session workspace root must survive the bridge so
+        // Praxis fs tools can scope to the session workspace.
+        let ctx = arcan_rt::ToolContext {
+            run_id: "run-1".into(),
+            session_id: "sess-1".into(),
+            iteration: 2,
+            workspace_root: Some("/data/sessions/sess-1/".into()),
+        };
+        let proto = arcan_ctx_to_proto(&ctx);
+        assert_eq!(
+            proto.workspace_root.as_deref(),
+            Some("/data/sessions/sess-1/")
+        );
+        assert_eq!(proto.run_id, "run-1");
+        assert_eq!(proto.iteration, 2);
+
+        // Absent stays absent (backward-compatible default).
+        let bare = arcan_rt::ToolContext {
+            run_id: "r".into(),
+            session_id: "s".into(),
+            iteration: 0,
+            ..Default::default()
+        };
+        assert!(arcan_ctx_to_proto(&bare).workspace_root.is_none());
     }
 
     #[test]

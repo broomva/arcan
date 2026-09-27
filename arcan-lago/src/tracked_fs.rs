@@ -11,6 +11,7 @@ use lago_fs::FsTracker;
 use praxis_core::error::PraxisResult;
 use praxis_core::fs_port::{FsDirEntry, FsMetadata, FsPort};
 use praxis_core::local_fs::LocalFs;
+use praxis_core::workspace::FsPolicy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -20,20 +21,80 @@ use tokio::sync::mpsc;
 /// All read operations delegate to the underlying [`LocalFs`].
 /// Write operations first write to disk, then notify the tracker
 /// which produces an `EventPayload` sent through the channel.
+///
+/// ## Per-session scoping (BRO-1491)
+///
+/// A single tracker (hence a single shared manifest) serves every session, so
+/// manifest keys MUST be session-unique or concurrent sessions overwrite each
+/// other's entries. The [`FsPort::scoped`] impl rebases the boundary policy at
+/// the per-session workspace root (isolation) while computing manifest keys
+/// relative to a shared [`Self::manifest_root`] — the parent of the per-session
+/// directories (`{data_dir}`) — so a write to
+/// `{data_dir}/sessions/<id>/artifacts/x` is keyed `/sessions/<id>/artifacts/x`.
+///
+/// Deliberately NOT rooted at `{data_dir}` directly: that would (a) let the
+/// boundary policy see across sessions, and (b) drag the redb journal / blob
+/// store under the exec-path reconciler's walk. Isolation comes from the
+/// per-session *boundary*; uniqueness comes from the shared *key root*.
 pub struct LagoTrackedFs {
     local_fs: LocalFs,
     tracker: Arc<FsTracker>,
     tx: mpsc::Sender<EventPayload>,
+    /// Base against which manifest keys are computed. Defaults to the local
+    /// FS root (boot behavior); scoped instances key relative to
+    /// [`Self::session_base`] to stay session-unique.
+    manifest_root: PathBuf,
+    /// Parent of the per-session workspaces (`{data_dir}`). When set,
+    /// [`FsPort::scoped`] keys session writes relative to it. `None` ⇒ scoped
+    /// instances key relative to the session root itself (degraded: not
+    /// session-unique — only used when no session base was configured).
+    session_base: Option<PathBuf>,
 }
 
 impl LagoTrackedFs {
-    /// Create a new tracked filesystem.
+    /// Create a new tracked filesystem. Manifest keys are computed relative to
+    /// the local FS root — the boot workspace — matching the tracker baseline.
     pub fn new(local_fs: LocalFs, tracker: Arc<FsTracker>, tx: mpsc::Sender<EventPayload>) -> Self {
+        let manifest_root = local_fs.workspace_root().to_path_buf();
         Self {
             local_fs,
             tracker,
             tx,
+            manifest_root,
+            session_base: None,
         }
+    }
+
+    /// Declare the parent directory of per-session workspaces (`{data_dir}`).
+    ///
+    /// When set, [`FsPort::scoped`] keys session writes relative to this base
+    /// (`/sessions/<id>/…`) so the shared manifest stays session-unique
+    /// (BRO-1491). Without it, scoped instances fall back to keying relative to
+    /// the session root, which is not unique across sessions.
+    pub fn with_session_base(mut self, base: impl Into<PathBuf>) -> Self {
+        self.session_base = Some(base.into());
+        self
+    }
+
+    /// Compute the manifest key for a just-written path: `/` + the path
+    /// (canonicalized) made relative to [`Self::manifest_root`]. Falls back to
+    /// the raw path display when the file is outside the manifest root (should
+    /// not happen for boundary-checked writes, but keeps a stable key).
+    fn manifest_key(&self, path: &Path) -> String {
+        // The file exists at this point (write already happened), so `resolve`
+        // can canonicalize it.
+        let resolved = self.local_fs.resolve(path).ok();
+        resolved
+            .as_ref()
+            .and_then(|abs| self.rel_to_manifest_root(abs))
+            .map(|rel| format!("/{}", rel.display()))
+            .unwrap_or_else(|| path.display().to_string())
+    }
+
+    /// Canonicalize `manifest_root` and strip it from an absolute path.
+    fn rel_to_manifest_root(&self, absolute: &Path) -> Option<PathBuf> {
+        let root = self.manifest_root.canonicalize().ok()?;
+        absolute.strip_prefix(&root).ok().map(Path::to_path_buf)
     }
 }
 
@@ -62,13 +123,8 @@ impl FsPort for LagoTrackedFs {
         // 1. Write to disk via LocalFs
         self.local_fs.write(path, content)?;
 
-        // 2. Compute relative path for the tracker
-        let resolved = self.local_fs.resolve(path).ok();
-        let rel_path = resolved
-            .as_ref()
-            .and_then(|p| self.local_fs.relative(p))
-            .map(|p| format!("/{}", p.display()))
-            .unwrap_or_else(|| path.display().to_string());
+        // 2. Compute the session-unique manifest key (relative to manifest_root)
+        let rel_path = self.manifest_key(path);
 
         // 3. Track the write (stores blob, updates manifest, returns event)
         match self.tracker.track_write(&rel_path, content, None) {
@@ -121,6 +177,26 @@ impl FsPort for LagoTrackedFs {
 
     fn relative(&self, absolute_path: &Path) -> Option<PathBuf> {
         self.local_fs.relative(absolute_path)
+    }
+
+    fn scoped(&self, root: &Path) -> Option<Arc<dyn FsPort>> {
+        // Boundary policy rebased at the per-session root → isolation.
+        let scoped_local = LocalFs::new(FsPolicy::new(root));
+        // Keep manifest keys session-unique by keying relative to the shared
+        // session base (`{data_dir}` → `/sessions/<id>/…`). If no base was
+        // configured, fall back to the session root (degraded: `/artifacts/…`,
+        // not unique across sessions — surfaced via with_session_base at boot).
+        let manifest_root = self
+            .session_base
+            .clone()
+            .unwrap_or_else(|| root.to_path_buf());
+        Some(Arc::new(LagoTrackedFs {
+            local_fs: scoped_local,
+            tracker: self.tracker.clone(),
+            tx: self.tx.clone(),
+            manifest_root,
+            session_base: self.session_base.clone(),
+        }))
     }
 }
 
@@ -277,6 +353,105 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 3);
+    }
+
+    // ── Per-session scoping (BRO-1491) ──────────────────────────────────
+
+    /// Build a boot tracked FS whose session base is `data_dir` (parent of the
+    /// per-session workspaces), mirroring the `arcan serve` wiring.
+    fn boot_tracked_fs(
+        data_dir: &std::path::Path,
+        tracker: Arc<FsTracker>,
+        tx: mpsc::Sender<EventPayload>,
+    ) -> LagoTrackedFs {
+        // Boot workspace is the data dir itself here; production points it at
+        // the --workspace dir, but the session base is what scoping uses.
+        let local_fs = LocalFs::new(FsPolicy::new(data_dir));
+        LagoTrackedFs::new(local_fs, tracker, tx).with_session_base(data_dir)
+    }
+
+    #[test]
+    fn scoped_sessions_get_session_unique_manifest_keys() {
+        let (tmp, tracker, tx, mut rx) = setup();
+        let data_dir = tmp.path().join("data");
+        let sess_a = data_dir.join("sessions/a");
+        let sess_b = data_dir.join("sessions/b");
+        // The kernel's initialize_workspace creates these before dispatch.
+        std::fs::create_dir_all(sess_a.join("artifacts")).unwrap();
+        std::fs::create_dir_all(sess_b.join("artifacts")).unwrap();
+
+        let boot = boot_tracked_fs(&data_dir, tracker.clone(), tx);
+        let fs_a = boot.scoped(&sess_a).unwrap();
+        let fs_b = boot.scoped(&sess_b).unwrap();
+
+        fs_a.write(Path::new("artifacts/receipt.txt"), b"from A")
+            .unwrap();
+        fs_b.write(Path::new("artifacts/receipt.txt"), b"from B")
+            .unwrap();
+
+        // (1) Each landed in its own session workspace on disk.
+        assert_eq!(
+            std::fs::read_to_string(sess_a.join("artifacts/receipt.txt")).unwrap(),
+            "from A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sess_b.join("artifacts/receipt.txt")).unwrap(),
+            "from B"
+        );
+
+        // (2) The shared manifest carries two DISTINCT, session-unique keys.
+        let manifest = tracker.manifest();
+        assert!(manifest.exists("/sessions/a/artifacts/receipt.txt"));
+        assert!(manifest.exists("/sessions/b/artifacts/receipt.txt"));
+
+        // (3) Two distinct FileWrite events with session-unique paths.
+        let mut paths = Vec::new();
+        while let Ok(EventPayload::FileWrite { path, .. }) = rx.try_recv() {
+            paths.push(path);
+        }
+        assert!(paths.contains(&"/sessions/a/artifacts/receipt.txt".to_string()));
+        assert!(paths.contains(&"/sessions/b/artifacts/receipt.txt".to_string()));
+    }
+
+    #[test]
+    fn scoped_session_cannot_read_another_session() {
+        let (tmp, tracker, tx, _rx) = setup();
+        let data_dir = tmp.path().join("data");
+        let sess_a = data_dir.join("sessions/a");
+        let sess_b = data_dir.join("sessions/b");
+        std::fs::create_dir_all(&sess_a).unwrap();
+        std::fs::create_dir_all(&sess_b).unwrap();
+        std::fs::write(sess_b.join("secret.txt"), "B's secret").unwrap();
+
+        let boot = boot_tracked_fs(&data_dir, tracker, tx);
+        let fs_a = boot.scoped(&sess_a).unwrap();
+
+        // A traversal out of session A into session B is rejected.
+        let err = fs_a
+            .read_to_string(Path::new("../b/secret.txt"))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            praxis_core::error::PraxisError::PathOutsideWorkspace { .. }
+        ));
+    }
+
+    #[test]
+    fn boot_write_keys_are_unchanged_without_scoping() {
+        // Backward-compat: the un-scoped boot FS keys relative to its own root,
+        // exactly as before manifest_root existed.
+        let (tmp, tracker, tx, mut rx) = setup();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let fs = LagoTrackedFs::new(LocalFs::new(FsPolicy::new(&ws)), tracker.clone(), tx);
+
+        fs.write(&ws.join("top.txt"), b"x").unwrap();
+
+        assert!(tracker.manifest().exists("/top.txt"));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            EventPayload::FileWrite { path, .. } if path == "/top.txt"
+        ));
     }
 
     #[test]
