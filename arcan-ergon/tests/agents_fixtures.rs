@@ -124,18 +124,16 @@ async fn each_blessed_agent_has_well_formed_spec() {
 #[tokio::test]
 async fn each_blessed_agent_schema_compiles_under_production_validator() {
     // The production `record_answer` path feeds the output_schema
-    // through `jsonschema::JSONSchema::compile`. A schema that won't
+    // through `ergon::compile_agent_schema`. A schema that won't
     // compile would silently bounce every answer the agent emits at
     // runtime. Catch that here instead.
     let registry = FsAgentRegistry::load(agents_dir()).expect("agents/ loads");
     for &name in REQUIRED_BLESSED_AGENTS {
         let spec = registry.get(name).await.expect("registered").spec();
 
-        jsonschema::JSONSchema::options()
-            .compile(&spec.input_schema)
+        ergon::compile_agent_schema(&spec.input_schema)
             .unwrap_or_else(|e| panic!("agent `{name}`: input_schema does not compile: {e}"));
-        jsonschema::JSONSchema::options()
-            .compile(&spec.output_schema)
+        ergon::compile_agent_schema(&spec.output_schema)
             .unwrap_or_else(|e| panic!("agent `{name}`: output_schema does not compile: {e}"));
     }
 }

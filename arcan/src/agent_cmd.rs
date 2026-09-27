@@ -394,20 +394,20 @@ pub fn validate_against_schema(
     what: &str,
     agent_name: &str,
 ) -> Result<()> {
-    let compiled = jsonschema::JSONSchema::options()
-        .compile(schema)
+    let compiled = ergon::compile_agent_schema(schema)
         .map_err(|e| anyhow!("agent `{agent_name}` {what}_schema is malformed: {e}"))?;
-    if let Err(errors) = compiled.validate(value) {
-        let messages: Vec<String> = errors
-            .map(|e| {
-                let path = e.instance_path.to_string();
-                if path.is_empty() {
-                    format!("{e}")
-                } else {
-                    format!("{path}: {e}")
-                }
-            })
-            .collect();
+    let messages: Vec<String> = compiled
+        .iter_errors(value)
+        .map(|e| {
+            let path = e.instance_path().to_string();
+            if path.is_empty() {
+                format!("{e}")
+            } else {
+                format!("{path}: {e}")
+            }
+        })
+        .collect();
+    if !messages.is_empty() {
         bail!(
             "{what} is INVALID for agent `{agent_name}`:\n  - {}",
             messages.join("\n  - "),

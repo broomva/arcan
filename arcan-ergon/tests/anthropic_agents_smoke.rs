@@ -166,14 +166,16 @@ fn build_step_ctx<'a>(workflow_name: &'a str, provider: Arc<dyn Provider>) -> St
 /// surfaces a clearer error if the agent's spec validation has been
 /// bypassed somehow).
 fn assert_schema(value: &serde_json::Value, schema: &serde_json::Value, agent_name: &str) {
-    let compiled = jsonschema::JSONSchema::options()
-        .compile(schema)
+    let compiled = ergon::compile_agent_schema(schema)
         .unwrap_or_else(|e| panic!("agent `{agent_name}` output_schema does not compile: {e}"));
-    if let Err(errors) = compiled.validate(value) {
-        let joined: Vec<String> = errors.map(|e| format!("{e}")).collect();
+    let errors: Vec<String> = compiled
+        .iter_errors(value)
+        .map(|e| format!("{e}"))
+        .collect();
+    if !errors.is_empty() {
         panic!(
             "agent `{agent_name}` output failed schema validation:\n  errors: {}\n  value: {}",
-            joined.join("; "),
+            errors.join("; "),
             serde_json::to_string_pretty(value).unwrap_or_default()
         );
     }
