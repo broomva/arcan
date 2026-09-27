@@ -236,6 +236,18 @@ impl AuthConfig {
     }
 }
 
+/// True when any authentication secret is configured, i.e. the daemon may
+/// serve more than one principal (BRO-1491).
+///
+/// Reads the same variables as [`AuthConfig::from_env`] (`ARCAN_JWT_SECRET`,
+/// `AUTH_SECRET`) and the Anima identity-token secret (`ANIMA_JWT_SECRET`).
+/// Memory is shared across sessions only when this is false.
+pub fn multi_tenant_from_env() -> bool {
+    ["ARCAN_JWT_SECRET", "AUTH_SECRET", "ANIMA_JWT_SECRET"]
+        .iter()
+        .any(|name| std::env::var(name).is_ok_and(|v| !v.is_empty()))
+}
+
 // ─── Auth error response ─────────────────────────────────────────────────────
 
 /// JSON error body for auth failures.

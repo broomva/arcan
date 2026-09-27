@@ -51,6 +51,29 @@ impl KernelDispatcher for ArcandKernelDispatcher {
         // it directly. Chronos always dispatches on the `main` branch (the M0 convention).
         let branch = BranchId::main();
 
+        // BRO-1491: the wake API carries no verified owner, so it may only
+        // drive sessions that are permanently unowned. Claim that as the
+        // session's final binding before creating or ticking it; a session an
+        // authenticated owner holds is refused (its tools would act on that
+        // owner's memory).
+        match aios_protocol::owner_scope::claim_unowned(
+            self.runtime.root_path(),
+            session_id.as_str(),
+        ) {
+            Ok(()) | Err(aios_protocol::owner_scope::OwnerScopeError::InvalidSession(_)) => {}
+            Err(aios_protocol::owner_scope::OwnerScopeError::Conflict) => {
+                return Ok(DispatchOutcome::failed(
+                    "session is owned by an authenticated principal; a wake cannot drive it"
+                        .to_string(),
+                ));
+            }
+            Err(error) => {
+                return Ok(DispatchOutcome::failed(format!(
+                    "session owner binding unavailable: {error}"
+                )));
+            }
+        }
+
         if !self.runtime.session_exists(session_id) {
             self.runtime
                 .create_session_with_id(
@@ -146,4 +169,90 @@ pub fn spawn_chronos(
         .await;
     });
     tracing::info!(%addr, "chronos M2 wake-loop + HTTP wake-ingest started (--chronos)");
+}
+
+#[cfg(test)]
+mod owner_guard_tests {
+    use super::*;
+    use aios_protocol::{
+        ApprovalPort, EventStorePort, KernelResult, ModelCompletion, ModelCompletionRequest,
+        ModelDirective, ModelProviderPort, ModelStopReason, PolicyGatePort, SessionId,
+        ToolHarnessPort,
+    };
+    use aios_runtime::RuntimeConfig;
+    use arcan_aios_adapters::{ArcanApprovalAdapter, ArcanHarnessAdapter, ArcanPolicyAdapter};
+
+    struct TextProvider;
+    #[async_trait]
+    impl ModelProviderPort for TextProvider {
+        async fn complete(&self, _: ModelCompletionRequest) -> KernelResult<ModelCompletion> {
+            Ok(ModelCompletion {
+                provider: "test".into(),
+                model: "test".into(),
+                llm_call_record: None,
+                directives: vec![ModelDirective::Message {
+                    role: "assistant".into(),
+                    content: "ok".into(),
+                }],
+                stop_reason: ModelStopReason::Completed,
+                usage: None,
+                final_answer: Some("ok".into()),
+            })
+        }
+    }
+
+    fn runtime(root: &std::path::Path) -> Arc<KernelRuntime> {
+        let journal: Arc<dyn Journal> =
+            Arc::new(lago_journal::RedbJournal::open(root.join("journal.redb")).unwrap());
+        let event_store: Arc<dyn EventStorePort> =
+            Arc::new(lago_aios_eventstore_adapter::LagoAiosEventStoreAdapter::new(journal));
+        let harness: Arc<dyn ToolHarnessPort> = Arc::new(ArcanHarnessAdapter::new(
+            arcan_core::runtime::ToolRegistry::default(),
+        ));
+        let policy: Arc<dyn PolicyGatePort> =
+            Arc::new(ArcanPolicyAdapter::new(PolicySet::default()));
+        let approvals: Arc<dyn ApprovalPort> = Arc::new(ArcanApprovalAdapter::new());
+        Arc::new(KernelRuntime::new(
+            RuntimeConfig::new(root.to_path_buf()),
+            event_store,
+            Arc::new(TextProvider),
+            harness,
+            approvals,
+            policy,
+        ))
+    }
+
+    /// BRO-1491: a wake carries no verified owner, so it must not drive a
+    /// session an authenticated owner holds. An unowned session is still
+    /// driven (positive control).
+    #[tokio::test]
+    async fn a_wake_cannot_drive_an_owner_bound_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = runtime(tmp.path());
+        let dispatcher = ArcandKernelDispatcher::new(runtime.clone());
+        aios_protocol::owner_scope::bind_session_owner(tmp.path(), "owned", "bob").unwrap();
+
+        let outcome = dispatcher
+            .dispatch(&SessionId::from_string("owned"), "read bob's memory")
+            .await
+            .unwrap();
+        assert!(!outcome.completed);
+        assert!(
+            outcome
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("owned by an authenticated principal"),
+            "{outcome:?}"
+        );
+        assert!(!runtime.session_exists(&SessionId::from_string("owned")));
+        assert!(!tmp.path().join("sessions/owned").exists());
+
+        let outcome = dispatcher
+            .dispatch(&SessionId::from_string("unowned"), "hello")
+            .await
+            .unwrap();
+        assert!(outcome.completed, "positive control: {outcome:?}");
+        assert!(runtime.session_exists(&SessionId::from_string("unowned")));
+    }
 }

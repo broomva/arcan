@@ -4,20 +4,25 @@
 //! This runs as a `ToolHarnessObserver` in the daemon's post-run pipeline,
 //! moving memory extraction from the shell's dedicated writer thread into
 //! the daemon's observer pattern.
+//!
+//! The directory is the finished session's [`MemoryLocation`] (BRO-1491):
+//! in multi-tenant mode, its authenticated owner's memory; a session with no
+//! owner binding is not summarized at all.
 
+use aios_protocol::owner_scope::MemoryLocation;
 use arcan_aios_adapters::tools::{RunCompletionContext, ToolHarnessObserver};
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Observer that extracts key facts from agent responses and writes them
-/// to the memory directory.
+/// to the finished session's memory directory.
 pub struct MemoryExtractionObserver {
-    memory_dir: PathBuf,
+    location: MemoryLocation,
 }
 
 impl MemoryExtractionObserver {
-    pub fn new(memory_dir: PathBuf) -> Self {
-        Self { memory_dir }
+    pub fn new(location: MemoryLocation) -> Self {
+        Self { location }
     }
 }
 
@@ -58,7 +63,19 @@ impl ToolHarnessObserver for MemoryExtractionObserver {
             facts.join("\n")
         );
 
-        if let Err(e) = write_memory(&self.memory_dir, &summary) {
+        let memory_dir = match self.location.resolve(&session_id) {
+            Ok(Some(dir)) => dir,
+            Ok(None) => {
+                tracing::debug!(session = %session_id, "no owner binding; memory extraction skipped");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(session = %session_id, %error, "memory scope unresolvable; extraction skipped");
+                return;
+            }
+        };
+
+        if let Err(e) = write_memory(&memory_dir, &summary) {
             tracing::warn!(error = %e, "Failed to write memory extraction");
         } else {
             tracing::debug!(
@@ -67,7 +84,7 @@ impl ToolHarnessObserver for MemoryExtractionObserver {
                 "Memory extraction completed"
             );
             // Update the memory index file.
-            crate::prompt::write_memory_index(&self.memory_dir);
+            crate::prompt::write_memory_index(&memory_dir);
         }
     }
 }
@@ -237,5 +254,57 @@ mod tests {
     fn empty_text_returns_empty() {
         assert!(extract_facts("").is_empty());
         assert!(extract_facts("short").is_empty());
+    }
+
+    fn run_context(fact: &str) -> RunCompletionContext {
+        RunCompletionContext {
+            final_answer: Some(format!("- Decided: {fact}")),
+            ..Default::default()
+        }
+    }
+
+    /// BRO-1491: a run's summary lands in its session owner's memory, never
+    /// in another owner's or the legacy shared store.
+    #[tokio::test]
+    async fn summaries_land_in_the_session_owners_memory_only() {
+        use aios_protocol::owner_scope::bind_session_owner;
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path();
+        bind_session_owner(data, "sess-a", "alice").unwrap();
+        bind_session_owner(data, "sess-b", "bob").unwrap();
+        let observer = MemoryExtractionObserver::new(MemoryLocation::PerOwner {
+            data_dir: data.to_path_buf(),
+        });
+
+        observer
+            .on_run_finished("sess-b".into(), run_context("BOB-FACT-91 is private"))
+            .await;
+        let bob = std::fs::read_to_string(data.join("owners/bob/memory/session_summary.md"))
+            .expect("bob's summary");
+        assert!(bob.contains("BOB-FACT-91"));
+        assert!(!data.join("owners/alice/memory/session_summary.md").exists());
+        assert!(
+            !data.join("memory").exists(),
+            "legacy shared store must stay untouched"
+        );
+
+        observer
+            .on_run_finished("sess-a".into(), run_context("ALICE-FACT-92 is hers"))
+            .await;
+        let bob_after =
+            std::fs::read_to_string(data.join("owners/bob/memory/session_summary.md")).unwrap();
+        assert_eq!(bob, bob_after, "alice's run overwrote bob's summary");
+    }
+
+    #[tokio::test]
+    async fn an_unowned_session_writes_no_summary_anywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let observer = MemoryExtractionObserver::new(MemoryLocation::PerOwner {
+            data_dir: tmp.path().to_path_buf(),
+        });
+        observer
+            .on_run_finished("sess-x".into(), run_context("ORPHAN-FACT-93"))
+            .await;
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 }

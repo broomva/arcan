@@ -83,6 +83,36 @@ fn valid_branch_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// Claim a session for the substrate plane before creating or driving it
+/// (BRO-1491).
+///
+/// The substrate plane carries no verified owner, so it may only act on
+/// sessions that are permanently unowned. The claim writes that as the
+/// session's final binding (`owner_scope::claim_unowned`) before anything
+/// else happens. A session an authenticated owner holds is refused: its
+/// tools resolve memory through its owner binding, and this plane has
+/// nobody's authority to use it.
+pub(crate) fn claim_for_substrate(runtime: &KernelRuntime, sid: &str) -> Result<(), Status> {
+    use aios_protocol::owner_scope::{OwnerScopeError, claim_unowned};
+    // The daemon's own cross-tenant streams are no session's, not even an
+    // unowned one this plane could then drive and read.
+    if crate::canonical::RESERVED_SYSTEM_SESSIONS.contains(&sid) {
+        return Err(Status::permission_denied("session id is reserved"));
+    }
+    match claim_unowned(runtime.root_path(), sid) {
+        Ok(()) | Err(OwnerScopeError::InvalidSession(_)) => Ok(()),
+        Err(OwnerScopeError::Conflict | OwnerScopeError::Aliased) => {
+            Err(Status::permission_denied(
+                "session is owned by an authenticated principal; the substrate plane cannot act on it",
+            ))
+        }
+        Err(error) => {
+            tracing::error!(sid, %error, "session owner binding unavailable");
+            Err(Status::internal("session owner binding unavailable"))
+        }
+    }
+}
+
 /// arcand's `arcan.v1.AgentSubstrate` impl. Holds a shared
 /// `KernelRuntime` handle so every RPC reuses the same in-memory
 /// session store, journal, and tick engine that the HTTP plane is
@@ -114,6 +144,7 @@ impl AgentSubstrate for SubstrateService {
             return Err(Status::invalid_argument("empty sid"));
         }
         let session_id = SessionId::from_string(&sid_proto.value);
+        claim_for_substrate(&self.runtime, &sid_proto.value)?;
 
         // Idempotent: if the session already exists, return the same
         // agent_id (the sid itself in Phase 1 — see proto comment for
@@ -186,6 +217,7 @@ impl AgentSubstrate for SubstrateService {
             return Err(Status::invalid_argument("empty sid"));
         }
         let session_id = SessionId::from_string(&sid_proto.value);
+        claim_for_substrate(&self.runtime, &sid_proto.value)?;
         if !self.runtime.session_exists(&session_id) {
             return Err(Status::failed_precondition(format!(
                 "session not found: {sid}",

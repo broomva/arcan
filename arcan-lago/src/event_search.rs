@@ -4,8 +4,11 @@
 //! it as a canonical [`Tool`] that agents can invoke to search their
 //! own history across sessions.
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
+
+use aios_protocol::owner_scope::{MemoryLocation, session_owner};
 
 use arcan_core::error::CoreError;
 use arcan_core::protocol::{ToolCall, ToolDefinition, ToolResult};
@@ -30,6 +33,10 @@ pub struct EventSearchTool {
     index: Arc<RwLock<Option<EventSearchIndex>>>,
     /// Session to exclude from indexing (typically the current session).
     exclude_session: Option<String>,
+    /// Owner scoping (BRO-1491). The index holds every session's events, so
+    /// in multi-tenant mode a search returns only sessions bound to the
+    /// caller's own owner, and a caller with no owner gets nothing.
+    location: Option<MemoryLocation>,
 }
 
 impl EventSearchTool {
@@ -42,7 +49,22 @@ impl EventSearchTool {
             journal,
             index: Arc::new(RwLock::new(None)),
             exclude_session,
+            location: None,
         }
+    }
+
+    /// Scope results by owner when `location` is multi-tenant (BRO-1491).
+    /// A `Shared` location leaves search unscoped (single-user mode).
+    pub fn with_owner_scope(mut self, location: MemoryLocation) -> Self {
+        self.location = Some(location);
+        self
+    }
+
+    /// The owner data dir, when results must be scoped by owner.
+    fn owner_data_dir(&self) -> Option<&std::path::Path> {
+        self.location
+            .as_ref()
+            .and_then(MemoryLocation::owner_data_dir)
     }
 
     /// Build (or rebuild) the search index from journal events.
@@ -153,7 +175,7 @@ impl Tool for EventSearchTool {
         }
     }
 
-    fn execute(&self, call: &ToolCall, _ctx: &ToolContext) -> Result<ToolResult, CoreError> {
+    fn execute(&self, call: &ToolCall, ctx: &ToolContext) -> Result<ToolResult, CoreError> {
         let query = call
             .input
             .get("query")
@@ -171,6 +193,26 @@ impl Tool for EventSearchTool {
             .get("reindex")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        // BRO-1491: in multi-tenant mode the caller may search only sessions
+        // owned by its own owner. Resolve that owner before touching the
+        // index; a caller with no owner (or an unreadable binding) is refused.
+        let caller_owner = match self.owner_data_dir() {
+            None => None,
+            Some(data_dir) => match session_owner(data_dir, &ctx.session_id) {
+                Ok(Some(owner)) => Some((data_dir.to_path_buf(), owner)),
+                Ok(None) => {
+                    return Err(tool_err(
+                        "cross-session search is unavailable: this session has no authenticated owner",
+                    ));
+                }
+                Err(error) => {
+                    return Err(tool_err(format!(
+                        "cross-session search is unavailable: {error}"
+                    )));
+                }
+            },
+        };
 
         let t0 = Instant::now();
 
@@ -197,6 +239,7 @@ impl Tool for EventSearchTool {
                     journal: this_journal,
                     index: this_index,
                     exclude_session: this_exclude,
+                    location: None,
                 };
                 tool.build_index().await
             })?;
@@ -214,7 +257,26 @@ impl Tool for EventSearchTool {
             .as_ref()
             .ok_or_else(|| tool_err("index not available"))?;
 
-        let results = idx.search(query, max_results);
+        let results = match &caller_owner {
+            None => idx.search(query, max_results),
+            Some((data_dir, owner)) => {
+                // Rank over the whole index, then keep only the caller's
+                // owner's sessions; a session whose binding is missing or
+                // unreadable is never shown.
+                let mut owned: HashMap<String, bool> = HashMap::new();
+                idx.search(query, idx.len())
+                    .into_iter()
+                    .filter(|r| {
+                        *owned.entry(r.session_id.clone()).or_insert_with(|| {
+                            matches!(session_owner(data_dir, &r.session_id), Ok(Some(o)) if &o == owner)
+                        })
+                    })
+                    .take(max_results)
+                    .collect()
+            }
+        };
+        // The index spans every tenant; its size is reported only when unscoped.
+        let indexed_events = caller_owner.is_none().then(|| idx.len());
         let duration_ms = t0.elapsed().as_millis();
 
         // Format output
@@ -225,7 +287,7 @@ impl Tool for EventSearchTool {
                 output: json!({
                     "query": query,
                     "results": "No matching events found across past sessions.",
-                    "indexed_events": idx.len(),
+                    "indexed_events": indexed_events,
                     "duration_ms": duration_ms,
                 }),
                 content: None,
@@ -252,6 +314,7 @@ impl Tool for EventSearchTool {
             query = query,
             results_count = results.len(),
             indexed_events = idx.len(),
+            owner_scoped = caller_owner.is_some(),
             duration_ms = duration_ms as u64,
             "knowledge_search completed"
         );
@@ -263,7 +326,7 @@ impl Tool for EventSearchTool {
                 "query": query,
                 "results": output_lines.join("\n\n"),
                 "result_count": results.len(),
-                "indexed_events": idx.len(),
+                "indexed_events": indexed_events,
                 "duration_ms": duration_ms,
             }),
             content: None,
@@ -435,6 +498,101 @@ mod tests {
         let results = idx.search("Rust borrow checker", 10);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id, "sess-A");
+    }
+
+    fn message(content: &str) -> EventKind {
+        EventKind::Message {
+            role: "assistant".into(),
+            content: content.into(),
+            model: Some("mock".into()),
+            token_usage: None,
+        }
+    }
+
+    fn search(
+        tool: &Arc<EventSearchTool>,
+        session: &str,
+        query: &str,
+    ) -> Result<ToolResult, CoreError> {
+        let call = ToolCall {
+            call_id: "c".into(),
+            tool_name: "knowledge_search".into(),
+            input: serde_json::json!({ "query": query, "reindex": true }),
+        };
+        let ctx = ToolContext {
+            run_id: "r".into(),
+            session_id: session.into(),
+            iteration: 1,
+            workspace_root: None,
+        };
+        tool.execute(&call, &ctx)
+    }
+
+    /// BRO-1491: the index holds every tenant's events; an owner's search
+    /// returns only its own owner's sessions, and an unowned caller gets none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_search_is_scoped_to_the_callers_owner() {
+        use aios_protocol::owner_scope::bind_session_owner;
+        let dir = tempfile::tempdir().unwrap();
+        let journal = open_journal(dir.path());
+        let data = dir.path().join("data");
+        for (sid, owner, text) in [
+            ("alice-1", "alice", "ALICEWORD notes from alice"),
+            ("alice-2", "alice", "SHAREDWORD alice again"),
+            ("bob-1", "bob", "BOBSECRET SHAREDWORD from bob"),
+        ] {
+            journal.put_session(make_session(sid)).await.unwrap();
+            journal
+                .append(make_envelope(sid, message(text)))
+                .await
+                .unwrap();
+            bind_session_owner(&data, sid, owner).unwrap();
+        }
+        let tool = Arc::new(EventSearchTool::new(journal, None).with_owner_scope(
+            MemoryLocation::PerOwner {
+                data_dir: data.clone(),
+            },
+        ));
+
+        let t = tool.clone();
+        let alice =
+            tokio::task::spawn_blocking(move || search(&t, "alice-2", "BOBSECRET SHAREDWORD"))
+                .await
+                .unwrap()
+                .unwrap();
+        // Only the results field: the output also echoes the query itself.
+        let text = alice.output["results"].to_string();
+        assert!(
+            !text.contains("BOBSECRET"),
+            "alice's search returned bob's events: {text}"
+        );
+        assert!(
+            text.contains("alice-2"),
+            "positive control: alice finds her own session: {text}"
+        );
+        assert!(
+            alice.output["indexed_events"].is_null(),
+            "tenant-wide count leaked"
+        );
+
+        let t = tool.clone();
+        let bob = tokio::task::spawn_blocking(move || search(&t, "bob-1", "BOBSECRET"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            bob.output["results"].to_string().contains("BOBSECRET"),
+            "positive control: bob finds his own"
+        );
+
+        let t = tool.clone();
+        let unowned = tokio::task::spawn_blocking(move || search(&t, "stranger", "SHAREDWORD"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&unowned, Err(CoreError::ToolExecution { message, .. }) if message.contains("no authenticated owner")),
+            "{unowned:?}"
+        );
     }
 
     #[tokio::test]

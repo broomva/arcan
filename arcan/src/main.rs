@@ -255,6 +255,11 @@ enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// Manage owner-scoped memory (BRO-1491)
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
     /// Inspect, scaffold, and dry-run validate authored agents
     /// (`agents/<name>.md` files). See agents/README.md for the
     /// authoring format. (BRO-1008)
@@ -283,6 +288,20 @@ enum Command {
         /// Display model reasoning/thinking tokens in the output
         #[arg(long)]
         show_reasoning: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemoryAction {
+    /// Copy the legacy shared memory (`<data-dir>/memory/`) into one owner's
+    /// memory. Legacy memory was written by every session, so which owner it
+    /// belongs to is an operator decision. Copies regular files only, never
+    /// overwrites the owner's files, and never deletes or modifies the legacy
+    /// directory. Run it per owner who should inherit the legacy store.
+    AdoptLegacy {
+        /// The owner id: the authenticated subject (`sub` claim) of the user.
+        #[arg(long)]
+        owner: String,
     },
 }
 
@@ -684,6 +703,16 @@ fn run_serve(
     //   - `tokio::spawn()` works (tasks are queued, run when block_on starts)
     let workspace_root = resolve_workspace_root(workspace)?;
 
+    // BRO-1491: memory is per authenticated owner whenever this daemon can
+    // serve more than one principal — any auth secret configured, or the
+    // Topology-B substrate plane bound (lifed fronts many tenants, and that
+    // plane carries no verified owner, so its sessions get no memory rather
+    // than a shared one). Otherwise single-user mode keeps one shared store.
+    let memory_location = aios_protocol::owner_scope::MemoryLocation::for_deployment(
+        data_dir,
+        arcand::auth::multi_tenant_from_env() || uds_socket.is_some(),
+    );
+
     // BRO-1490 defence-in-depth: a non-writable workspace surfaces at
     // runtime as an opaque per-tool io error ("No such file or directory")
     // deep inside a chat turn. Probe once at boot and say exactly what is
@@ -850,12 +879,12 @@ fn run_serve(
         {
             registry.register(PraxisToolBridge::new(ListDirTool::new(tracked_fs)));
 
-            let memory_dir = data_dir.join("memory");
-            std::fs::create_dir_all(&memory_dir)?;
-            registry.register(PraxisToolBridge::new(ReadMemoryTool::new(
-                memory_dir.clone(),
+            registry.register(PraxisToolBridge::new(ReadMemoryTool::scoped(
+                memory_location.clone(),
             )));
-            registry.register(PraxisToolBridge::new(WriteMemoryTool::new(memory_dir)));
+            registry.register(PraxisToolBridge::new(WriteMemoryTool::scoped(
+                memory_location.clone(),
+            )));
 
             // --- Governed memory tools (event-sourced via Lago) ---
             let memory_projection = Arc::new(RwLock::new(MemoryProjection::new()));
@@ -864,7 +893,11 @@ fn run_serve(
             registry.register(MemoryCommitTool::new(memory_journal));
 
             // Cross-session event search (BRO-432)
-            registry.register(EventSearchTool::new(journal.clone(), None));
+            // BRO-1491: results limited to the caller's owner when multi-tenant.
+            registry.register(
+                EventSearchTool::new(journal.clone(), None)
+                    .with_owner_scope(memory_location.clone()),
+            );
         }
     } // else (not bare)
 
@@ -1300,12 +1333,9 @@ fn run_serve(
         }
 
         // Memory extraction observer — writes key facts to .arcan/memory/
-        {
-            let memory_dir = data_dir.join("memory");
-            run_observers.push(Arc::new(memory_observer::MemoryExtractionObserver::new(
-                memory_dir,
-            )));
-        }
+        run_observers.push(Arc::new(memory_observer::MemoryExtractionObserver::new(
+            memory_location.clone(),
+        )));
 
         {
             // Register lifecycle observer for session cleanup.
@@ -1346,6 +1376,7 @@ fn run_serve(
             Some(free_tier_journal), // BRO-218: TTL tagging for free-tier sessions
             resolved.bare,           // minimal prompt for small-context models
             resolved.default_tier.as_deref(), // OSS tier override
+            memory_location,         // BRO-1491: per-owner memory when multi-tenant
         );
 
         // ── Optional substrate-plane gRPC server (Topology B) ─────────
@@ -1934,6 +1965,28 @@ fn main() -> anyhow::Result<()> {
             ))
         }
         Some(Command::Config { action }) => run_config(&data_dir, action),
+        Some(Command::Memory {
+            action: MemoryAction::AdoptLegacy { owner },
+        }) => {
+            let report = aios_protocol::owner_scope::adopt_legacy_memory(&data_dir, &owner)
+                .map_err(|error| anyhow::anyhow!("adopt-legacy failed: {error}"))?;
+            println!(
+                "adopted legacy memory into owner {owner:?}: {} copied, {} skipped (owner already had them), {} skipped (not regular files)",
+                report.copied.len(),
+                report.skipped_existing.len(),
+                report.skipped_not_file.len()
+            );
+            for name in &report.copied {
+                println!("  copied   {name}");
+            }
+            for name in &report.skipped_existing {
+                println!("  kept     {name} (owner's own file wins)");
+            }
+            for name in &report.skipped_not_file {
+                println!("  ignored  {name}");
+            }
+            Ok(())
+        }
         Some(Command::Skills { action }) => {
             let resolved = config::resolve(
                 &file_config,

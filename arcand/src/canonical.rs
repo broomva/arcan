@@ -33,8 +33,11 @@ use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
 use crate::auth::{
-    AuthConfig, IdentityClaims, JwtError, Tier, jwt_auth_middleware, validate_identity_token,
+    AuthConfig, AuthUser, IdentityClaims, JwtError, Tier, jwt_auth_middleware,
+    validate_identity_token,
 };
+use aios_protocol::owner_scope::{self, Binding, MemoryLocation, OwnerScopeError};
+use axum::{Extension, extract::Request, middleware::Next};
 
 // ─── Mirror schemas for external aios-protocol types ─────────────────────────
 //
@@ -236,6 +239,11 @@ struct CanonicalState {
     /// When `ARCAN_CONSCIOUSNESS=true`, run_session pushes events to actors
     /// instead of blocking on the tick loop.
     consciousness_registry: Option<Arc<crate::consciousness::ConsciousnessRegistry>>,
+    /// Where memory lives (BRO-1491): one shared directory in single-user
+    /// mode, or the authenticated owner's directory in multi-tenant mode.
+    /// Also the source of the session → owner bindings the session routes
+    /// check.
+    memory_location: MemoryLocation,
 }
 
 /// Daemon-level Autonomic context regulation state.
@@ -677,6 +685,7 @@ pub fn create_canonical_router(
     provider_handle: SwappableProviderHandle,
     provider_factory: Arc<dyn ProviderFactory>,
 ) -> Router {
+    let runtime_root = runtime.root_path().to_path_buf();
     create_canonical_router_with_skills(
         runtime,
         provider_handle,
@@ -691,6 +700,10 @@ pub fn create_canonical_router(
         None,  // free_tier_journal (BRO-218)
         false, // bare
         None,  // default_tier
+        MemoryLocation::for_deployment(
+            runtime_root.as_path(),
+            crate::auth::multi_tenant_from_env(),
+        ),
     )
 }
 
@@ -717,7 +730,12 @@ pub fn create_canonical_router_with_skills(
     free_tier_journal: Option<Arc<arcan_lago::FreeTierJournal>>,
     bare: bool,
     default_tier: Option<&str>,
+    memory_location: MemoryLocation,
 ) -> Router {
+    tracing::info!(
+        per_owner = memory_location.is_per_owner(),
+        "memory scope (BRO-1491): per authenticated owner when multi-tenant, shared otherwise"
+    );
     let identity: Arc<dyn AgentIdentityProvider> =
         identity.unwrap_or_else(|| Arc::new(BasicIdentity::default()));
     tracing::info!(
@@ -818,6 +836,7 @@ pub fn create_canonical_router_with_skills(
         } else {
             None
         },
+        memory_location,
     };
 
     let auth_config = Arc::new(AuthConfig::from_env());
@@ -831,9 +850,11 @@ pub fn create_canonical_router_with_skills(
         .merge(Scalar::with_url("/docs", ApiDoc::openapi()))
         .with_state(state.clone());
 
-    // Protected routes — JWT auth middleware applied.
-    let protected = Router::new()
-        .route("/sessions", get(list_sessions).post(create_session))
+    // Per-session routes. A session bound to an authenticated owner is
+    // reachable only by that owner (BRO-1491): every route that can run the
+    // session's tools (and so read its owner's memory) or read what those
+    // tools returned sits behind this one layer.
+    let session_routes = Router::new()
         .route(
             "/sessions/{session_id}/identity",
             patch(upgrade_session_identity),
@@ -858,6 +879,15 @@ pub fn create_canonical_router_with_skills(
         .route("/sessions/{session_id}/messages", post(push_message))
         .route("/sessions/{session_id}/signal", post(push_signal))
         .route("/sessions/{session_id}/queue", get(get_queue_status))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_session_owner,
+        ));
+
+    // Protected routes — JWT auth middleware applied.
+    let protected = Router::new()
+        .route("/sessions", get(list_sessions).post(create_session))
+        .merge(session_routes)
         .route("/provider", get(get_provider).put(set_provider))
         .route("/autonomic", get(get_autonomic))
         .route("/context", get(get_context))
@@ -1106,9 +1136,16 @@ async fn persist_last_session_hint(runtime: &KernelRuntime, session_id: &Session
 )]
 async fn create_session(
     State(state): State<CanonicalState>,
+    auth_user: Option<Extension<AuthUser>>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<aios_protocol::SessionManifest>, (StatusCode, Json<serde_json::Value>)> {
-    let owner = request.owner.unwrap_or_else(|| "arcan".to_owned());
+    // BRO-1491: in multi-tenant mode the owner is the authenticated subject,
+    // never the request's `owner` field (which stays a label in single-user
+    // mode only).
+    let bound_owner = authenticated_owner(&state, auth_user.as_ref().map(|u| u.user_id.as_str()))?;
+    let owner = bound_owner
+        .clone()
+        .unwrap_or_else(|| request.owner.unwrap_or_else(|| "arcan".to_owned()));
     // When no policy is provided, use the local development policy (full access)
     // rather than the restrictive default (fs:read:/session/** only).
     // Authenticated sessions get their policy from identity claims.
@@ -1122,19 +1159,21 @@ async fn create_session(
         }
     });
     let routing = request.model_routing.unwrap_or_default();
-    let manifest = if let Some(session_id) = request.session_id {
-        state
-            .runtime
-            .create_session_with_id(SessionId::from_string(session_id), owner, policy, routing)
-            .await
-            .map_err(session_create_error)?
-    } else {
-        state
-            .runtime
-            .create_session(owner, policy, routing)
-            .await
-            .map_err(internal_error)?
-    };
+    // The id is fixed up front (server-generated when absent) so the session
+    // can be claimed before the runtime creates it: it is never visible
+    // without its final owner binding.
+    let session_id = request
+        .session_id
+        .unwrap_or_else(|| SessionId::default().as_str().to_owned());
+    claim_session(&state, &session_id, bound_owner.as_deref(), |_| {
+        session_owned_elsewhere()
+    })
+    .await?;
+    let manifest = state
+        .runtime
+        .create_session_with_id(SessionId::from_string(session_id), owner, policy, routing)
+        .await
+        .map_err(session_create_error)?;
     persist_last_session_hint(state.runtime.as_ref(), &manifest.session_id).await;
     Ok(Json(manifest))
 }
@@ -1180,8 +1219,12 @@ struct UpgradeSessionIdentityResponse {
 async fn upgrade_session_identity(
     Path(session_id): Path<String>,
     State(state): State<CanonicalState>,
+    auth_user: Option<Extension<AuthUser>>,
     Json(body): Json<UpgradeSessionIdentityRequest>,
 ) -> Result<Json<UpgradeSessionIdentityResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // BRO-1491: the user this session's memory events are attributed to may
+    // only be the caller itself, never an arbitrary body field.
+    authorize_user_scope(&state, auth_user.as_deref(), &body.user_id)?;
     let session_id = SessionId::from_string(session_id);
 
     if !state.runtime.session_exists(&session_id) {
@@ -1257,6 +1300,7 @@ async fn upgrade_session_identity(
 async fn run_session(
     Path(session_id): Path<String>,
     State(state): State<CanonicalState>,
+    auth_user: Option<Extension<AuthUser>>,
     Json(request): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, (StatusCode, Json<serde_json::Value>)> {
     let session_id = SessionId::from_string(session_id);
@@ -1265,12 +1309,24 @@ async fn run_session(
         .as_deref()
         .map(BranchId::from_string)
         .unwrap_or_else(BranchId::main);
+    // BRO-1491: this route is not behind `require_session_owner`, because it
+    // may create its session. Authorize here: the caller must own the session,
+    // or claim it (as owner, or as unowned when unauthenticated) before the
+    // runtime creates it.
+    let bound_owner = authenticated_owner(&state, auth_user.as_ref().map(|u| u.user_id.as_str()))?;
+    claim_session(
+        &state,
+        session_id.as_str(),
+        bound_owner.as_deref(),
+        session_not_found,
+    )
+    .await?;
     if !state.runtime.session_exists(&session_id) {
         state
             .runtime
             .create_session_with_id(
                 session_id.clone(),
-                "arcan",
+                bound_owner.as_deref().unwrap_or("arcan"),
                 PolicySet::default(),
                 ModelRouting::default(),
             )
@@ -1666,13 +1722,21 @@ async fn run_session(
             &model_name,
         ))
     } else {
+        // BRO-1491: the memory section is the session owner's memory (or none).
+        let memory_dir = state
+            .memory_location
+            .resolve(session_id.as_str())
+            .unwrap_or_else(|error| {
+                tracing::warn!(session = %session_id, %error, "memory scope unresolvable; prompt carries no memory");
+                None
+            });
         let frozen_prompt_prefix = state.frozen_prompt_prefix(
             session_id.as_str(),
             build_system_prompt_prefix(
                 &state.workspace_root,
                 state.cached_project_instructions.as_deref(),
                 git_context.as_deref(),
-                &state.data_dir.join("memory"),
+                memory_dir.as_deref(),
                 &provider_name,
                 &model_name,
                 &skill_catalog,
@@ -2178,7 +2242,7 @@ fn build_system_prompt_prefix(
     workspace_root: &std::path::Path,
     cached_project_instructions: Option<&str>,
     cached_git_context: Option<&str>,
-    memory_dir: &std::path::Path,
+    memory_dir: Option<&std::path::Path>,
     provider_name: &str,
     model_name: &str,
     skill_catalog: &str,
@@ -2204,7 +2268,7 @@ fn build_system_prompt_prefix(
         sections.push(format!("# Project Instructions\n\n{instructions}"));
     }
 
-    if let Some(memory) = arcan_core::prompt::build_memory_section(memory_dir) {
+    if let Some(memory) = memory_dir.and_then(arcan_core::prompt::build_memory_section) {
         sections.push(memory);
     }
 
@@ -3188,6 +3252,206 @@ async fn push_signal(
     ))
 }
 
+// ─── Owner-scoped memory (BRO-1491) ──────────────────────────────────────────
+//
+// Memory belongs to the session's owner: the JWT-verified subject that created
+// the session, recorded once as a server-side binding
+// (`aios_protocol::owner_scope`). The helpers below are the only places a
+// binding is written, and `require_session_owner` is the only place one is
+// checked on the HTTP plane.
+
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+/// The owner to bind a session to: the authenticated caller, in multi-tenant
+/// mode. `None` in single-user mode, or when no principal was authenticated
+/// (the session is then unowned and has no memory). A subject that is not a
+/// valid owner id is refused, since its memory could not be scoped.
+fn authenticated_owner(
+    state: &CanonicalState,
+    caller: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    if !state.memory_location.is_per_owner() {
+        return Ok(None);
+    }
+    let Some(caller) = caller else {
+        return Ok(None);
+    };
+    owner_scope::validate_owner_id(caller).map_err(|error| {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "invalid_owner", "message": error.to_string() })),
+        )
+    })?;
+    Ok(Some(caller.to_owned()))
+}
+
+fn session_owned_elsewhere() -> ApiError {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({ "error": "session id is not available" })),
+    )
+}
+
+fn owner_scope_unavailable(error: &OwnerScopeError) -> ApiError {
+    tracing::error!(%error, "session owner binding failed");
+    internal_error("session owner could not be recorded")
+}
+
+fn session_not_found(session_id: &str) -> ApiError {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": format!("session not found: {session_id}") })),
+    )
+}
+
+/// Claim `session_id` for this request's principal before the runtime
+/// creates or drives it (multi-tenant mode; a no-op in single-user mode).
+///
+/// `owner` is the authenticated owner, or `None` when the request has no
+/// authenticated principal (the session is then claimed as permanently
+/// unowned: no memory). The claim is the session's final binding, written
+/// before the session exists (`owner_scope::bind_session_owner`), so a
+/// session is never visible without it and never changes owner mid-tick.
+///
+/// A session already bound to this principal passes (idempotent). Anything
+/// else is refused with `mismatch`: bound to someone else, claimed by the
+/// other kind of principal, or an unbound workspace that already exists
+/// (created before owner scoping — nobody may claim it now).
+async fn claim_session(
+    state: &CanonicalState,
+    session_id: &str,
+    owner: Option<&str>,
+    mismatch: fn(&str) -> ApiError,
+) -> Result<(), ApiError> {
+    let Some(data_dir) = state.memory_location.owner_data_dir() else {
+        return Ok(());
+    };
+    if RESERVED_SYSTEM_SESSIONS.contains(&session_id) {
+        return Err(mismatch(session_id));
+    }
+    let binding = match owner_scope::read_binding(data_dir, session_id) {
+        // A malformed id is refused by the runtime's own grammar check (400)
+        // before anything is created; this layer adds no second guard.
+        Err(OwnerScopeError::InvalidSession(_)) => return Ok(()),
+        Err(OwnerScopeError::Aliased) => return Err(mismatch(session_id)),
+        Err(error) => return Err(owner_scope_unavailable(&error)),
+        Ok(binding) => binding,
+    };
+    match (&binding, owner) {
+        (Binding::Owner(bound), Some(caller)) if bound == caller => return Ok(()),
+        (Binding::Unowned, None) => return Ok(()),
+        (Binding::Owner(_) | Binding::Unowned, _) => return Err(mismatch(session_id)),
+        (Binding::Absent, _) => {}
+    }
+    // Unbound, but it may still exist from before owner scoping: as a
+    // workspace, or as an event stream with no workspace. Either way nobody
+    // may claim it now.
+    let workspace = state.runtime.root_path().join("sessions").join(session_id);
+    if std::fs::symlink_metadata(&workspace).is_ok() {
+        return Err(mismatch(session_id));
+    }
+    match state
+        .runtime
+        .read_events(&SessionId::from_string(session_id), 0, 1)
+        .await
+    {
+        Ok(events) if events.is_empty() => {}
+        Ok(_) => return Err(mismatch(session_id)),
+        Err(error) => {
+            tracing::error!(session = session_id, %error, "cannot tell whether the session's event stream exists");
+            return Err(internal_error("session owner could not be recorded"));
+        }
+    }
+    let written = match owner {
+        Some(owner) => owner_scope::bind_session_owner(data_dir, session_id, owner),
+        None => owner_scope::claim_unowned(data_dir, session_id),
+    };
+    match written {
+        Ok(()) | Err(OwnerScopeError::InvalidSession(_)) => Ok(()),
+        Err(OwnerScopeError::Conflict | OwnerScopeError::Aliased) => Err(mismatch(session_id)),
+        Err(error) => Err(owner_scope_unavailable(&error)),
+    }
+}
+
+/// Journal streams the daemon itself writes cross-tenant data into, under a
+/// grammar-valid id with no workspace: `arcan serve`'s filesystem-event writer
+/// and its Nous observer both use `"default"` (`arcan/src/main.rs`). No
+/// principal may claim them (multi-tenant mode), and so none may read them
+/// over the authenticated HTTP plane.
+pub const RESERVED_SYSTEM_SESSIONS: &[&str] = &["default"];
+
+/// Route layer for `/sessions/{session_id}/…` (multi-tenant mode).
+///
+/// An authenticated caller reaches only sessions bound to itself: another
+/// owner's session, an unowned one, and an id nobody has claimed yet all get
+/// the same 404 as a session that does not exist, so a caller cannot
+/// pre-subscribe to a stream for an id someone else is about to create.
+/// With no authenticated principal (auth disabled) only unowned sessions
+/// pass. `POST /sessions/{id}/runs` is the one route that may create its
+/// session, so it authorizes itself in `run_session` via [`claim_session`].
+async fn require_session_owner(
+    State(state): State<CanonicalState>,
+    Path(params): Path<HashMap<String, String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (Some(data_dir), Some(session_id)) = (
+        state.memory_location.owner_data_dir(),
+        params.get("session_id"),
+    ) else {
+        return next.run(request).await;
+    };
+    let is_run = request.method() == axum::http::Method::POST
+        && request
+            .extensions()
+            .get::<axum::extract::MatchedPath>()
+            .is_some_and(|path| path.as_str() == "/sessions/{session_id}/runs");
+    if is_run {
+        return next.run(request).await;
+    }
+    let caller = request
+        .extensions()
+        .get::<AuthUser>()
+        .map(|user| user.user_id.clone());
+    let allowed = match owner_scope::read_binding(data_dir, session_id) {
+        // Not every handler validates the id, and a store keyed by a
+        // normalized path can alias `./<id>` to `<id>`: refuse it here. An id
+        // that resolves to another session's binding (a case variant on a
+        // case-insensitive filesystem) is refused the same way.
+        Err(OwnerScopeError::InvalidSession(_) | OwnerScopeError::Aliased) => false,
+        Err(error) => return owner_scope_unavailable(&error).into_response(),
+        Ok(Binding::Owner(owner)) => caller.as_deref() == Some(owner.as_str()),
+        Ok(Binding::Unowned | Binding::Absent) => caller.is_none(),
+    };
+    if allowed {
+        next.run(request).await
+    } else {
+        session_not_found(session_id).into_response()
+    }
+}
+
+/// `/user/memory/*` act on the `user_id` they name. The caller may name only
+/// themself; with no authenticated caller that is allowed only in single-user
+/// mode.
+fn authorize_user_scope(
+    state: &CanonicalState,
+    caller: Option<&AuthUser>,
+    requested_user: &str,
+) -> Result<(), ApiError> {
+    match caller {
+        Some(user) if user.user_id == requested_user => Ok(()),
+        Some(_) => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "forbidden", "message": "cannot act on another user's memory" })),
+        )),
+        None if state.memory_location.is_per_owner() => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "forbidden", "message": "an authenticated caller is required" })),
+        )),
+        None => Ok(()),
+    }
+}
+
 // ─── Error helpers ───────────────────────────────────────────────────────────
 
 fn internal_error(error: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
@@ -3293,8 +3557,12 @@ struct ExportMemoryQuery {
 /// (newline-delimited JSON). Each line is a serialized `EventEnvelope`.
 async fn export_memory_jsonl(
     State(state): State<CanonicalState>,
+    auth_user: Option<Extension<AuthUser>>,
     Query(params): Query<ExportMemoryQuery>,
 ) -> impl IntoResponse {
+    if let Err(denied) = authorize_user_scope(&state, auth_user.as_deref(), &params.user_id) {
+        return denied.into_response();
+    }
     let Some(ref ftj) = state.free_tier_journal else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -3340,8 +3608,12 @@ struct MigrateMemoryBody {
 /// free-tier events are left intact and expire naturally after 7 days.
 async fn migrate_memory_to_pro(
     State(state): State<CanonicalState>,
+    auth_user: Option<Extension<AuthUser>>,
     Json(body): Json<MigrateMemoryBody>,
 ) -> impl IntoResponse {
+    if let Err(denied) = authorize_user_scope(&state, auth_user.as_deref(), &body.user_id) {
+        return denied.into_response();
+    }
     let Some(ref ftj) = state.free_tier_journal else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
