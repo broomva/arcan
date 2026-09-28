@@ -1840,10 +1840,17 @@ fn main() -> anyhow::Result<()> {
                 .expect("failed to build tokio runtime");
             let _rt_guard = tokio_runtime.enter();
 
-            // Structured logging + optional OTel export via Vigil
-            let _vigil_guard =
-                life_vigil::init_telemetry(VigConfig::for_service("arcan").with_env_overrides())
-                    .expect("failed to initialize telemetry");
+            // Structured logging + optional OTel export via Vigil.
+            // Telemetry is advisory: a failure must never stop serving (BRO-2642).
+            let _vigil_guard = match life_vigil::init_telemetry(
+                VigConfig::for_service("arcan").with_env_overrides(),
+            ) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    eprintln!("warning: telemetry init failed ({e}); continuing without telemetry");
+                    None
+                }
+            };
 
             let resolved = config::resolve(
                 &file_config,

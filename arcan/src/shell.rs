@@ -830,7 +830,7 @@ fn build_shell_otel_subscriber(
 ) -> Result<ShellTelemetryGuard, String> {
     use opentelemetry::global;
     use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_otlp::WithExportConfig as _;
+    use opentelemetry_otlp::{WithExportConfig as _, WithTonicConfig as _};
 
     let endpoint = vig_config
         .otlp_endpoint
@@ -842,9 +842,13 @@ fn build_shell_otel_subscriber(
         .build();
 
     // Build OTLP span exporter (gRPC)
-    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+    let mut span_builder = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
-        .with_endpoint(endpoint)
+        .with_endpoint(endpoint);
+    if let Some(tls) = life_vigil::grpc_tls_config(endpoint) {
+        span_builder = span_builder.with_tls_config(tls);
+    }
+    let span_exporter = span_builder
         .build()
         .map_err(|e| format!("span exporter: {e}"))?;
 
@@ -856,9 +860,13 @@ fn build_shell_otel_subscriber(
     global::set_tracer_provider(tracer_provider.clone());
 
     // Build OTLP metric exporter
-    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+    let mut metric_builder = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
-        .with_endpoint(endpoint)
+        .with_endpoint(endpoint);
+    if let Some(tls) = life_vigil::grpc_tls_config(endpoint) {
+        metric_builder = metric_builder.with_tls_config(tls);
+    }
+    let metric_exporter = metric_builder
         .build()
         .map_err(|e| format!("metric exporter: {e}"))?;
 
